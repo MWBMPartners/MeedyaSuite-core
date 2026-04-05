@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/meedya-metadata",
+    "crates/meedya-codecs",
+    "crates/meedya-fingerprint",
+    "crates/meedya-db",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["MWBMPartners"]
+license = "MIT"
+repository = "https://github.com/MWBMPartners/meedya-core"

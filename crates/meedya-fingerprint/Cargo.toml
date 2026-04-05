@@ -1,0 +1,8 @@
+[package]
+name = "meedya-fingerprint"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Meedya Core — meedya-fingerprint"
