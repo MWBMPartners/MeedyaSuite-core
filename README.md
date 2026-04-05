@@ -1,6 +1,6 @@
-# meedya-core
+# MeedyaSuite-core
 
-Shared core library for the [Meedya](https://github.com/MWBMPartners) suite of applications.
+Shared core library for the [Meedya](https://github.com/MWBMPartners)Suite of applications.
 
 Written in Rust. Distributable to all Meedya apps via:
 - **Rust/Tauri apps** (MeedyaDL, MeedyaConverter) — native Cargo dependency
