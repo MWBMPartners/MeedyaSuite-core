@@ -628,6 +628,15 @@ version = "0.1.0"
 [[package]]
 name = "meedya-fingerprint"
 version = "0.1.0"
+dependencies = [
+ "log",
+ "meedya-metadata",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "meedya-metadata"
