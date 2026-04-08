@@ -1,0 +1,260 @@
+# MeedyaSuite-core — Default Tag Registry
+#
+# Config-driven metadata tag definitions. Adding new tags requires only
+# editing this file — no Rust code changes needed.
+#
+# Structure:
+#   [scope.tag_id]
+#   json_path   = "dot.separated.path"   # into API JSON response
+#   value_type  = "string|bool|u32|u64|array|first_of_array"
+#   atoms = [
+#       { namespace = "itunes|meedya|<custom>", name = "AtomName" },
+#   ]
+#
+# Namespace shortcuts:
+#   "itunes" → "com.apple.iTunes"
+#   "meedya" → "MeedyaMeta"
+
+# ─── Album-scope tags ────────────────────────────────────────────────
+
+[album.upc]
+json_path = "attributes.upc"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "UPC" },
+    { namespace = "itunes", name = "Barcode" },
+    { namespace = "meedya", name = "AppleUPC" },
+]
+
+[album.record_label]
+json_path = "attributes.recordLabel"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "Label" },
+    { namespace = "meedya", name = "RecordLabel" },
+]
+
+[album.copyright]
+json_path = "attributes.copyright"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "Copyright" },
+    { namespace = "meedya", name = "Copyright" },
+]
+
+[album.release_date]
+json_path = "attributes.releaseDate"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "ReleaseDate" },
+    { namespace = "meedya", name = "AlbumReleaseDate" },
+]
+
+[album.is_compilation]
+json_path = "attributes.isCompilation"
+value_type = "bool"
+atoms = [
+    { namespace = "itunes", name = "IsCompilation" },
+    { namespace = "meedya", name = "IsCompilation" },
+]
+
+[album.is_single]
+json_path = "attributes.isSingle"
+value_type = "bool"
+atoms = [
+    { namespace = "itunes", name = "IsSingle" },
+    { namespace = "meedya", name = "IsSingle" },
+]
+
+[album.is_complete]
+json_path = "attributes.isComplete"
+value_type = "bool"
+atoms = [
+    { namespace = "itunes", name = "IsComplete" },
+    { namespace = "meedya", name = "IsComplete" },
+]
+
+[album.is_mastered_for_itunes]
+json_path = "attributes.isMasteredForItunes"
+value_type = "bool"
+atoms = [
+    { namespace = "itunes", name = "IsAppleDigitalMaster" },
+    { namespace = "meedya", name = "IsAppleDigitalMaster" },
+]
+
+[album.track_count]
+json_path = "attributes.trackCount"
+value_type = "u32"
+atoms = [
+    { namespace = "itunes", name = "TrackCount" },
+    { namespace = "meedya", name = "TrackCount" },
+]
+
+[album.content_rating]
+json_path = "attributes.contentRating"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "AlbumAdvisory" },
+    { namespace = "meedya", name = "AlbumContentRating" },
+]
+
+[album.artist_id]
+json_path = "relationships.artists.data[0].id"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "ArtistID" },
+    { namespace = "meedya", name = "AppleArtistID" },
+]
+
+[album.artist_name]
+json_path = "attributes.artistName"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "ArtistName" },
+    { namespace = "meedya", name = "AlbumArtistName" },
+]
+
+[album.genre]
+json_path = "attributes.genreNames"
+value_type = "first_of_array"
+atoms = [
+    { namespace = "itunes", name = "Genre" },
+    { namespace = "meedya", name = "AlbumGenre" },
+]
+
+[album.editorial_notes]
+json_path = "attributes.editorialNotes.standard"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "EditorialNotes" },
+    { namespace = "meedya", name = "EditorialNotes" },
+]
+
+[album.artwork_square_url]
+json_path = "attributes.editorialVideo.motionSquareVideo1x1.video"
+value_type = "string"
+atoms = [
+    { namespace = "meedya", name = "MotionArtworkSquareURL" },
+]
+
+[album.artwork_tall_url]
+json_path = "attributes.editorialVideo.motionDetailTall.video"
+value_type = "string"
+atoms = [
+    { namespace = "meedya", name = "MotionArtworkTallURL" },
+]
+
+[album.last_modified_date]
+json_path = "meta.formerIds"
+value_type = "string"
+atoms = [
+    { namespace = "meedya", name = "AppleLastModified" },
+]
+
+# ─── Track-scope tags ────────────────────────────────────────────────
+
+[track.isrc]
+json_path = "attributes.isrc"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "ISRC" },
+    { namespace = "meedya", name = "ISRC" },
+]
+
+[track.content_rating]
+json_path = "attributes.contentRating"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "iTunesAdvisory" },
+    { namespace = "meedya", name = "ContentRating" },
+]
+
+[track.artist_id]
+json_path = "relationships.artists.data[0].id"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "ArtistID" },
+    { namespace = "meedya", name = "AppleArtistID" },
+]
+
+[track.song_id]
+json_path = "id"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "CatalogID" },
+    { namespace = "meedya", name = "AppleSongID" },
+]
+
+[track.audio_traits]
+json_path = "attributes.audioTraits"
+value_type = "array"
+atoms = [
+    { namespace = "meedya", name = "AudioTraits" },
+]
+
+[track.is_apple_digital_master]
+json_path = "attributes.isAppleDigitalMaster"
+value_type = "bool"
+atoms = [
+    { namespace = "itunes", name = "IsAppleDigitalMaster" },
+    { namespace = "meedya", name = "IsAppleDigitalMaster" },
+]
+
+[track.release_date]
+json_path = "attributes.releaseDate"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "ReleaseDate" },
+    { namespace = "meedya", name = "TrackReleaseDate" },
+]
+
+[track.composer_name]
+json_path = "attributes.composerName"
+value_type = "string"
+atoms = [
+    { namespace = "itunes", name = "Composer" },
+    { namespace = "meedya", name = "Composer" },
+]
+
+[track.duration_in_millis]
+json_path = "attributes.durationInMillis"
+value_type = "u64"
+atoms = [
+    { namespace = "meedya", name = "DurationMs" },
+]
+
+[track.has_lyrics]
+json_path = "attributes.hasLyrics"
+value_type = "bool"
+atoms = [
+    { namespace = "meedya", name = "HasLyrics" },
+]
+
+[track.play_params_id]
+json_path = "attributes.playParams.id"
+value_type = "string"
+atoms = [
+    { namespace = "meedya", name = "PlayParamsID" },
+]
+
+[track.url]
+json_path = "attributes.url"
+value_type = "string"
+atoms = [
+    { namespace = "meedya", name = "AppleMusicURL" },
+]
+
+[track.preview_url]
+json_path = "attributes.previews[0].url"
+value_type = "string"
+atoms = [
+    { namespace = "meedya", name = "PreviewURL" },
+]
+
+[track.genres]
+json_path = "attributes.genreNames"
+value_type = "array"
+atoms = [
+    { namespace = "itunes", name = "Genre" },
+    { namespace = "meedya", name = "Genres" },
+]
