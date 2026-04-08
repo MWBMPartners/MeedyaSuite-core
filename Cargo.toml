@@ -1,10 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/meedya-metadata",
     "crates/meedya-codecs",
+    "crates/meedya-metadata",
     "crates/meedya-fingerprint",
     "crates/meedya-db",
+    "crates/meedya-providers",
 ]
 
 [workspace.package]
@@ -12,4 +13,44 @@ version = "0.1.0"
 edition = "2021"
 authors = ["MWBMPartners"]
 license = "MIT"
-repository = "https://github.com/MWBMPartners/meedya-core"
+repository = "https://github.com/MWBMPartners/MeedyaSuite-core"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+thiserror = "2"
+
+# Audio metadata
+lofty = "0.22"
+
+# Audio fingerprinting
+rusty-chromaprint = "0.3"
+symphonia = { version = "0.5", features = ["all"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+log = "0.4"
+strum = { version = "0.26", features = ["derive"] }
+async-trait = "0.1"
+
+# Internal crate dependencies
+meedya-codecs = { path = "crates/meedya-codecs" }
+meedya-metadata = { path = "crates/meedya-metadata" }
+meedya-fingerprint = { path = "crates/meedya-fingerprint" }
+meedya-db = { path = "crates/meedya-db" }
+meedya-providers = { path = "crates/meedya-providers" }
