@@ -5,4 +5,11 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Meedya Core — meedya-metadata"
+description = "Meedya Core — tag schemas, metadata read/write, TOML tag registry"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+meedya-codecs = { workspace = true }
