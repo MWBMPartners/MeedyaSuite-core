@@ -20,5 +20,5 @@ pub mod replaygain;
 mod error;
 
 pub use acoustid::{AcoustIdResult, AcoustIdClient};
-pub use replaygain::{ReplayGainResult, ReplayGainAnalyzer, DEFAULT_REFERENCE_LEVEL};
+pub use replaygain::{ReplayGainResult, AlbumGainResult, ReplayGainAnalyzer, DEFAULT_REFERENCE_LEVEL};
 pub use error::FingerprintError;

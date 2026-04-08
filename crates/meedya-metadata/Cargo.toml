@@ -12,4 +12,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
+log = { workspace = true }
+lofty = { workspace = true }
 meedya-codecs = { workspace = true }
+meedya-fingerprint = { workspace = true }

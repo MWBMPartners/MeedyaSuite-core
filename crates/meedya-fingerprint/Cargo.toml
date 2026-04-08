@@ -14,4 +14,3 @@ thiserror = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
-meedya-metadata = { workspace = true }

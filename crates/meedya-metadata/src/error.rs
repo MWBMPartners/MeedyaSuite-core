@@ -24,4 +24,24 @@ pub enum MetadataError {
 
     #[error("value conversion failed for tag '{tag_id}': {reason}")]
     ValueConversionFailed { tag_id: String, reason: String },
+
+    // --- File I/O errors ---
+
+    #[error("file not found: {0}")]
+    FileNotFound(String),
+
+    #[error("unsupported file format: {0}")]
+    UnsupportedFormat(String),
+
+    #[error("failed to read tags from file: {0}")]
+    ReadError(String),
+
+    #[error("failed to write tags to file: {0}")]
+    WriteError(String),
+
+    #[error("I/O error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("lofty error: {0}")]
+    LoftyError(#[from] lofty::error::LoftyError),
 }

@@ -14,6 +14,7 @@
 pub mod tag_registry;
 pub mod json_path;
 pub mod common_tags;
+pub mod tag_io;
 mod error;
 
 pub use tag_registry::{
@@ -21,4 +22,5 @@ pub use tag_registry::{
 };
 pub use json_path::{extract_json_value, value_to_string};
 pub use common_tags::{CommonTag, STANDARD_NAMESPACES};
+pub use tag_io::{read_tags, write_tags, write_replaygain_tags, write_acoustid_tags, write_registry_tags, TagMap};
 pub use error::MetadataError;
