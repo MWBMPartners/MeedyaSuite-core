@@ -13,9 +13,13 @@ pub struct AcoustIdClient {
 
 impl AcoustIdClient {
     pub fn new(api_key: impl Into<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
         Self {
             api_key: api_key.into(),
-            client: reqwest::Client::new(),
+            client,
         }
     }
 

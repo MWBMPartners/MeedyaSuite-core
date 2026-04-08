@@ -18,10 +18,21 @@ pub enum CredentialSource {
 }
 
 /// A resolved credential with its source.
-#[derive(Debug, Clone)]
+///
+/// The `Debug` impl masks the value to prevent accidental logging of secrets.
+#[derive(Clone)]
 pub struct ResolvedCredential {
     pub value: String,
     pub source: CredentialSource,
+}
+
+impl std::fmt::Debug for ResolvedCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedCredential")
+            .field("value", &"***REDACTED***")
+            .field("source", &self.source)
+            .finish()
+    }
 }
 
 /// 4-tier credential resolution for metadata providers.
@@ -34,6 +45,9 @@ pub struct ResolvedCredential {
 pub struct CredentialStore {
     config_map: HashMap<String, String>,
     credentials_file: Option<PathBuf>,
+    /// Keyring service identifier (e.g., "meedya-suite"). Used when the
+    /// `keyring-credentials` feature is enabled.
+    #[allow(dead_code)]
     service_name: String,
 }
 
@@ -160,12 +174,32 @@ impl CredentialStore {
             map.insert(key.to_string(), serde_json::Value::String(value.to_string()));
         }
 
-        // Atomic write: write to temp file then rename
-        let tmp_path = cred_path.with_extension("tmp");
+        // Atomic write: write to unique temp file then rename
+        let parent = cred_path
+            .parent()
+            .ok_or_else(|| CredentialError::IoError("invalid credentials path".into()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| CredentialError::IoError(e.to_string()))?;
+
+        let tmp_path = parent.join(format!(
+            ".credentials.{}.tmp",
+            std::process::id()
+        ));
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| CredentialError::IoError(e.to_string()))?;
-        std::fs::write(&tmp_path, json).map_err(|e| CredentialError::IoError(e.to_string()))?;
-        std::fs::rename(&tmp_path, cred_path).map_err(|e| CredentialError::IoError(e.to_string()))?;
+        std::fs::write(&tmp_path, &json)
+            .map_err(|e| CredentialError::IoError(e.to_string()))?;
+
+        // Set restrictive permissions (owner read/write only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            let _ = std::fs::set_permissions(&tmp_path, perms);
+        }
+
+        std::fs::rename(&tmp_path, cred_path)
+            .map_err(|e| CredentialError::IoError(e.to_string()))?;
 
         Ok(())
     }
@@ -179,10 +213,16 @@ impl CredentialStore {
     }
 
     fn read_file_data(&self, path: &Path) -> HashMap<String, serde_json::Value> {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|content| serde_json::from_str(&content).ok())
-            .unwrap_or_default()
+        match std::fs::read_to_string(path) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(data) => data,
+                Err(e) => {
+                    tracing::warn!("Corrupted credentials file at {}: {e}", path.display());
+                    HashMap::new()
+                }
+            },
+            Err(_) => HashMap::new(), // File doesn't exist yet
+        }
     }
 }
 

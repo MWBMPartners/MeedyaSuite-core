@@ -117,17 +117,29 @@ pub enum TagScope {
 /// Extract a value from a JSON object using a dot-separated path.
 ///
 /// Supports array indexing (e.g., `previews[0].url`).
+///
+/// Returns `None` for missing paths, out-of-bounds indices, or malformed
+/// path syntax (e.g., unclosed brackets).
 pub fn extract_json_value(json: &serde_json::Value, path: &str) -> Option<serde_json::Value> {
     let mut current = json;
 
     for segment in path.split('.') {
+        if segment.is_empty() {
+            return None;
+        }
+
         // Check for array index: e.g., "previews[0]"
         if let Some(bracket_pos) = segment.find('[') {
-            let key = &segment[..bracket_pos];
-            let idx_str = &segment[bracket_pos + 1..segment.len() - 1];
+            // Validate bracket syntax: must end with ']'
+            let idx_str = segment
+                .get(bracket_pos + 1..)?
+                .strip_suffix(']')?;
             let idx: usize = idx_str.parse().ok()?;
 
-            current = current.get(key)?;
+            let key = &segment[..bracket_pos];
+            if !key.is_empty() {
+                current = current.get(key)?;
+            }
             current = current.get(idx)?;
         } else {
             current = current.get(segment)?;
@@ -165,9 +177,9 @@ pub fn value_to_string(value: &serde_json::Value, value_type: &TagValueType) -> 
             serde_json::Value::Array(arr) => {
                 let items: Vec<String> = arr
                     .iter()
-                    .filter_map(|v| match v {
-                        serde_json::Value::String(s) => Some(s.clone()),
-                        other => Some(other.to_string()),
+                    .map(|v| match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
                     })
                     .collect();
                 Some(items.join(", "))
@@ -175,9 +187,9 @@ pub fn value_to_string(value: &serde_json::Value, value_type: &TagValueType) -> 
             _ => Some(value.to_string()),
         },
         TagValueType::FirstOfArray => match value {
-            serde_json::Value::Array(arr) => arr.first().and_then(|v| match v {
-                serde_json::Value::String(s) => Some(s.clone()),
-                other => Some(other.to_string()),
+            serde_json::Value::Array(arr) => arr.first().map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
             }),
             serde_json::Value::String(s) => Some(s.clone()),
             _ => None,
