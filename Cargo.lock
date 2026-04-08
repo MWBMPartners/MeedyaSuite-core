@@ -797,6 +797,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "meedya-core"
+version = "0.1.0"
+dependencies = [
+ "meedya-codecs",
+ "meedya-db",
+ "meedya-fingerprint",
+ "meedya-metadata",
+]
+
+[[package]]
 name = "meedya-db"
 version = "0.1.0"
 

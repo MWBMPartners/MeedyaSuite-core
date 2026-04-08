@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/meedya-core",
     "crates/meedya-metadata",
     "crates/meedya-codecs",
     "crates/meedya-fingerprint",

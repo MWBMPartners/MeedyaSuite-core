@@ -1,0 +1,30 @@
+[package]
+name = "meedya-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MeedyaSuite-core — unified re-export crate providing the complete MeedyaSuite shared library"
+
+[features]
+default = ["metadata", "codecs", "fingerprint"]
+metadata = ["meedya-metadata"]
+codecs = ["meedya-codecs"]
+fingerprint = ["meedya-fingerprint"]
+# Provider infrastructure (rate limiting, credentials, registry)
+providers = ["meedya-metadata/providers"]
+# OS keyring credential storage
+keyring = ["meedya-metadata/keyring-credentials"]
+# Chromaprint audio fingerprinting
+chromaprint = ["meedya-fingerprint/chromaprint"]
+# AcoustID API client
+acoustid = ["meedya-fingerprint/acoustid"]
+# Full feature set
+full = ["metadata", "codecs", "fingerprint", "providers", "keyring", "chromaprint", "acoustid"]
+
+[dependencies]
+meedya-metadata = { path = "../meedya-metadata", optional = true }
+meedya-codecs = { path = "../meedya-codecs", optional = true }
+meedya-fingerprint = { path = "../meedya-fingerprint", optional = true }
+meedya-db = { path = "../meedya-db", optional = true }
