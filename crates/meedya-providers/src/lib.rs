@@ -8,9 +8,13 @@
 // management, and shared implementations for metadata lookup services
 // (MusicBrainz, TMDB, TheTVDB, AcoustID, Discogs, etc.) used across
 // all MeedyaSuite applications.
-//
-// Placeholder — implementation follows meedya-codecs and meedya-metadata.
 
+pub mod credentials;
+pub mod error;
+pub mod rate_limiter;
 pub mod traits;
 
+pub use credentials::{CredentialSource, CredentialStore, ResolvedCredential};
+pub use error::CredentialError;
+pub use rate_limiter::{ProviderRateLimiter, RateLimiterRegistry};
 pub use traits::MetadataProvider;

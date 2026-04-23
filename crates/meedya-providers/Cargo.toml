@@ -14,4 +14,17 @@ thiserror = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+governor = { workspace = true }
+tracing = { workspace = true }
 meedya-codecs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+default = []
+keyring-credentials = ["dep:keyring"]
+
+[dependencies.keyring]
+version = "3"
+optional = true

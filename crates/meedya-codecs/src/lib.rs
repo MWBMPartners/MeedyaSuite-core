@@ -21,6 +21,7 @@ pub mod hdr;
 pub mod spatial;
 pub mod classify;
 pub mod registry;
+pub mod tool_path;
 mod error;
 
 pub use audio_codec::AudioCodec;

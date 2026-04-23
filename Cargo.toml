@@ -46,8 +46,12 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 log = "0.4"
+tracing = "0.1"
 strum = { version = "0.26", features = ["derive"] }
 async-trait = "0.1"
+governor = "0.6"
+tempfile = "3"
+which = "6"
 
 # Internal crate dependencies
 meedya-codecs = { path = "crates/meedya-codecs" }
