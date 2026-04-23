@@ -19,6 +19,9 @@ pub fn extract_json_value(json: &serde_json::Value, path: &str) -> Option<serde_
     let mut current = json;
 
     for segment in path.split('.') {
+        if segment.is_empty() {
+            return None;
+        }
         if let Some(bracket_pos) = segment.find('[') {
             let key = &segment[..bracket_pos];
             let index_str = segment[bracket_pos + 1..].strip_suffix(']')?;
