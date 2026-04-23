@@ -881,6 +881,7 @@ dependencies = [
  "serde_json",
  "strum",
  "thiserror",
+ "tokio",
  "toml",
  "tracing",
  "which",

@@ -14,22 +14,28 @@
 //   - MeedyaConverter (Swift) — via bindings/swift C FFI / XCFramework
 
 pub mod audio_codec;
-pub mod video_codec;
-pub mod subtitle_codec;
-pub mod container;
-pub mod hdr;
-pub mod spatial;
+pub mod channel_config;
 pub mod classify;
+pub mod container;
+pub mod ffprobe;
+pub mod hdr;
+pub mod mediainfo;
 pub mod registry;
+pub mod spatial;
+pub mod spatial_type;
+pub mod subtitle_codec;
 pub mod tool_path;
+pub mod video_codec;
 mod error;
 
 pub use audio_codec::AudioCodec;
-pub use video_codec::VideoCodec;
-pub use subtitle_codec::SubtitleCodec;
-pub use container::ContainerFormat;
-pub use hdr::HdrFormat;
-pub use spatial::SpatialAudioFormat;
+pub use channel_config::ChannelConfig;
 pub use classify::{MediaGroup, MediaFormat, MediaClass, MediaQuality, MediaClassification};
-pub use registry::CodecRegistry;
+pub use container::ContainerFormat;
 pub use error::CodecError;
+pub use hdr::HdrFormat;
+pub use registry::CodecRegistry;
+pub use spatial::SpatialAudioFormat;
+pub use spatial_type::SpatialType;
+pub use subtitle_codec::SubtitleCodec;
+pub use video_codec::VideoCodec;
