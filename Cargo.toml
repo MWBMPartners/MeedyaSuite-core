@@ -2,10 +2,11 @@
 resolver = "2"
 members = [
     "crates/meedya-codecs",
-    "crates/meedya-metadata",
-    "crates/meedya-fingerprint",
+    "crates/meedya-core",
     "crates/meedya-db",
+    "crates/meedya-fingerprint",
     "crates/meedya-lyrics",
+    "crates/meedya-metadata",
     "crates/meedya-providers",
 ]
 
@@ -56,8 +57,9 @@ fuzzy-matcher = "0.3"
 
 # Internal crate dependencies
 meedya-codecs = { path = "crates/meedya-codecs" }
-meedya-metadata = { path = "crates/meedya-metadata" }
-meedya-fingerprint = { path = "crates/meedya-fingerprint" }
+meedya-core = { path = "crates/meedya-core" }
 meedya-db = { path = "crates/meedya-db" }
+meedya-fingerprint = { path = "crates/meedya-fingerprint" }
 meedya-lyrics = { path = "crates/meedya-lyrics" }
+meedya-metadata = { path = "crates/meedya-metadata" }
 meedya-providers = { path = "crates/meedya-providers" }
