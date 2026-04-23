@@ -9,6 +9,7 @@ description = "Meedya Core — LRCLIB client, LRC parser/writer, and lyrics writ
 
 [dependencies]
 async-trait = "0.1"
+meedya-metadata = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

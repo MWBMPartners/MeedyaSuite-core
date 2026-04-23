@@ -795,6 +795,7 @@ name = "meedya-lyrics"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "meedya-metadata",
  "reqwest",
  "serde",
  "thiserror",
