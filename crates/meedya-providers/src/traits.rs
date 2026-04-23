@@ -2,11 +2,11 @@
 // Licensed under the MIT License.
 //
 // Core provider traits.
-// Merged from MeedyaManager mm-providers/src/traits.rs (BaseProvider)
-// and MeedyaConverter MetadataLookup.swift provider abstractions.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::types::{ProviderResult, SearchQuery};
 
 /// Errors from metadata provider operations.
 #[derive(Debug, Error)]
@@ -22,6 +22,9 @@ pub enum ProviderError {
 
     #[error("network error: {0}")]
     NetworkError(String),
+
+    #[error("operation not supported: {0}")]
+    NotSupported(String),
 
     #[error("provider returned no results")]
     NoResults,
@@ -42,24 +45,7 @@ pub struct ProviderCapabilities {
     pub identifier_lookup: bool,
 }
 
-/// A metadata search result from any provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderResult {
-    pub provider_id: String,
-    pub title: String,
-    pub artist: Option<String>,
-    pub album: Option<String>,
-    pub year: Option<u16>,
-    pub cover_art_url: Option<String>,
-    pub external_id: Option<String>,
-    pub confidence: f64,
-    pub metadata: serde_json::Value,
-}
-
 /// Core trait for all metadata providers.
-///
-/// Implementing this trait allows a provider to be registered in the
-/// central provider registry and used by any MeedyaSuite application.
 #[async_trait::async_trait]
 pub trait MetadataProvider: Send + Sync {
     /// Unique identifier for this provider (e.g., "musicbrainz", "tmdb").
@@ -71,9 +57,15 @@ pub trait MetadataProvider: Send + Sync {
     /// Capabilities this provider supports.
     fn capabilities(&self) -> ProviderCapabilities;
 
-    /// Search for metadata matching a query string.
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<ProviderResult>, ProviderError>;
+    /// Search for metadata matching the given query.
+    async fn search(&self, query: &SearchQuery) -> Result<Vec<ProviderResult>, ProviderError>;
 
-    /// Look up a specific item by its provider-specific ID.
-    async fn lookup(&self, id: &str) -> Result<ProviderResult, ProviderError>;
+    /// Look up a specific item by provider-specific ID.
+    async fn lookup(&self, id: &str) -> Result<Option<ProviderResult>, ProviderError> {
+        let _ = id;
+        Err(ProviderError::NotSupported(format!(
+            "{} does not support direct lookup",
+            self.display_name()
+        )))
+    }
 }

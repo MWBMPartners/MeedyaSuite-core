@@ -16,6 +16,7 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 governor = { workspace = true }
 tracing = { workspace = true }
+fuzzy-matcher = { workspace = true }
 meedya-codecs = { workspace = true }
 
 [dev-dependencies]

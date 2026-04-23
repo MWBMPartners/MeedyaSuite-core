@@ -52,6 +52,7 @@ async-trait = "0.1"
 governor = "0.6"
 tempfile = "3"
 which = "6"
+fuzzy-matcher = "0.3"
 
 # Internal crate dependencies
 meedya-codecs = { path = "crates/meedya-codecs" }
