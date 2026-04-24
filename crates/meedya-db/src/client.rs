@@ -69,10 +69,7 @@ impl MeedyaDbClient {
         media_type: Option<&str>,
     ) -> Result<SearchResponse, DbError> {
         let url = format!("{}/search", self.base_url);
-        let mut params = vec![
-            ("q", query.to_string()),
-            ("limit", limit.to_string()),
-        ];
+        let mut params = vec![("q", query.to_string()), ("limit", limit.to_string())];
         if let Some(mt) = media_type {
             params.push(("type", mt.to_string()));
         }
@@ -125,10 +122,7 @@ impl MeedyaDbClient {
     }
 
     /// Match media by filename (fuzzy matching).
-    pub async fn match_by_filename(
-        &self,
-        filename: &str,
-    ) -> Result<SearchResponse, DbError> {
+    pub async fn match_by_filename(&self, filename: &str) -> Result<SearchResponse, DbError> {
         let url = format!("{}/match", self.base_url);
 
         let resp = self

@@ -54,10 +54,7 @@ struct MediaInfoTrack {
 /// MediaInfo is particularly useful for accurate Dolby Atmos detection
 /// via the `Format_AdditionalFeatures: "JOC"` flag, which is more reliable
 /// than FFprobe's channel-count heuristics.
-pub async fn detect_codec(
-    mediainfo_path: &Path,
-    file_path: &Path,
-) -> Option<MediaInfoResult> {
+pub async fn detect_codec(mediainfo_path: &Path, file_path: &Path) -> Option<MediaInfoResult> {
     let output = tokio::time::timeout(
         Duration::from_secs(30),
         Command::new(mediainfo_path)

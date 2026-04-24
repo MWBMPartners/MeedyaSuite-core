@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString};
 
 /// Canonical subtitle codec/format identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Display, EnumIter, EnumString)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumIter, EnumString,
+)]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum SubtitleCodec {

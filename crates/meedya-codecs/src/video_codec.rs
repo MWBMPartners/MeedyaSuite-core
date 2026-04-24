@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString};
 
 /// Canonical video codec identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Display, EnumIter, EnumString)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumIter, EnumString,
+)]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum VideoCodec {
@@ -144,31 +145,20 @@ impl VideoCodec {
 
     /// Whether this codec is lossless.
     pub fn is_lossless(&self) -> bool {
-        matches!(
-            self,
-            Self::Ffv1 | Self::Huffyuv | Self::Png
-        )
+        matches!(self, Self::Ffv1 | Self::Huffyuv | Self::Png)
     }
 
     /// Whether this codec supports HDR content.
     pub fn supports_hdr(&self) -> bool {
         matches!(
             self,
-            Self::H265
-                | Self::Av1
-                | Self::Vp9
-                | Self::H266
-                | Self::MvHevc
-                | Self::ProRes
+            Self::H265 | Self::Av1 | Self::Vp9 | Self::H266 | Self::MvHevc | Self::ProRes
         )
     }
 
     /// Whether this codec can use hardware acceleration (VideoToolbox on macOS).
     pub fn supports_videotoolbox(&self) -> bool {
-        matches!(
-            self,
-            Self::H264 | Self::H265 | Self::ProRes | Self::MvHevc
-        )
+        matches!(self, Self::H264 | Self::H265 | Self::ProRes | Self::MvHevc)
     }
 
     /// Whether this codec supports stereoscopic 3D content.

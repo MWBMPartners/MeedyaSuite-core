@@ -44,16 +44,13 @@ pub fn extract_json_value(json: &serde_json::Value, path: &str) -> Option<serde_
 /// Returns `None` if the value cannot be converted (null, wrong type, empty array).
 pub fn value_to_string(value: &serde_json::Value, value_type: &TagValueType) -> Option<String> {
     match value_type {
-        TagValueType::String => value
-            .as_str()
-            .map(ToString::to_string)
-            .or_else(|| {
-                if value.is_null() {
-                    None
-                } else {
-                    Some(value.to_string())
-                }
-            }),
+        TagValueType::String => value.as_str().map(ToString::to_string).or_else(|| {
+            if value.is_null() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        }),
         TagValueType::Bool => value.as_bool().map(|b| b.to_string()),
         TagValueType::U32 | TagValueType::U64 => value.as_u64().map(|n| n.to_string()),
         TagValueType::Array => {
@@ -81,7 +78,10 @@ mod tests {
     #[test]
     fn simple_path() {
         let j = json!({"attributes": {"name": "Midnights"}});
-        assert_eq!(extract_json_value(&j, "attributes.name"), Some(json!("Midnights")));
+        assert_eq!(
+            extract_json_value(&j, "attributes.name"),
+            Some(json!("Midnights"))
+        );
     }
 
     #[test]
@@ -134,13 +134,22 @@ mod tests {
 
     #[test]
     fn value_bool() {
-        assert_eq!(value_to_string(&json!(true), &TagValueType::Bool), Some("true".into()));
-        assert_eq!(value_to_string(&json!(false), &TagValueType::Bool), Some("false".into()));
+        assert_eq!(
+            value_to_string(&json!(true), &TagValueType::Bool),
+            Some("true".into())
+        );
+        assert_eq!(
+            value_to_string(&json!(false), &TagValueType::Bool),
+            Some("false".into())
+        );
     }
 
     #[test]
     fn value_u64() {
-        assert_eq!(value_to_string(&json!(202395), &TagValueType::U64), Some("202395".into()));
+        assert_eq!(
+            value_to_string(&json!(202395), &TagValueType::U64),
+            Some("202395".into())
+        );
     }
 
     #[test]

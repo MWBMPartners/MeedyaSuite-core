@@ -26,7 +26,11 @@ pub fn resolve_tool(
         if let Some(parent) = ref_path.parent() {
             let adjacent = parent.join(tool_name);
             if adjacent.exists() {
-                debug!("Found {tool_name} adjacent to {}: {}", ref_path.display(), adjacent.display());
+                debug!(
+                    "Found {tool_name} adjacent to {}: {}",
+                    ref_path.display(),
+                    adjacent.display()
+                );
                 return Some(adjacent);
             }
         }
@@ -41,7 +45,10 @@ pub fn resolve_tool(
     // 4. Platform-specific common locations
     for candidate in platform_search_paths(tool_name) {
         if candidate.exists() {
-            debug!("Found {tool_name} at platform path: {}", candidate.display());
+            debug!(
+                "Found {tool_name} at platform path: {}",
+                candidate.display()
+            );
             return Some(candidate);
         }
     }
@@ -51,7 +58,10 @@ pub fn resolve_tool(
 }
 
 /// Resolve FFprobe binary path.
-pub fn resolve_ffprobe(explicit_path: Option<&Path>, ffmpeg_path: Option<&Path>) -> Option<PathBuf> {
+pub fn resolve_ffprobe(
+    explicit_path: Option<&Path>,
+    ffmpeg_path: Option<&Path>,
+) -> Option<PathBuf> {
     resolve_tool("ffprobe", explicit_path, ffmpeg_path)
 }
 
@@ -79,7 +89,9 @@ fn platform_search_paths(tool_name: &str) -> Vec<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         if let Ok(program_files) = std::env::var("ProgramFiles") {
-            paths.push(PathBuf::from(format!("{program_files}\\{tool_name}\\{tool_name}.exe")));
+            paths.push(PathBuf::from(format!(
+                "{program_files}\\{tool_name}\\{tool_name}.exe"
+            )));
         }
     }
 

@@ -41,9 +41,7 @@ pub type TagMap = HashMap<CommonTag, Vec<String>>;
 /// mapping `CommonTag` variants to their string values.
 pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
     if !path.exists() {
-        return Err(MetadataError::FileNotFound(
-            path.display().to_string(),
-        ));
+        return Err(MetadataError::FileNotFound(path.display().to_string()));
     }
 
     let tagged_file = Probe::open(path)?.read()?;
@@ -61,28 +59,52 @@ pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
 
     // Extract standard accessor fields
     if let Some(v) = tag.title() {
-        result.entry(CommonTag::Title).or_default().push(v.to_string());
+        result
+            .entry(CommonTag::Title)
+            .or_default()
+            .push(v.to_string());
     }
     if let Some(v) = tag.artist() {
-        result.entry(CommonTag::Artist).or_default().push(v.to_string());
+        result
+            .entry(CommonTag::Artist)
+            .or_default()
+            .push(v.to_string());
     }
     if let Some(v) = tag.album() {
-        result.entry(CommonTag::Album).or_default().push(v.to_string());
+        result
+            .entry(CommonTag::Album)
+            .or_default()
+            .push(v.to_string());
     }
     if let Some(v) = tag.genre() {
-        result.entry(CommonTag::Genre).or_default().push(v.to_string());
+        result
+            .entry(CommonTag::Genre)
+            .or_default()
+            .push(v.to_string());
     }
     if let Some(v) = tag.comment() {
-        result.entry(CommonTag::Comment).or_default().push(v.to_string());
+        result
+            .entry(CommonTag::Comment)
+            .or_default()
+            .push(v.to_string());
     }
     if let Some(v) = tag.year() {
-        result.entry(CommonTag::Year).or_default().push(v.to_string());
+        result
+            .entry(CommonTag::Year)
+            .or_default()
+            .push(v.to_string());
     }
     if let Some(v) = tag.track() {
-        result.entry(CommonTag::TrackNumber).or_default().push(v.to_string());
+        result
+            .entry(CommonTag::TrackNumber)
+            .or_default()
+            .push(v.to_string());
     }
     if let Some(v) = tag.disk() {
-        result.entry(CommonTag::DiscNumber).or_default().push(v.to_string());
+        result
+            .entry(CommonTag::DiscNumber)
+            .or_default()
+            .push(v.to_string());
     }
 
     // Extract by ItemKey for fields not covered by accessors
@@ -97,8 +119,14 @@ pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
         (ItemKey::TrackTotal, CommonTag::TotalTracks),
         (ItemKey::DiscTotal, CommonTag::TotalDiscs),
         (ItemKey::Lyrics, CommonTag::Lyrics),
-        (ItemKey::MusicBrainzRecordingId, CommonTag::MusicBrainzRecordingId),
-        (ItemKey::MusicBrainzReleaseId, CommonTag::MusicBrainzReleaseId),
+        (
+            ItemKey::MusicBrainzRecordingId,
+            CommonTag::MusicBrainzRecordingId,
+        ),
+        (
+            ItemKey::MusicBrainzReleaseId,
+            CommonTag::MusicBrainzReleaseId,
+        ),
     ];
 
     for (key, common_tag) in key_mappings {
@@ -115,7 +143,10 @@ pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
         ("REPLAYGAIN_TRACK_PEAK", CommonTag::ReplayGainTrackPeak),
         ("REPLAYGAIN_ALBUM_GAIN", CommonTag::ReplayGainAlbumGain),
         ("REPLAYGAIN_ALBUM_PEAK", CommonTag::ReplayGainAlbumPeak),
-        ("REPLAYGAIN_REFERENCE_LOUDNESS", CommonTag::ReplayGainReferenceLoudness),
+        (
+            "REPLAYGAIN_REFERENCE_LOUDNESS",
+            CommonTag::ReplayGainReferenceLoudness,
+        ),
     ];
 
     for (field_name, common_tag) in rg_mappings {
@@ -257,10 +288,7 @@ pub fn write_registry_tags(
         for atom in &def.atoms {
             // Write as a custom/freeform item with the full namespace
             let key = ItemKey::Unknown(format!("{}:{}", atom.namespace, atom.name));
-            tag.insert(TagItem::new(
-                key,
-                ItemValue::Text(string_val.clone()),
-            ));
+            tag.insert(TagItem::new(key, ItemValue::Text(string_val.clone())));
         }
         count += 1;
     }
@@ -301,13 +329,22 @@ fn write_common_tag_to_lofty(tag: &mut Tag, common_tag: CommonTag, value: &str) 
 
         // ItemKey-based fields
         CommonTag::AlbumArtist => {
-            tag.insert(TagItem::new(ItemKey::AlbumArtist, ItemValue::Text(value.into())));
+            tag.insert(TagItem::new(
+                ItemKey::AlbumArtist,
+                ItemValue::Text(value.into()),
+            ));
         }
         CommonTag::Composer => {
-            tag.insert(TagItem::new(ItemKey::Composer, ItemValue::Text(value.into())));
+            tag.insert(TagItem::new(
+                ItemKey::Composer,
+                ItemValue::Text(value.into()),
+            ));
         }
         CommonTag::Copyright => {
-            tag.insert(TagItem::new(ItemKey::CopyrightMessage, ItemValue::Text(value.into())));
+            tag.insert(TagItem::new(
+                ItemKey::CopyrightMessage,
+                ItemValue::Text(value.into()),
+            ));
         }
         CommonTag::Label => {
             tag.insert(TagItem::new(ItemKey::Label, ItemValue::Text(value.into())));
@@ -316,34 +353,61 @@ fn write_common_tag_to_lofty(tag: &mut Tag, common_tag: CommonTag, value: &str) 
             tag.insert(TagItem::new(ItemKey::Isrc, ItemValue::Text(value.into())));
         }
         CommonTag::Upc => {
-            tag.insert(TagItem::new(ItemKey::Barcode, ItemValue::Text(value.into())));
+            tag.insert(TagItem::new(
+                ItemKey::Barcode,
+                ItemValue::Text(value.into()),
+            ));
         }
         CommonTag::Encoder => {
-            tag.insert(TagItem::new(ItemKey::EncoderSoftware, ItemValue::Text(value.into())));
+            tag.insert(TagItem::new(
+                ItemKey::EncoderSoftware,
+                ItemValue::Text(value.into()),
+            ));
         }
         CommonTag::TotalTracks => {
-            tag.insert(TagItem::new(ItemKey::TrackTotal, ItemValue::Text(value.into())));
+            tag.insert(TagItem::new(
+                ItemKey::TrackTotal,
+                ItemValue::Text(value.into()),
+            ));
         }
         CommonTag::TotalDiscs => {
-            tag.insert(TagItem::new(ItemKey::DiscTotal, ItemValue::Text(value.into())));
+            tag.insert(TagItem::new(
+                ItemKey::DiscTotal,
+                ItemValue::Text(value.into()),
+            ));
         }
         CommonTag::Lyrics => {
             tag.insert(TagItem::new(ItemKey::Lyrics, ItemValue::Text(value.into())));
         }
         CommonTag::ReleaseDate => {
-            tag.insert(TagItem::new(ItemKey::RecordingDate, ItemValue::Text(value.into())));
+            tag.insert(TagItem::new(
+                ItemKey::RecordingDate,
+                ItemValue::Text(value.into()),
+            ));
         }
         CommonTag::Compilation => {
-            tag.insert(TagItem::new(ItemKey::FlagCompilation, ItemValue::Text(value.into())));
+            tag.insert(TagItem::new(
+                ItemKey::FlagCompilation,
+                ItemValue::Text(value.into()),
+            ));
         }
         CommonTag::Description => {
-            tag.insert(TagItem::new(ItemKey::Description, ItemValue::Text(value.into())));
+            tag.insert(TagItem::new(
+                ItemKey::Description,
+                ItemValue::Text(value.into()),
+            ));
         }
         CommonTag::MusicBrainzRecordingId => {
-            tag.insert(TagItem::new(ItemKey::MusicBrainzRecordingId, ItemValue::Text(value.into())));
+            tag.insert(TagItem::new(
+                ItemKey::MusicBrainzRecordingId,
+                ItemValue::Text(value.into()),
+            ));
         }
         CommonTag::MusicBrainzReleaseId => {
-            tag.insert(TagItem::new(ItemKey::MusicBrainzReleaseId, ItemValue::Text(value.into())));
+            tag.insert(TagItem::new(
+                ItemKey::MusicBrainzReleaseId,
+                ItemValue::Text(value.into()),
+            ));
         }
 
         // Custom/freeform fields — use Unknown key with standard field names
@@ -394,7 +458,10 @@ mod tests {
     fn read_nonexistent_file_returns_error() {
         let result = read_tags(Path::new("/nonexistent/file.mp3"));
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), MetadataError::FileNotFound(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            MetadataError::FileNotFound(_)
+        ));
     }
 
     #[test]
@@ -404,7 +471,10 @@ mod tests {
             &[(CommonTag::Title, "Test".into())],
         );
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), MetadataError::FileNotFound(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            MetadataError::FileNotFound(_)
+        ));
     }
 
     #[test]

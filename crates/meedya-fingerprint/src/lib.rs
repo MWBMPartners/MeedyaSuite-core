@@ -16,9 +16,11 @@
 // Extracted from MeedyaDL acoustid_service.rs + replaygain_service.rs.
 
 pub mod acoustid;
-pub mod replaygain;
 mod error;
+pub mod replaygain;
 
-pub use acoustid::{AcoustIdResult, AcoustIdClient};
-pub use replaygain::{ReplayGainResult, AlbumGainResult, ReplayGainAnalyzer, DEFAULT_REFERENCE_LEVEL};
+pub use acoustid::{AcoustIdClient, AcoustIdResult};
 pub use error::FingerprintError;
+pub use replaygain::{
+    AlbumGainResult, ReplayGainAnalyzer, ReplayGainResult, DEFAULT_REFERENCE_LEVEL,
+};

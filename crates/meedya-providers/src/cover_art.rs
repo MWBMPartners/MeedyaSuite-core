@@ -33,9 +33,8 @@ pub fn classify(art: &CoverArtInfo) -> CoverArtSize {
 
 /// Select the largest cover art from a list.
 pub fn select_largest(arts: &[CoverArtInfo]) -> Option<&CoverArtInfo> {
-    arts.iter().max_by_key(|a| {
-        a.width.unwrap_or(0).max(a.height.unwrap_or(0))
-    })
+    arts.iter()
+        .max_by_key(|a| a.width.unwrap_or(0).max(a.height.unwrap_or(0)))
 }
 
 /// Select the smallest cover art from a list.
@@ -45,7 +44,11 @@ pub fn select_smallest(arts: &[CoverArtInfo]) -> Option<&CoverArtInfo> {
     }
     arts.iter().min_by_key(|a| {
         let dim = a.width.unwrap_or(0).max(a.height.unwrap_or(0));
-        if dim == 0 { u32::MAX } else { dim }
+        if dim == 0 {
+            u32::MAX
+        } else {
+            dim
+        }
     })
 }
 
@@ -159,15 +162,26 @@ mod tests {
     fn image_extension_detection() {
         assert!(url_has_image_extension("https://example.com/art.jpg"));
         assert!(url_has_image_extension("https://example.com/art.PNG"));
-        assert!(url_has_image_extension("https://example.com/art.webp?size=500"));
+        assert!(url_has_image_extension(
+            "https://example.com/art.webp?size=500"
+        ));
         assert!(!url_has_image_extension("https://example.com/art.gif"));
     }
 
     #[test]
     fn mime_type_inference() {
-        assert_eq!(mime_type_for_url("https://example.com/art.png"), "image/png");
-        assert_eq!(mime_type_for_url("https://example.com/art.webp"), "image/webp");
-        assert_eq!(mime_type_for_url("https://example.com/art.jpg"), "image/jpeg");
+        assert_eq!(
+            mime_type_for_url("https://example.com/art.png"),
+            "image/png"
+        );
+        assert_eq!(
+            mime_type_for_url("https://example.com/art.webp"),
+            "image/webp"
+        );
+        assert_eq!(
+            mime_type_for_url("https://example.com/art.jpg"),
+            "image/jpeg"
+        );
         assert_eq!(mime_type_for_url("https://example.com/art"), "image/jpeg");
     }
 

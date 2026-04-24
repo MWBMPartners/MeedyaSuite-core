@@ -104,9 +104,9 @@ impl ReplayGainAnalyzer {
         let output = Command::new(&self.ffmpeg_path)
             .args([
                 "-i",
-                file_path.to_str().ok_or_else(|| {
-                    FingerprintError::FfmpegError("Invalid file path".into())
-                })?,
+                file_path
+                    .to_str()
+                    .ok_or_else(|| FingerprintError::FfmpegError("Invalid file path".into()))?,
                 "-af",
                 "ebur128=peak=true",
                 "-f",
@@ -145,10 +145,7 @@ impl ReplayGainAnalyzer {
             .sum();
         let avg_loudness = 10.0 * (total_energy / tracks.len() as f64).log10();
 
-        let max_peak = tracks
-            .iter()
-            .map(|t| t.true_peak)
-            .fold(0.0f64, f64::max);
+        let max_peak = tracks.iter().map(|t| t.true_peak).fold(0.0f64, f64::max);
 
         let gain_db = self.reference_level - avg_loudness;
 
@@ -173,19 +170,17 @@ fn parse_ebur128_output(
     //     True peak:
     //       Peak:        -0.6 dBFS
 
-    let integrated = parse_summary_value(stderr, "I:")
-        .ok_or_else(|| {
-            FingerprintError::LoudnessParseError(
-                "Could not find integrated loudness (I:) in FFmpeg output".into(),
-            )
-        })?;
+    let integrated = parse_summary_value(stderr, "I:").ok_or_else(|| {
+        FingerprintError::LoudnessParseError(
+            "Could not find integrated loudness (I:) in FFmpeg output".into(),
+        )
+    })?;
 
-    let peak_dbfs = parse_summary_value(stderr, "Peak:")
-        .ok_or_else(|| {
-            FingerprintError::LoudnessParseError(
-                "Could not find true peak (Peak:) in FFmpeg output".into(),
-            )
-        })?;
+    let peak_dbfs = parse_summary_value(stderr, "Peak:").ok_or_else(|| {
+        FingerprintError::LoudnessParseError(
+            "Could not find true peak (Peak:) in FFmpeg output".into(),
+        )
+    })?;
 
     // Convert dBFS to linear scale
     let true_peak = 10f64.powf(peak_dbfs / 20.0);
@@ -292,8 +287,14 @@ mod tests {
             },
         ];
         let album = analyzer.compute_album_gain(&tracks).unwrap();
-        assert!(album.gain_db < 0.0, "Album with loud tracks should have negative gain");
-        assert_eq!(album.true_peak, 0.9, "Album peak should be max of track peaks");
+        assert!(
+            album.gain_db < 0.0,
+            "Album with loud tracks should have negative gain"
+        );
+        assert_eq!(
+            album.true_peak, 0.9,
+            "Album peak should be max of track peaks"
+        );
     }
 
     #[test]

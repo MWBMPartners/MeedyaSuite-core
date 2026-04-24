@@ -8,7 +8,7 @@
 // database backends (SQLite, MySQL, PostgreSQL, MariaDB, SQL Server).
 
 use crate::error::DbError;
-use crate::models::{Track, Album, Artist};
+use crate::models::{Album, Artist, Track};
 
 /// Trait for exporting media data to a database backend.
 ///

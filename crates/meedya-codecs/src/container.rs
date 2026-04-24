@@ -13,8 +13,9 @@ use crate::audio_codec::AudioCodec;
 use crate::video_codec::VideoCodec;
 
 /// Canonical container/file format identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Display, EnumIter, EnumString)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumIter, EnumString,
+)]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum ContainerFormat {
@@ -280,19 +281,42 @@ impl ContainerFormat {
     /// Media category for this container.
     pub fn category(&self) -> MediaCategory {
         match self {
-            Self::Mp4 | Self::Mkv | Self::WebM | Self::Mov | Self::Avi
-            | Self::MpegTs | Self::MpegPs | Self::Flv | Self::ThreeGp
-            | Self::Mxf | Self::Asf | Self::Nut => MediaCategory::Video,
+            Self::Mp4
+            | Self::Mkv
+            | Self::WebM
+            | Self::Mov
+            | Self::Avi
+            | Self::MpegTs
+            | Self::MpegPs
+            | Self::Flv
+            | Self::ThreeGp
+            | Self::Mxf
+            | Self::Asf
+            | Self::Nut => MediaCategory::Video,
 
-            Self::M4a | Self::Flac | Self::Ogg | Self::OpusOgg | Self::Wav
-            | Self::Aiff | Self::Mp3 | Self::Mka | Self::Wma | Self::WavPack
-            | Self::Musepack | Self::Ape | Self::Dsf | Self::Tak | Self::Tta
-            | Self::AacRaw | Self::Ac3Raw | Self::Eac3Raw | Self::DtsRaw => {
-                MediaCategory::Audio
+            Self::M4a
+            | Self::Flac
+            | Self::Ogg
+            | Self::OpusOgg
+            | Self::Wav
+            | Self::Aiff
+            | Self::Mp3
+            | Self::Mka
+            | Self::Wma
+            | Self::WavPack
+            | Self::Musepack
+            | Self::Ape
+            | Self::Dsf
+            | Self::Tak
+            | Self::Tta
+            | Self::AacRaw
+            | Self::Ac3Raw
+            | Self::Eac3Raw
+            | Self::DtsRaw => MediaCategory::Audio,
+
+            Self::Jpeg | Self::Png | Self::WebP | Self::Gif | Self::Tiff | Self::Bmp => {
+                MediaCategory::Image
             }
-
-            Self::Jpeg | Self::Png | Self::WebP | Self::Gif | Self::Tiff
-            | Self::Bmp => MediaCategory::Image,
         }
     }
 
@@ -313,8 +337,15 @@ impl ContainerFormat {
     pub fn supports_subtitles(&self) -> bool {
         matches!(
             self,
-            Self::Mp4 | Self::Mkv | Self::WebM | Self::Mov | Self::Avi
-            | Self::MpegTs | Self::MpegPs | Self::Mxf | Self::Asf
+            Self::Mp4
+                | Self::Mkv
+                | Self::WebM
+                | Self::Mov
+                | Self::Avi
+                | Self::MpegTs
+                | Self::MpegPs
+                | Self::Mxf
+                | Self::Asf
         )
     }
 
@@ -331,17 +362,23 @@ impl ContainerFormat {
         match self {
             Self::Mp4 | Self::M4a | Self::Mov => matches!(
                 codec,
-                AudioCodec::AacLc | AudioCodec::HeAac | AudioCodec::HeAacV2
-                | AudioCodec::XheAac | AudioCodec::Alac | AudioCodec::Ac3
-                | AudioCodec::Eac3 | AudioCodec::Eac3Atmos | AudioCodec::Flac
-                | AudioCodec::Opus | AudioCodec::AacBinaural | AudioCodec::AacDownmix
-                | AudioCodec::TrueHd | AudioCodec::TrueHdAtmos
+                AudioCodec::AacLc
+                    | AudioCodec::HeAac
+                    | AudioCodec::HeAacV2
+                    | AudioCodec::XheAac
+                    | AudioCodec::Alac
+                    | AudioCodec::Ac3
+                    | AudioCodec::Eac3
+                    | AudioCodec::Eac3Atmos
+                    | AudioCodec::Flac
+                    | AudioCodec::Opus
+                    | AudioCodec::AacBinaural
+                    | AudioCodec::AacDownmix
+                    | AudioCodec::TrueHd
+                    | AudioCodec::TrueHdAtmos
             ),
             Self::Mkv | Self::Mka => true, // Matroska accepts virtually anything
-            Self::WebM => matches!(
-                codec,
-                AudioCodec::Opus | AudioCodec::Vorbis
-            ),
+            Self::WebM => matches!(codec, AudioCodec::Opus | AudioCodec::Vorbis),
             Self::Ogg => matches!(
                 codec,
                 AudioCodec::Vorbis | AudioCodec::Flac | AudioCodec::Opus
@@ -353,20 +390,29 @@ impl ContainerFormat {
             Self::Mp3 => matches!(codec, AudioCodec::Mp3),
             Self::Avi => matches!(
                 codec,
-                AudioCodec::Mp3 | AudioCodec::AacLc | AudioCodec::Pcm
-                | AudioCodec::Ac3 | AudioCodec::Dts
+                AudioCodec::Mp3
+                    | AudioCodec::AacLc
+                    | AudioCodec::Pcm
+                    | AudioCodec::Ac3
+                    | AudioCodec::Dts
             ),
             Self::MpegTs | Self::MpegPs => matches!(
                 codec,
-                AudioCodec::AacLc | AudioCodec::HeAac | AudioCodec::Mp3
-                | AudioCodec::Ac3 | AudioCodec::Eac3 | AudioCodec::Eac3Atmos
-                | AudioCodec::Dts | AudioCodec::DtsHdMa | AudioCodec::Pcm
-                | AudioCodec::TrueHd | AudioCodec::TrueHdAtmos
+                AudioCodec::AacLc
+                    | AudioCodec::HeAac
+                    | AudioCodec::Mp3
+                    | AudioCodec::Ac3
+                    | AudioCodec::Eac3
+                    | AudioCodec::Eac3Atmos
+                    | AudioCodec::Dts
+                    | AudioCodec::DtsHdMa
+                    | AudioCodec::Pcm
+                    | AudioCodec::TrueHd
+                    | AudioCodec::TrueHdAtmos
             ),
             Self::Asf | Self::Wma => matches!(
                 codec,
-                AudioCodec::Wma | AudioCodec::WmaPro | AudioCodec::WmaLossless
-                | AudioCodec::Pcm
+                AudioCodec::Wma | AudioCodec::WmaPro | AudioCodec::WmaLossless | AudioCodec::Pcm
             ),
             _ => false,
         }
@@ -377,38 +423,41 @@ impl ContainerFormat {
         match self {
             Self::Mp4 | Self::Mov => matches!(
                 codec,
-                VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Av1
-                | VideoCodec::Mpeg4 | VideoCodec::ProRes | VideoCodec::MvHevc
-                | VideoCodec::MvH264 | VideoCodec::Jpeg2000 | VideoCodec::Mjpeg
-                | VideoCodec::Vp9
+                VideoCodec::H264
+                    | VideoCodec::H265
+                    | VideoCodec::Av1
+                    | VideoCodec::Mpeg4
+                    | VideoCodec::ProRes
+                    | VideoCodec::MvHevc
+                    | VideoCodec::MvH264
+                    | VideoCodec::Jpeg2000
+                    | VideoCodec::Mjpeg
+                    | VideoCodec::Vp9
             ),
             Self::Mkv => true, // Matroska accepts virtually anything
-            Self::WebM => matches!(
-                codec,
-                VideoCodec::Vp8 | VideoCodec::Vp9 | VideoCodec::Av1
-            ),
+            Self::WebM => matches!(codec, VideoCodec::Vp8 | VideoCodec::Vp9 | VideoCodec::Av1),
             Self::Avi => matches!(
                 codec,
-                VideoCodec::H264 | VideoCodec::Mpeg4 | VideoCodec::Mjpeg
-                | VideoCodec::Huffyuv | VideoCodec::DnxHd
+                VideoCodec::H264
+                    | VideoCodec::Mpeg4
+                    | VideoCodec::Mjpeg
+                    | VideoCodec::Huffyuv
+                    | VideoCodec::DnxHd
             ),
             Self::MpegTs => matches!(
                 codec,
-                VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Mpeg2
-                | VideoCodec::Av1
+                VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Mpeg2 | VideoCodec::Av1
             ),
-            Self::MpegPs => matches!(
-                codec,
-                VideoCodec::Mpeg2 | VideoCodec::Mpeg4
-            ),
-            Self::Flv => matches!(
-                codec,
-                VideoCodec::H264 | VideoCodec::Vp8
-            ),
+            Self::MpegPs => matches!(codec, VideoCodec::Mpeg2 | VideoCodec::Mpeg4),
+            Self::Flv => matches!(codec, VideoCodec::H264 | VideoCodec::Vp8),
             Self::Mxf => matches!(
                 codec,
-                VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Mpeg2
-                | VideoCodec::ProRes | VideoCodec::DnxHd | VideoCodec::Jpeg2000
+                VideoCodec::H264
+                    | VideoCodec::H265
+                    | VideoCodec::Mpeg2
+                    | VideoCodec::ProRes
+                    | VideoCodec::DnxHd
+                    | VideoCodec::Jpeg2000
             ),
             Self::Asf => matches!(codec, VideoCodec::Vc1 | VideoCodec::Mpeg4),
             _ => false,
@@ -436,10 +485,22 @@ mod tests {
 
     #[test]
     fn test_from_extension() {
-        assert_eq!(ContainerFormat::from_extension("mp4"), Some(ContainerFormat::Mp4));
-        assert_eq!(ContainerFormat::from_extension(".flac"), Some(ContainerFormat::Flac));
-        assert_eq!(ContainerFormat::from_extension("MKV"), Some(ContainerFormat::Mkv));
-        assert_eq!(ContainerFormat::from_extension("m4a"), Some(ContainerFormat::M4a));
+        assert_eq!(
+            ContainerFormat::from_extension("mp4"),
+            Some(ContainerFormat::Mp4)
+        );
+        assert_eq!(
+            ContainerFormat::from_extension(".flac"),
+            Some(ContainerFormat::Flac)
+        );
+        assert_eq!(
+            ContainerFormat::from_extension("MKV"),
+            Some(ContainerFormat::Mkv)
+        );
+        assert_eq!(
+            ContainerFormat::from_extension("m4a"),
+            Some(ContainerFormat::M4a)
+        );
         assert_eq!(ContainerFormat::from_extension("xyz"), None);
     }
 

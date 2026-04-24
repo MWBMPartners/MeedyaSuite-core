@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString};
 
 /// Top-level media group.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Display, EnumIter, EnumString)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumIter, EnumString,
+)]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum MediaGroup {
@@ -21,8 +22,9 @@ pub enum MediaGroup {
 }
 
 /// Media format family within a group.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Display, EnumIter, EnumString)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumIter, EnumString,
+)]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum MediaFormat {
@@ -54,8 +56,21 @@ pub enum MediaFormat {
 }
 
 /// Quality class within a format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
-#[derive(Display, EnumIter, EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    PartialOrd,
+    Ord,
+    Display,
+    EnumIter,
+    EnumString,
+)]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum MediaClass {
@@ -67,8 +82,21 @@ pub enum MediaClass {
 }
 
 /// Quality tier for lossy content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
-#[derive(Display, EnumIter, EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    PartialOrd,
+    Ord,
+    Display,
+    EnumIter,
+    EnumString,
+)]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum MediaQuality {
@@ -100,7 +128,12 @@ impl MediaClassification {
         class: MediaClass,
         quality: MediaQuality,
     ) -> Self {
-        Self { group, format, class, quality }
+        Self {
+            group,
+            format,
+            class,
+            quality,
+        }
     }
 }
 
@@ -113,34 +146,88 @@ pub fn classify_audio_codec(codec: crate::AudioCodec) -> MediaClassification {
         AacLc => (MediaFormat::Aac, MediaClass::Lossy, MediaQuality::High),
         HeAac | HeAacV2 => (MediaFormat::Aac, MediaClass::Lossy, MediaQuality::Standard),
         XheAac => (MediaFormat::Aac, MediaClass::Lossy, MediaQuality::Low),
-        Opus => (MediaFormat::Compressed, MediaClass::Lossy, MediaQuality::High),
-        Vorbis => (MediaFormat::Compressed, MediaClass::Lossy, MediaQuality::Standard),
-        Flac => (MediaFormat::Lossless, MediaClass::Lossless, MediaQuality::Lossless),
-        Alac => (MediaFormat::Lossless, MediaClass::Lossless, MediaQuality::Lossless),
-        Pcm | Aiff => (MediaFormat::Raw, MediaClass::Lossless, MediaQuality::Lossless),
-        WavPack | Ape | Tak | TrueAudio => {
-            (MediaFormat::Lossless, MediaClass::Lossless, MediaQuality::Lossless)
-        }
+        Opus => (
+            MediaFormat::Compressed,
+            MediaClass::Lossy,
+            MediaQuality::High,
+        ),
+        Vorbis => (
+            MediaFormat::Compressed,
+            MediaClass::Lossy,
+            MediaQuality::Standard,
+        ),
+        Flac => (
+            MediaFormat::Lossless,
+            MediaClass::Lossless,
+            MediaQuality::Lossless,
+        ),
+        Alac => (
+            MediaFormat::Lossless,
+            MediaClass::Lossless,
+            MediaQuality::Lossless,
+        ),
+        Pcm | Aiff => (
+            MediaFormat::Raw,
+            MediaClass::Lossless,
+            MediaQuality::Lossless,
+        ),
+        WavPack | Ape | Tak | TrueAudio => (
+            MediaFormat::Lossless,
+            MediaClass::Lossless,
+            MediaQuality::Lossless,
+        ),
         Dsd => (MediaFormat::Raw, MediaClass::Master, MediaQuality::Lossless),
-        Ac3 => (MediaFormat::Surround, MediaClass::Lossy, MediaQuality::Standard),
+        Ac3 => (
+            MediaFormat::Surround,
+            MediaClass::Lossy,
+            MediaQuality::Standard,
+        ),
         Eac3 => (MediaFormat::Surround, MediaClass::Lossy, MediaQuality::High),
-        Eac3Atmos | TrueHdAtmos | DtsX | DtsXImax | MpegH3d | Sony360Ra | Iamf => {
-            (MediaFormat::Spatial, MediaClass::High, MediaQuality::VeryHigh)
-        }
+        Eac3Atmos | TrueHdAtmos | DtsX | DtsXImax | MpegH3d | Sony360Ra | Iamf => (
+            MediaFormat::Spatial,
+            MediaClass::High,
+            MediaQuality::VeryHigh,
+        ),
         AacBinaural => (MediaFormat::Spatial, MediaClass::Lossy, MediaQuality::High),
-        Dts => (MediaFormat::Surround, MediaClass::Lossy, MediaQuality::Standard),
-        DtsHdMa => (MediaFormat::Surround, MediaClass::Lossless, MediaQuality::Lossless),
-        DtsHdHr => (MediaFormat::Surround, MediaClass::High, MediaQuality::VeryHigh),
-        TrueHd => (MediaFormat::Surround, MediaClass::Lossless, MediaQuality::Lossless),
+        Dts => (
+            MediaFormat::Surround,
+            MediaClass::Lossy,
+            MediaQuality::Standard,
+        ),
+        DtsHdMa => (
+            MediaFormat::Surround,
+            MediaClass::Lossless,
+            MediaQuality::Lossless,
+        ),
+        DtsHdHr => (
+            MediaFormat::Surround,
+            MediaClass::High,
+            MediaQuality::VeryHigh,
+        ),
+        TrueHd => (
+            MediaFormat::Surround,
+            MediaClass::Lossless,
+            MediaQuality::Lossless,
+        ),
         AacDownmix => (MediaFormat::Aac, MediaClass::Lossy, MediaQuality::Standard),
-        Wma | WmaPro => (MediaFormat::Compressed, MediaClass::Lossy, MediaQuality::Standard),
-        WmaLossless => (MediaFormat::Lossless, MediaClass::Lossless, MediaQuality::Lossless),
+        Wma | WmaPro => (
+            MediaFormat::Compressed,
+            MediaClass::Lossy,
+            MediaQuality::Standard,
+        ),
+        WmaLossless => (
+            MediaFormat::Lossless,
+            MediaClass::Lossless,
+            MediaQuality::Lossless,
+        ),
         AmrNb | AmrWb | Speex | G711 | G722 | G729 => {
             (MediaFormat::Speech, MediaClass::Lossy, MediaQuality::Low)
         }
-        Musepack | Mp3Surround => {
-            (MediaFormat::Compressed, MediaClass::Lossy, MediaQuality::Standard)
-        }
+        Musepack | Mp3Surround => (
+            MediaFormat::Compressed,
+            MediaClass::Lossy,
+            MediaQuality::Standard,
+        ),
     };
 
     MediaClassification::new(MediaGroup::Audio, format, class, quality)

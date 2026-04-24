@@ -12,12 +12,12 @@
 // Extracted from MeedyaConverter MetadataProviders.swift (MeedyaDBClient)
 // and MeedyaManager mm-export/ (schema, traits, DB backends).
 
-pub mod models;
 pub mod client;
-pub mod export;
 mod error;
+pub mod export;
+pub mod models;
 
-pub use models::{Track, Album, Artist, MediaRecord};
 pub use client::MeedyaDbClient;
-pub use export::DbExporter;
 pub use error::DbError;
+pub use export::DbExporter;
+pub use models::{Album, Artist, MediaRecord, Track};

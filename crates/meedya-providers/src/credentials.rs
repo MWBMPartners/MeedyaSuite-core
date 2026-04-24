@@ -71,7 +71,11 @@ impl CredentialStore {
     }
 
     /// Resolve a credential using the 4-tier strategy.
-    pub fn resolve(&self, provider: &str, key: &str) -> Result<ResolvedCredential, CredentialError> {
+    pub fn resolve(
+        &self,
+        provider: &str,
+        key: &str,
+    ) -> Result<ResolvedCredential, CredentialError> {
         let provider_upper = provider.to_uppercase().replace('-', "_");
         let key_upper = key.to_uppercase().replace('-', "_");
 
@@ -131,7 +135,12 @@ impl CredentialStore {
 
     /// Store a credential in the OS keyring (tier 3).
     #[cfg(feature = "keyring-credentials")]
-    pub fn store_keyring(&self, provider: &str, key: &str, value: &str) -> Result<(), CredentialError> {
+    pub fn store_keyring(
+        &self,
+        provider: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), CredentialError> {
         let keyring_key = format!("{provider}/{key}");
         let entry = keyring::Entry::new(&self.service_name, &keyring_key)
             .map_err(|e| CredentialError::KeyringError(e.to_string()))?;
@@ -171,24 +180,22 @@ impl CredentialStore {
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
 
         if let serde_json::Value::Object(map) = provider_map {
-            map.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+            map.insert(
+                key.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
         }
 
         // Atomic write: write to unique temp file then rename
         let parent = cred_path
             .parent()
             .ok_or_else(|| CredentialError::IoError("invalid credentials path".into()))?;
-        std::fs::create_dir_all(parent)
-            .map_err(|e| CredentialError::IoError(e.to_string()))?;
+        std::fs::create_dir_all(parent).map_err(|e| CredentialError::IoError(e.to_string()))?;
 
-        let tmp_path = parent.join(format!(
-            ".credentials.{}.tmp",
-            std::process::id()
-        ));
+        let tmp_path = parent.join(format!(".credentials.{}.tmp", std::process::id()));
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| CredentialError::IoError(e.to_string()))?;
-        std::fs::write(&tmp_path, &json)
-            .map_err(|e| CredentialError::IoError(e.to_string()))?;
+        std::fs::write(&tmp_path, &json).map_err(|e| CredentialError::IoError(e.to_string()))?;
 
         // Set restrictive permissions (owner read/write only)
         #[cfg(unix)]
@@ -269,7 +276,9 @@ mod tests {
         let cred_path = dir.path().join("credentials.json");
 
         let store = CredentialStore::new("test", Some(cred_path.clone()));
-        store.store_local_file("spotify", "client_id", "abc123").unwrap();
+        store
+            .store_local_file("spotify", "client_id", "abc123")
+            .unwrap();
 
         let resolved = store.resolve("spotify", "client_id").unwrap();
         assert_eq!(resolved.value, "abc123");

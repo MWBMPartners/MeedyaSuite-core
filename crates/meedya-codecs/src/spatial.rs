@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString};
 
 /// Spatial / immersive audio format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Display, EnumIter, EnumString)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumIter, EnumString,
+)]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum SpatialAudioFormat {
@@ -71,11 +72,7 @@ impl SpatialAudioFormat {
     pub fn requires_license(&self) -> bool {
         matches!(
             self,
-            Self::DolbyAtmos
-                | Self::DtsX
-                | Self::DtsXImax
-                | Self::Sony360Ra
-                | Self::Auro3d
+            Self::DolbyAtmos | Self::DtsX | Self::DtsXImax | Self::Sony360Ra | Self::Auro3d
         )
     }
 }

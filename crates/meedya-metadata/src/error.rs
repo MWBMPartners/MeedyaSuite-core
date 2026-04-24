@@ -26,7 +26,6 @@ pub enum MetadataError {
     ValueConversionFailed { tag_id: String, reason: String },
 
     // --- File I/O errors ---
-
     #[error("file not found: {0}")]
     FileNotFound(String),
 

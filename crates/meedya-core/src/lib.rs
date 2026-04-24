@@ -49,7 +49,9 @@ pub mod prelude {
     pub use meedya_metadata::{CommonTag, MetadataError, TagRegistry};
 
     #[cfg(feature = "codecs")]
-    pub use meedya_codecs::{AudioCodec, ChannelConfig, CodecRegistry, ContainerFormat, SpatialType};
+    pub use meedya_codecs::{
+        AudioCodec, ChannelConfig, CodecRegistry, ContainerFormat, SpatialType,
+    };
 
     #[cfg(feature = "providers")]
     pub use meedya_providers::{

@@ -87,8 +87,7 @@ fn default_true() -> bool {
 impl CodecRegistry {
     /// Parse a codec registry from TOML content.
     pub fn from_toml(toml_content: &str) -> Result<Self, CodecError> {
-        toml::from_str(toml_content)
-            .map_err(|e| CodecError::RegistryParseError(e.to_string()))
+        toml::from_str(toml_content).map_err(|e| CodecError::RegistryParseError(e.to_string()))
     }
 
     /// Look up the service-specific flag for an audio codec.
@@ -122,10 +121,7 @@ impl CodecRegistry {
 
     /// Get the filename suffix for an audio codec.
     pub fn audio_suffix(&self, codec_id: &str) -> Option<&str> {
-        self.audio
-            .get(codec_id)?
-            .filename_suffix
-            .as_deref()
+        self.audio.get(codec_id)?.filename_suffix.as_deref()
     }
 
     /// Check if an audio codec is available on a given service.
@@ -213,7 +209,10 @@ spotify = "flac"
     #[test]
     fn test_meta_resolution() {
         let registry = CodecRegistry::from_toml(SAMPLE_TOML).unwrap();
-        assert_eq!(registry.resolve_meta("lossless", "apple_music"), Some("alac"));
+        assert_eq!(
+            registry.resolve_meta("lossless", "apple_music"),
+            Some("alac")
+        );
         assert_eq!(registry.resolve_meta("lossless", "spotify"), Some("flac"));
     }
 

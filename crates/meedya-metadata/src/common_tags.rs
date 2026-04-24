@@ -8,10 +8,8 @@
 use serde::{Deserialize, Serialize};
 
 /// Standard namespace aliases used across MeedyaSuite.
-pub const STANDARD_NAMESPACES: &[(&str, &str)] = &[
-    ("itunes", "com.apple.iTunes"),
-    ("meedya", "MeedyaMeta"),
-];
+pub const STANDARD_NAMESPACES: &[(&str, &str)] =
+    &[("itunes", "com.apple.iTunes"), ("meedya", "MeedyaMeta")];
 
 /// Well-known metadata tag identifiers.
 ///

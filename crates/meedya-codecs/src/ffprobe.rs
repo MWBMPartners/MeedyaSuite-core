@@ -42,18 +42,18 @@ struct FfprobeStream {
 /// Run FFprobe on a file and extract audio stream information.
 ///
 /// Executes: `ffprobe -v quiet -print_format json -show_streams -select_streams a:0 <file>`
-pub async fn detect_audio_info(
-    ffprobe_path: &Path,
-    file_path: &Path,
-) -> Option<FfprobeAudioInfo> {
+pub async fn detect_audio_info(ffprobe_path: &Path, file_path: &Path) -> Option<FfprobeAudioInfo> {
     let output = tokio::time::timeout(
         Duration::from_secs(30),
         Command::new(ffprobe_path)
             .args([
-                "-v", "quiet",
-                "-print_format", "json",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
                 "-show_streams",
-                "-select_streams", "a:0",
+                "-select_streams",
+                "a:0",
             ])
             .arg(file_path)
             .output(),

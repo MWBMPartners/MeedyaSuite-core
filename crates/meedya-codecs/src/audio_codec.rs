@@ -13,8 +13,9 @@ use strum::{Display, EnumIter, EnumString};
 /// This enum is the single source of truth for audio codec identity across
 /// all MeedyaSuite applications. Variants cover codecs from all three
 /// projects: MeedyaDL, MeedyaConverter, and MeedyaManager.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Display, EnumIter, EnumString)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumIter, EnumString,
+)]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum AudioCodec {
@@ -283,11 +284,7 @@ impl AudioCodec {
     pub fn supports_vbr(&self) -> bool {
         matches!(
             self,
-            Self::AacLc
-                | Self::Mp3
-                | Self::Opus
-                | Self::Vorbis
-                | Self::Musepack
+            Self::AacLc | Self::Mp3 | Self::Opus | Self::Vorbis | Self::Musepack
         )
     }
 
