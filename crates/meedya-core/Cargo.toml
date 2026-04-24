@@ -1,0 +1,27 @@
+[package]
+name = "meedya-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MeedyaSuite-core — unified re-export crate providing the complete MeedyaSuite shared library"
+
+[features]
+default = ["metadata", "codecs", "fingerprint", "lyrics", "providers"]
+metadata = ["dep:meedya-metadata"]
+codecs = ["dep:meedya-codecs"]
+fingerprint = ["dep:meedya-fingerprint"]
+lyrics = ["dep:meedya-lyrics", "metadata"]
+providers = ["dep:meedya-providers"]
+db = ["dep:meedya-db"]
+keyring = ["providers", "meedya-providers/keyring-credentials"]
+full = ["metadata", "codecs", "fingerprint", "lyrics", "providers", "db", "keyring"]
+
+[dependencies]
+meedya-metadata = { workspace = true, optional = true }
+meedya-codecs = { workspace = true, optional = true }
+meedya-fingerprint = { workspace = true, optional = true }
+meedya-lyrics = { workspace = true, optional = true }
+meedya-providers = { workspace = true, optional = true }
+meedya-db = { workspace = true, optional = true }
