@@ -6,6 +6,8 @@ members = [
     "crates/meedya-fingerprint",
     "crates/meedya-db",
     "crates/meedya-lyrics",
+    "crates/meedya-library-import",
+    "crates/meedya-tags-extended",
 ]
 
 [workspace.package]

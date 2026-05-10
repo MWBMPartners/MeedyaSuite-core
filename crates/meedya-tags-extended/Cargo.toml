@@ -1,0 +1,15 @@
+[package]
+name = "meedya-tags-extended"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MeedyaSuite Core — multi-format tag I/O with DJ metadata support (Serato, Rekordbox, Traktor, VDJ, Mixed In Key)"
+
+[dependencies]
+lofty = "0.21"
+log = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
