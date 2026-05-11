@@ -1,0 +1,16 @@
+[package]
+name = "meedya-library-import"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MeedyaSuite Core — import playback bounds and metadata from external library databases (iTunes XML, CUE, MediaMonkey)"
+
+[dependencies]
+plist = "1"
+percent-encoding = "2"
+log = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
