@@ -1,7 +1,7 @@
 # MeedyaSuite-core — Project Context
 
 > Snapshot maintained for Claude Code sessions. Reflects the actual state of `main`, not aspirational state.
-> Last updated: 2026-05-10.
+> Last updated: 2026-05-10 (post-rebase onto origin/main, picked up meedya-lyrics).
 
 ## What this repo is
 
@@ -21,11 +21,12 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | [meedya-metadata](crates/meedya-metadata/) | Config-driven M4A tagging (Apple Music JSON → freeform atoms), codec ID tags, playback bounds | **Implemented** | 31 |
 | [meedya-library-import](crates/meedya-library-import/) | Ingest playback bounds + metadata from external library DBs (iTunes XML, CUE) | **Implemented** | 30 |
 | [meedya-tags-extended](crates/meedya-tags-extended/) | Multi-format tag I/O with DJ metadata support (foundation; proprietary readers pending) | **Implemented** | 29 |
+| [meedya-lyrics](crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O. Tag-embed deferred. | **Implemented** | 5 |
 | [meedya-codecs](crates/meedya-codecs/) | Audio/video codec enums, container formats, classification | **Placeholder** | 0 |
 | [meedya-db](crates/meedya-db/) | MeedyaDB API client, media record models, export trait | **Placeholder** | 0 |
 | [meedya-fingerprint](crates/meedya-fingerprint/) | AcoustID + ReplayGain/EBU R128 | **Placeholder** | 0 |
 
-**Total: 90 tests on `main`.** Workspace builds clean.
+**Total: 95 tests on `main`.** Workspace builds clean.
 
 > **There is significantly more implementation on branch `claude/interesting-mirzakhani`** — codecs/db/fingerprint were previously implemented there (55 tests total) along with `meedya-providers`. That work has not been merged to `main`. Treat it as a reference, not the source of truth for current state. See [HISTORY.md](HISTORY.md).
 
@@ -55,9 +56,18 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 
 **Pending** (one session each, requires DJ-tagged sample files): Serato (Markers2/Autotags/BeatGrid), Rekordbox (ID3 PRIV + XML sidecar), Traktor (cue frames + collection.nml), Virtual DJ (.vdj sidecar + embedded markers).
 
+### meedya-lyrics
+
+- [src/provider/](crates/meedya-lyrics/src/provider/) — `LyricsProvider` trait + `LrclibProvider` (LRCLIB API client). Pluggable design so additional sources can drop in.
+- [src/lrc.rs](crates/meedya-lyrics/src/lrc.rs) — LRC parser/writer (`[mm:ss.xx]` synced timestamps).
+- [src/sidecar.rs](crates/meedya-lyrics/src/sidecar.rs) — `.lrc` sidecar writes alongside source media.
+- [src/lyrics.rs](crates/meedya-lyrics/src/lyrics.rs) — `Lyrics` + `SyncedLine` core types.
+
+**Pending follow-up**: tag-embed writes (`USLT` for ID3v2, `©lyr` for MP4, Vorbis `LYRICS`). Doc comment noted this was blocked on `meedya-metadata` landing — `meedya-metadata` is now implemented, so this is unblocked.
+
 ## Key design decisions
 
-1. **Two tag-I/O foundations coexist.** `meedya-metadata` uses `mp4ameta` (M4A/MP4 only) for the Apple Music tagging flow. `meedya-tags-extended` uses `lofty` (multi-format: MP3/M4A/FLAC/WAV/AIFF/OGG/MKV) for the DJ-metadata + general-purpose flow. Not unified — they serve different code paths.
+1. **Two tag-I/O foundations coexist.** `meedya-metadata` uses `mp4ameta` (M4A/MP4 only) for the Apple Music tagging flow. `meedya-tags-extended` uses `lofty` (multi-format: MP3/M4A/FLAC/WAV/AIFF/OGG/MKV) for the DJ-metadata + general-purpose flow. `meedya-lyrics` is format-agnostic for sidecar writes; tag-embed writes (when added) would route through one of these. Not unified — they serve different code paths.
 
 2. **Pass-through preservation.** `meedya-tags-extended::TagFile` round-trips unknown frames automatically (lofty design). MeedyaConverter re-encodes don't strip Serato/Rekordbox/Traktor blobs even when we don't model them.
 
@@ -71,7 +81,7 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 
 ```bash
 cargo build --workspace       # all crates
-cargo test  --workspace       # 90 tests
+cargo test  --workspace       # 95 tests
 cargo test -p meedya-metadata # single crate
 cargo build -p meedya-tags-extended
 ```

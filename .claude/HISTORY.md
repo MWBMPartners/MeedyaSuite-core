@@ -41,14 +41,26 @@ Three substantial additions landed in a single working session.
 - **Fixture-based testing for proprietary parsers.** Won't write Serato/etc parsers from memory — need real tagged sample files to validate against.
 
 ### Commits on `main` after this session
-(Pending — this session's work is not yet committed.)
+- `8a68b03` feat(meedya-metadata): add registry, writer, codec_tags, playback_bounds
+- `2aace48` feat: add meedya-library-import and meedya-tags-extended crates
+- `18e6d3d` docs(.claude): add CONTEXT, HISTORY, PROMPTS, MEMORY
+- `983c37e` chore: regenerate Cargo.lock for new workspace members
+
+Plus a follow-up commit refreshing CONTEXT and HISTORY after the rebase below.
+
+### Rebase + meedya-lyrics integration
+Mid-session, origin/main was 2 commits ahead (PR #18, meedya-lyrics LRCLIB integration). Rebased local main onto origin/main; one conflict on root `Cargo.toml` workspace members (resolved by listing all three new crates: meedya-lyrics, meedya-library-import, meedya-tags-extended). Discovered origin tracks `Cargo.lock` (project convention); regenerated and committed for the new dependency graph.
 
 ### Tests
 - meedya-metadata: 31 (was 24 pre-session)
 - meedya-library-import: 30 (new)
 - meedya-tags-extended: 29 (new)
+- meedya-lyrics: 5 (came in via rebase, not session work)
 - Stubs: 0
-- **Workspace total: 90**
+- **Workspace total: 95**
+
+### Low-hanging follow-up flagged
+`meedya-lyrics` doc-comments note tag-embed writes (USLT / Vorbis `LYRICS` / MP4 `©lyr`) are deferred "until meedya-metadata lands." `meedya-metadata` is now implemented, so the lyrics tag-embed module is unblocked.
 
 ---
 
