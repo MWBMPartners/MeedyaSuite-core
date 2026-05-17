@@ -14,5 +14,6 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 lofty = { workspace = true }
+mp4ameta = "0.13"
 meedya-codecs = { workspace = true }
 meedya-fingerprint = { workspace = true }

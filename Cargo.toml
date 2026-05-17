@@ -5,9 +5,11 @@ members = [
     "crates/meedya-core",
     "crates/meedya-db",
     "crates/meedya-fingerprint",
+    "crates/meedya-library-import",
     "crates/meedya-lyrics",
     "crates/meedya-metadata",
     "crates/meedya-providers",
+    "crates/meedya-tags-extended",
 ]
 
 [workspace.package]
