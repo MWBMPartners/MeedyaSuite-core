@@ -1,7 +1,45 @@
 # MeedyaSuite-core Integration Assessment
 
-**Date**: 2026-04-08
-**Status**: Assessment complete, implementation not started
+**Original date**: 2026-04-08
+**Last updated**: 2026-05-18
+**Status**: **Implementation substantially complete.** 9 of 9 workspace crates implemented (211 tests passing). Downstream-app adoption pending.
+
+> This document captures the original cross-project duplication analysis from 2026-04-08 when all core crates were placeholder stubs. The findings below are preserved as historical context; for the current state of the implementation, see [`README.md`](../README.md) and [`docs/API.md`](API.md).
+
+## Current implementation status (2026-05-18)
+
+| Crate | Status | Tests | Resolves |
+|---|---|---|---|
+| `meedya-codecs` | ✅ Implemented | 47 | "Codec/Format Definitions" dup (HIGH) |
+| `meedya-metadata` | ✅ Implemented | 59 | "Metadata Tag Registry" dup (HIGH) |
+| `meedya-tags-extended` | ✅ Implemented (foundation) | 29 | DJ-metadata reading/writing (NEW scope, not in original assessment) |
+| `meedya-library-import` | ✅ Implemented | 30 | iTunes Library / CUE sheet ingestion (NEW scope) |
+| `meedya-lyrics` | ✅ Implemented | 10 | Shared lyrics fetch/parse/write path |
+| `meedya-providers` | ✅ Implemented | 27 | "Metadata Provider Framework" (MEDIUM) |
+| `meedya-fingerprint` | ✅ Implemented | 6 | "Audio Fingerprinting + ReplayGain" (MEDIUM) |
+| `meedya-db` | ✅ Implemented | 3 | "MeedyaDB API Client + Records" (MEDIUM) |
+| `meedya-core` | ✅ Implemented (facade) | — | Unified consumption with feature flags |
+
+**Total: 211 tests passing**. See [`README.md`](../README.md) for current capabilities and [`docs/API.md`](API.md) for the public API surface.
+
+### Outstanding work (proprietary DJ readers)
+
+`meedya-tags-extended` ships foundation only. Proprietary DJ-software metadata readers (Serato Markers2, Rekordbox PRIV+XML, Traktor cue, Virtual DJ sidecar+embedded) each require their own focused session against real DJ-tagged fixture files. See [`.claude/PROMPTS.md`](../.claude/PROMPTS.md#implementing-a-proprietary-dj-reader) for the procedure.
+
+### Downstream adoption status
+
+| Project | Language | Adoption status |
+|---|---|---|
+| MeedyaDL | Rust/Tauri | Not yet — see [`docs/cross-repo-issues.md`](cross-repo-issues.md) |
+| MeedyaConverter | Swift 6 | Blocked on Swift bindings ([`bindings/swift/`](../bindings/swift/) — not yet scaffolded) |
+| MeedyaManager | Rust + Swift/C#/GTK4 | Not yet |
+| MeedyaDB | Empty scaffold | Not started |
+
+---
+
+## Original 2026-04-08 Assessment
+
+The remainder of this document is the original analysis, retained for historical reference and to inform any future scope decisions.
 
 ## Executive Summary
 

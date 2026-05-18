@@ -1,108 +1,137 @@
 # MeedyaSuite-core — Claude Code Project Instructions
 
+> Conventions, principles, and standing tasks. Read first at session start.
+> For the current architectural snapshot (which evolves more often), see [CONTEXT.md](CONTEXT.md).
+
 ## Project Overview
 
-MeedyaSuite-core is the **shared core library** for all MeedyaSuite applications.
-Written in Rust, it provides canonical type definitions and shared functionality
-that eliminates code duplication across the Meedya product family.
+MeedyaSuite-core is the **shared core library** for all MeedyaSuite applications. Written in Rust, it provides canonical type definitions and shared functionality that eliminates code duplication across the MeedyaSuite product family.
 
-**Repository**: https://github.com/MWBMPartners/MeedyaSuite-core
-**License**: MIT
-**Language**: Rust 2021 edition
+- **Repository**: https://github.com/MWBMPartners/MeedyaSuite-core
+- **License**: MIT
+- **Language**: Rust, edition 2021
+- **Workspace**: 9 crates
 
-## Architecture
+## Architecture (high-level)
 
-Rust workspace with 5 crates:
+Rust workspace, 9 crates, 211 tests passing. Two co-existing tag-I/O foundations by design: `mp4ameta`-backed (sandbox/App Store safe) and `lofty`-backed (multi-format). See the full per-crate table in [CONTEXT.md](CONTEXT.md) and the public API surface in [`docs/API.md`](../docs/API.md).
 
-| Crate | Purpose | Status |
-|-------|---------|--------|
-| `meedya-codecs` | Audio/video/subtitle codecs, container formats, HDR, spatial audio, classification | Implemented (23 tests) |
-| `meedya-metadata` | Tag registry, JSON path extraction, common tag definitions, namespace mapping | Implemented (23 tests) |
-| `meedya-fingerprint` | AcoustID fingerprinting, ReplayGain/EBU R128 loudness analysis | Implemented (6 tests) |
-| `meedya-db` | MeedyaDB API client, media record models (Track/Album/Artist), DB export trait | Implemented (3 tests) |
-| `meedya-providers` | Shared metadata provider framework (traits, registry, rate limiting) | Scaffolded |
+### Consumption paths
 
-### Consumption Paths
+- **Rust apps** (MeedyaDL, MeedyaManager) — direct Cargo git dependency
+- **Swift apps** (MeedyaConverter, MeedyaDB) — via `bindings/swift` (C FFI / XCFramework; planned)
+- **Web** — via `bindings/wasm` (planned)
 
-- **Rust/Tauri apps** (MeedyaDL, MeedyaManager) — direct Cargo dependency via git
-- **Swift/SwiftUI apps** (MeedyaConverter, MeedyaDB) — via `bindings/swift` C FFI / XCFramework
-- **Web targets** — via `bindings/wasm` (future)
+## Code conventions
 
-### Consumer Projects
+- **Copyright header** on every source file:
+  ```
+  // Copyright (c) 2024-2026 MWBM Partners Ltd
+  // Licensed under the MIT License. See LICENSE file in the project root.
+  ```
+- **Module documentation**: comment block explaining purpose, source (which downstream app it was extracted from, if any), and consumers.
+- **Error handling**: `thiserror` derive on every error type; or `Result<_, String>` for module-local errors that don't escape.
+- **Serialization**: `serde` Serialize/Deserialize on public types where appropriate.
+- **Enums**: `strum` derive for Display/EnumIter/EnumString where it helps.
+- **Naming**: `snake_case` for modules/functions, `PascalCase` for types, `SCREAMING_SNAKE_CASE` for constants.
+- **Workspace dependencies**: declare common deps in root `Cargo.toml` `[workspace.dependencies]`; individual crates inherit via `workspace = true`.
 
-| Project | Language | Integration Status |
-|---------|----------|--------------------|
-| MeedyaDL | Rust/Tauri + React/TS | Pending — integration branch planned |
-| MeedyaConverter | Swift 6, macOS 15+ | Pending — needs Swift bindings |
-| MeedyaManager | Rust + Swift/C#/GTK4 | Pending — integration branch planned |
-| MeedyaDB | Empty scaffold | Not started |
+## Key design principles
 
-## Code Conventions
+1. **Results only, not side effects**: Crates return data; consumers handle I/O (file writes, UI updates, DB persistence).
+2. **Config-driven where possible**: Tag definitions, codec registries etc. loaded from TOML — zero Rust changes to add entries.
+3. **No app-specific logic**: No Tauri, no SwiftUI, no CLI framework dependencies in core crates.
+4. **FFI-friendly types**: Public types in crates targeted at Swift consumption should be C-FFI compatible.
+5. **Feature-gated heavy deps**: Large dependencies (`symphonia`, `rusty-chromaprint`, OS keyring) behind optional features.
+6. **Two tag-I/O foundations coexist intentionally** — `mp4ameta` for the sandbox-safe Apple Music flow, `lofty` for multi-format DJ-metadata and pass-through. Do not try to unify them.
+7. **Fixture-based testing for proprietary format parsers** — don't reverse-engineer Serato/Rekordbox/Traktor formats from memory. Require real tagged sample files.
 
-- **Copyright header**: `// Copyright (c) 2026 MWBMPartners` on every source file
-- **License line**: `// Licensed under the MIT License.`
-- **Module documentation**: Comment block explaining purpose, source (which project it was extracted from), and consumers
-- **Error handling**: `thiserror` derive for all error types
-- **Serialization**: `serde` Serialize/Deserialize on all public types
-- **Enums**: Use `strum` for Display/EnumIter/EnumString where appropriate
-- **Testing**: Unit tests in each module, run with `cargo test --workspace`
-- **Naming**: `snake_case` for modules/functions, `PascalCase` for types, `SCREAMING_SNAKE_CASE` for constants
-- **Dependencies**: Managed via `[workspace.dependencies]` in root Cargo.toml
+## Standing tasks
 
-## Key Design Principles
+### Keep `docs/API.md` in sync with public API changes
 
-1. **Results only, not side effects**: Crates return data/results; consumers handle I/O (file writing, UI updates)
-2. **Config-driven where possible**: Tag definitions, codec registries, etc. loaded from TOML — zero code changes to add entries
-3. **No app-specific logic**: No Tauri, no SwiftUI, no CLI framework dependencies in core crates
-4. **FFI-friendly types**: All public types should be C FFI compatible for Swift bindings
-5. **Feature-gated heavy deps**: Large dependencies (symphonia, rusty-chromaprint) behind optional features
+**Trigger**: any commit that changes the public API surface (new/renamed/removed `pub use`, `pub mod`, `pub fn`, `pub struct`, `pub enum`, `pub trait`; new/renamed feature flag on `meedya-core`; ≥5 net test-count change).
 
-## Working With This Codebase
+**Action**: in the *same commit* as the code change, update [`docs/API.md`](../docs/API.md):
 
-### Building
+1. Crate section affected — update the relevant API listings.
+2. Workspace overview table at the top — update per-crate test count if changed.
+3. "Last refreshed" date at the top of `docs/API.md`.
+4. If a crate was added or removed, update the table-of-contents anchors.
+5. Cross-reference [`README.md`](../README.md) — bump the total test count there if the workspace total changed.
+
+Do not defer this to a follow-up PR. The spec is the contract partner apps reference during their development; stale spec is worse than missing spec because it produces silent integration bugs in downstream apps.
+
+The procedure is captured as a reusable prompt at [`PROMPTS.md` → Refresh internal API spec](PROMPTS.md#refresh-internal-api-spec).
+
+### Keep `CONTEXT.md` reflective of `main`
+
+Update [CONTEXT.md](CONTEXT.md) whenever the workspace structure changes meaningfully — new crate, retired crate, status flip (placeholder → implemented), substantial new module within an implemented crate. CONTEXT.md is the "what does this repo look like right now" snapshot; out-of-date here makes future Claude sessions waste turns rediscovering.
+
+### Append to `HISTORY.md` per session
+
+Append a dated entry to [HISTORY.md](HISTORY.md) at the end of any substantial session — what landed, design decisions, deferred follow-ups. **Append, do not rewrite.** The history value is the chronological narrative across sessions; rewriting older entries destroys context.
+
+## Working with this codebase
+
+### Build / test
+
 ```bash
 cargo build --workspace
+cargo test  --workspace                       # 211 tests
+cargo test  -p meedya-tags-extended           # single crate
+cargo doc   --workspace --no-deps --open      # exhaustive auto-generated docs
 ```
 
-### Testing
-```bash
-cargo test --workspace    # All 55 tests
-cargo test -p meedya-codecs  # Single crate
-```
+### Adding a metadata tag
 
-### Adding a New Codec/Format
-Edit the relevant enum in `crates/meedya-codecs/src/` and implement all trait methods. Run tests to verify.
+Edit `crates/meedya-metadata/tags.toml` (see the procedure in [PROMPTS.md → Adding a new metadata tag](PROMPTS.md#adding-a-new-metadata-tag)). Zero Rust changes. Bump test count in `registry.rs`.
 
-### Adding a New Metadata Tag
-Edit the consuming app's `tags.toml` file — zero Rust code changes needed. The tag registry loads definitions from TOML at compile time.
+### Adding a workspace crate
 
-## Files and Directories
+See [PROMPTS.md → Adding a new workspace crate](PROMPTS.md#adding-a-new-workspace-crate).
 
-```
-Cargo.toml                     — Workspace root with shared dependencies
+### Implementing a proprietary DJ reader
+
+**Do not start without real fixture files.** See [PROMPTS.md → Implementing a proprietary DJ reader](PROMPTS.md#implementing-a-proprietary-dj-reader) for the full procedure and anti-corruption guardrails.
+
+## Files and directories
+
+```text
+Cargo.toml                          # Workspace root + shared dependencies
 crates/
-  meedya-codecs/               — Codec enums, container formats, classification
-  meedya-metadata/             — Tag registry, JSON path extraction, common tags
-  meedya-fingerprint/          — AcoustID, ReplayGain analysis
-  meedya-db/                   — MeedyaDB API client, media models, export trait
-  meedya-providers/            — Metadata provider framework (traits)
+  meedya-codecs/                    # Codec/container/HDR/spatial enums + detection
+  meedya-core/                      # Facade with feature flags
+  meedya-db/                        # MeedyaDB API client + media models
+  meedya-fingerprint/               # AcoustID + ReplayGain
+  meedya-library-import/            # iTunes XML, CUE sheet importers
+  meedya-lyrics/                    # LRCLIB client, LRC I/O, sidecar + embed
+  meedya-metadata/                  # Tag registry + lofty/mp4ameta surfaces
+  meedya-providers/                 # Provider framework (traits, rate limit, cover art)
+  meedya-tags-extended/             # DJ metadata foundation (lofty)
 bindings/
-  swift/                       — Swift Package (C FFI) — not yet scaffolded
-  wasm/                        — WebAssembly target — not yet scaffolded
+  swift/                            # Swift Package (planned)
+  wasm/                             # WebAssembly (planned)
 docs/
-  integration-assessment.md    — Cross-project duplication analysis
+  API.md                            # Internal API spec for partner apps (KEEP IN SYNC)
+  integration-assessment.md         # Original cross-project duplication analysis
+  cross-repo-issues.md              # Pre-drafted issues for downstream apps
+.claude/
+  CLAUDE.md (this file)             # Conventions + standing tasks
+  CONTEXT.md                        # Current architecture snapshot
+  HISTORY.md                        # Append-only session log
+  MEMORY.md                         # Durable project facts
+  PROMPTS.md                        # Reusable task prompts
 ```
 
-## Git Workflow
+## Git workflow
 
-- `main` — stable, reviewed code
+- `main` — stable, reviewed code. Branch protection: required status checks (Backend + Frontend CI), no approval required as of 2026-05-18.
 - Feature branches: `feature/<description>` or `claude/<task-id>`
-- Commit messages: conventional commits (`feat:`, `fix:`, `docs:`, `chore:`)
-- Always run `cargo test --workspace` before pushing
+- Commit messages: conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`)
+- Run `cargo test --workspace` before pushing
+- For substantial public API changes, update `docs/API.md` in the same commit (see standing task above)
 
-## Important Context
+## Important context
 
-This library was created after a thorough analysis of code duplication across
-MeedyaDL (349 issues), MeedyaConverter (370+ issues), and MeedyaManager (131 issues).
-The integration assessment at `docs/integration-assessment.md` documents the full
-findings and extraction plan.
+This workspace was created after a thorough analysis of code duplication across MeedyaDL (349 issues), MeedyaConverter (370+ issues), and MeedyaManager (131 issues). The original assessment at [`docs/integration-assessment.md`](../docs/integration-assessment.md) documents the full findings; the implementation status is captured at the top of that file. Pre-drafted GitHub issues for downstream-app adoption live in [`docs/cross-repo-issues.md`](../docs/cross-repo-issues.md).

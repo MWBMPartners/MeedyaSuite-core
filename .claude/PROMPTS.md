@@ -109,6 +109,48 @@ CONTEXT.md should reflect actual state of `main`, not aspirational state. HISTOR
 
 ---
 
+## Refresh internal API spec
+
+```
+Refresh docs/API.md to match the current public API surface. Triggered by:
+- New/renamed/removed `pub use`, `pub mod`, `pub fn`, `pub struct`, `pub enum`, `pub trait` in any crate's lib.rs or public module
+- New/renamed/removed feature flag on meedya-core
+- New workspace member added or removed
+- Workspace test count net change ≥5
+
+Procedure:
+1. Run `cargo test --workspace` and capture per-crate test counts:
+   for c in meedya-codecs meedya-core meedya-db meedya-fingerprint meedya-library-import meedya-lyrics meedya-metadata meedya-providers meedya-tags-extended; do
+     echo -n "$c: "; cargo test -p $c --quiet 2>&1 | grep -E "test result: ok\." | head -1 | grep -oE "[0-9]+ passed" | head -1
+   done
+
+2. For each changed crate, read crates/<name>/src/lib.rs to list:
+   - `pub use` re-exports (these are the headline types)
+   - `pub mod` declarations (these define the API surface area)
+
+3. For changed modules, walk public items (`pub fn`, `pub struct`, `pub enum`, `pub trait`, `pub const`).
+
+4. Update docs/API.md:
+   - The workspace overview table at the top (per-crate test count)
+   - The crate's API listings section
+   - The "Last refreshed" date at the top
+   - The TOC anchors if a crate was added/removed
+
+5. Cross-reference README.md — bump total test count and crate table if the workspace total changed materially.
+
+6. Commit the API.md update IN THE SAME COMMIT as the code change. Do not defer to a follow-up PR — partner apps consume API.md as the integration reference and stale spec produces silent integration bugs.
+
+7. If a crate added a feature flag exposed through meedya-core, also update the feature-flag table in API.md and README.md.
+
+Anti-patterns to avoid:
+- Don't list internal-only types (anything not exposed via pub use or pub mod).
+- Don't paste raw rustdoc output — write the spec for partner-app developers, not as comprehensive auto-generated reference (use `cargo doc` for that).
+- Don't skip "Last refreshed" date update.
+- Don't bundle stale-API.md fixes into commits where the API didn't actually change (creates churn).
+```
+
+---
+
 ## Running the full local validation
 
 ```
@@ -118,4 +160,4 @@ cargo clippy --workspace -- -D warnings   # if clippy is set up
 cargo fmt --all -- --check                # formatting check
 ```
 
-Workspace currently has 90 tests on `main`. All must pass before push.
+Workspace currently has 211 tests on `main`. All must pass before push.

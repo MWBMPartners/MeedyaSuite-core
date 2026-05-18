@@ -1,7 +1,7 @@
 # MeedyaSuite-core — Project Context
 
 > Snapshot maintained for Claude Code sessions. Reflects the actual state of `main`, not aspirational state.
-> Last updated: 2026-05-10 (post-rebase onto origin/main, picked up meedya-lyrics).
+> Last updated: 2026-05-18 (post-PR #19 merge — consolidated 9-crate workspace).
 
 ## What this repo is
 
@@ -11,89 +11,116 @@
 - **MeedyaManager** (Rust + Swift/C#/GTK4) — local library management + tagging
 - **MeedyaDL** (Rust/Tauri + React/TS) — store downloads (Apple Music etc.)
 - **MeedyaPlayer** (planned) — MeedyaSuite-native media player
+- **MeedyaDB** (Swift, planned)
 
-Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bindings (Swift/web). No app-specific logic lives in this workspace.
+Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bindings (Swift/web — bindings not yet scaffolded). No app-specific logic lives in this workspace.
 
 ## Workspace state on `main`
 
 | Crate | Purpose | Status | Tests |
 |---|---|---|---|
-| [meedya-metadata](crates/meedya-metadata/) | Config-driven M4A tagging (Apple Music JSON → freeform atoms), codec ID tags, playback bounds | **Implemented** | 31 |
-| [meedya-library-import](crates/meedya-library-import/) | Ingest playback bounds + metadata from external library DBs (iTunes XML, CUE) | **Implemented** | 30 |
-| [meedya-tags-extended](crates/meedya-tags-extended/) | Multi-format tag I/O with DJ metadata support (foundation; proprietary readers pending) | **Implemented** | 29 |
-| [meedya-lyrics](crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O. Tag-embed deferred. | **Implemented** | 5 |
-| [meedya-codecs](crates/meedya-codecs/) | Audio/video codec enums, container formats, classification | **Placeholder** | 0 |
-| [meedya-db](crates/meedya-db/) | MeedyaDB API client, media record models, export trait | **Placeholder** | 0 |
-| [meedya-fingerprint](crates/meedya-fingerprint/) | AcoustID + ReplayGain/EBU R128 | **Placeholder** | 0 |
+| [meedya-codecs](../crates/meedya-codecs/) | Audio/video/subtitle codecs, container formats, HDR, spatial audio, classification, FFprobe + MediaInfo integration | **Implemented** | 47 |
+| [meedya-metadata](../crates/meedya-metadata/) | Two coexisting tag I/O surfaces: `lofty`-backed (multi-format) and `mp4ameta`-backed (sandbox-safe). Tag registry, JSON path extraction, codec ID tags, playback bounds. | **Implemented** | 59 |
+| [meedya-tags-extended](../crates/meedya-tags-extended/) | Multi-format DJ metadata foundation (lofty). `ExtendedTags`/`MusicalKey`/`CuePoint`/`LoopPoint`/`BeatGrid`. Standard BPM+key+comment covers Mixed In Key. Proprietary readers pending. | **Implemented (foundation)** | 29 |
+| [meedya-library-import](../crates/meedya-library-import/) | External library ingestion: iTunes XML, CUE sheets. Emits normalized `LibraryEntry` records. | **Implemented** | 30 |
+| [meedya-lyrics](../crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O, tag-embed via `meedya-metadata::CommonTag::Lyrics`. | **Implemented** | 10 |
+| [meedya-providers](../crates/meedya-providers/) | Provider framework: traits, capabilities, rate limiting, credentials, cover art, fuzzy match scoring. | **Implemented** | 27 |
+| [meedya-fingerprint](../crates/meedya-fingerprint/) | AcoustID client + ReplayGain EBU R128 analyser. Pure-Rust Chromaprint (no fpcalc). | **Implemented** | 6 |
+| [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 3 |
+| [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 95 tests on `main`.** Workspace builds clean.
+**Total: 211 tests on `main`.** Workspace builds clean.
 
-> **There is significantly more implementation on branch `claude/interesting-mirzakhani`** — codecs/db/fingerprint were previously implemented there (55 tests total) along with `meedya-providers`. That work has not been merged to `main`. Treat it as a reference, not the source of truth for current state. See [HISTORY.md](HISTORY.md).
+> **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 
-## Module-level detail (implemented crates only)
+## Module-level detail
+
+### meedya-codecs
+
+Public surface: `AudioCodec` (42+ variants), `VideoCodec` (21+), `ContainerFormat` (36+), `ChannelConfig`, `HdrFormat`, `SpatialAudioFormat`, `SpatialType`, `SubtitleCodec`, `CodecRegistry`, `MediaClassification`. Modules: `audio_codec`, `video_codec`, `container`, `channel_config`, `classify`, `ffprobe`, `mediainfo`, `hdr`, `spatial`, `spatial_type`, `subtitle_codec`, `registry`, `tool_path`.
 
 ### meedya-metadata
 
-- [src/registry.rs](crates/meedya-metadata/src/registry.rs) — Loads [tags.toml](crates/meedya-metadata/tags.toml) at compile time. `TAG_REGISTRY` static; JSON path extraction (`extract_json_value`); value type conversion (`value_to_string`).
-- [src/writer.rs](crates/meedya-metadata/src/writer.rs) — `write_tags_from_registry` (Apple Music JSON → atoms), `write_local_tags` (SourceStore/EncodeSource/iTunesMediaType/isMedley), `extract_isrc_from_vendor`, file I/O helpers. Built on `mp4ameta`.
-- [src/codec_tags.rs](crates/meedya-metadata/src/codec_tags.rs) — `CodecKind` enum (Lossless/Atmos/DolbyDigital/Binaural/Downmix/StandardLossy) and tag writers per codec.
-- [src/playback_bounds.rs](crates/meedya-metadata/src/playback_bounds.rs) — User-supplied soft playback start/stop atoms (iTunes-Start-Time analog, MeedyaSuite-only). Writes `PlaybackStartMs` + `PlaybackStart` (HH:MM:SS.mmm) pair per endpoint.
+Two surfaces coexist by design:
 
-**Adding a new tag**: edit [tags.toml](crates/meedya-metadata/tags.toml), zero Rust code changes (per album.* / track.* convention with json_path + value_type + atoms[]).
+- **`lofty`-backed**: `common_tags` (CommonTag enum, STANDARD_NAMESPACES), `tag_io` (read_tags, write_tags, write_registry_tags, write_acoustid_tags, write_replaygain_tags, TagMap), `tag_registry` (TagDefinition, TagRegistry, TagScope, TagValueType, AtomTarget), `json_path`.
+- **`mp4ameta`-backed (sandbox-safe)**: `registry` (TAG_REGISTRY static loaded from [tags.toml](../crates/meedya-metadata/tags.toml)), `writer` (`write_tags_from_registry`, `write_local_tags`, `extract_isrc_from_vendor`), `codec_tags` (CodecKind enum + per-codec writers), `playback_bounds` (`set_playback_start/stop`, `get_playback_*_ms`, `clear_*`).
+
+**Adding a new tag**: edit `tags.toml`, zero Rust changes (PROMPTS.md has the template).
+
+### meedya-tags-extended (foundation only)
+
+- [src/io.rs](../crates/meedya-tags-extended/src/io.rs) — `TagFile`: lofty-based open/edit/save with foreign-frame pass-through.
+- [src/model.rs](../crates/meedya-tags-extended/src/model.rs) — `ExtendedTags`, `Source` enum, `CuePoint`, `LoopPoint`, `BeatGrid`, `Rgb`, `MusicalKey` (Camelot/Open Key/traditional round-tripping).
+- [src/standard.rs](../crates/meedya-tags-extended/src/standard.rs) — BPM/key/comment read+write. Covers Mixed In Key fully.
+
+**Pending** (one session each, fixture-driven): Serato (Markers2/Autotags/BeatGrid), Rekordbox (ID3 PRIV + XML sidecar), Traktor (cue frames + collection.nml), Virtual DJ (.vdj sidecar + embedded markers).
 
 ### meedya-library-import
 
-- [src/itunes_xml.rs](crates/meedya-library-import/src/itunes_xml.rs) — Parses `iTunes Music Library.xml`; emits `LibraryEntry` per track with `Start Time` and/or `Stop Time`. Cross-platform `file://` URL decoding (detects Windows drive letters by shape).
-- [src/cuesheet.rs](crates/meedya-library-import/src/cuesheet.rs) — Full CUE parser (`parse_str`, `parse_file`) returning rich `CueSheet { catalog, performer, title, rems, files }` with `CueTime { minutes, seconds, frames }` at CD-frame precision. `import()` adapter emits LibraryEntries only for per-track files with non-zero `INDEX 01`; single-file album rips emit warnings (chapter authoring path, not trim).
+- [src/itunes_xml.rs](../crates/meedya-library-import/src/itunes_xml.rs) — iTunes / Music.app XML parser; cross-platform `file://` URL decoding.
+- [src/cuesheet.rs](../crates/meedya-library-import/src/cuesheet.rs) — Full CUE parser at CD-frame precision; rich `CueSheet { catalog, performer, title, rems, files }` model. `import()` adapter emits LibraryEntries only for narrow trim cases.
 
-**LibraryEntry** is the normalized output: `{ locator: Path | PersistentId { kind, value }, start_ms, stop_ms }`. Matching to local files is the consuming app's job — this crate doesn't touch the filesystem beyond reading the source.
-
-### meedya-tags-extended (foundation only; proprietary readers pending)
-
-- [src/io.rs](crates/meedya-tags-extended/src/io.rs) — `TagFile`: lofty-based open/edit/save with foreign-frame pass-through. `primary_tag()`, `primary_tag_mut()`, typed-tag access.
-- [src/model.rs](crates/meedya-tags-extended/src/model.rs) — `ExtendedTags`, `Source` enum, `CuePoint`, `LoopPoint`, `BeatGrid`, `Rgb`, `MusicalKey` with Camelot/Open Key/traditional round-tripping.
-- [src/standard.rs](crates/meedya-tags-extended/src/standard.rs) — `read_bpm`/`write_bpm`/`clear_bpm`, `read_key`/`write_key`/`read_key_raw`/`write_key_raw`/`clear_key`, `read_comment`/`write_comment`/`clear_comment`. Covers Mixed In Key fully.
-
-**Pending** (one session each, requires DJ-tagged sample files): Serato (Markers2/Autotags/BeatGrid), Rekordbox (ID3 PRIV + XML sidecar), Traktor (cue frames + collection.nml), Virtual DJ (.vdj sidecar + embedded markers).
+`LibraryEntry { locator: Path|PersistentId, start_ms, stop_ms }` is the normalized output. Filesystem matching is the consuming app's job.
 
 ### meedya-lyrics
 
-- [src/provider/](crates/meedya-lyrics/src/provider/) — `LyricsProvider` trait + `LrclibProvider` (LRCLIB API client). Pluggable design so additional sources can drop in.
-- [src/lrc.rs](crates/meedya-lyrics/src/lrc.rs) — LRC parser/writer (`[mm:ss.xx]` synced timestamps).
-- [src/sidecar.rs](crates/meedya-lyrics/src/sidecar.rs) — `.lrc` sidecar writes alongside source media.
-- [src/lyrics.rs](crates/meedya-lyrics/src/lyrics.rs) — `Lyrics` + `SyncedLine` core types.
+- [src/provider/](../crates/meedya-lyrics/src/provider/) — `LyricsProvider` trait + `LrclibProvider`.
+- [src/lrc.rs](../crates/meedya-lyrics/src/lrc.rs) — LRC parser/writer (`[mm:ss.xx]`).
+- [src/sidecar.rs](../crates/meedya-lyrics/src/sidecar.rs) — `.lrc` sidecar writes.
+- [src/embed.rs](../crates/meedya-lyrics/src/embed.rs) — Tag-embed via `meedya-metadata::CommonTag::Lyrics` (plain text USLT/©lyr/LYRICS). **SYLT synchronised ID3v2 not yet supported.**
 
-**Pending follow-up**: tag-embed writes (`USLT` for ID3v2, `©lyr` for MP4, Vorbis `LYRICS`). Doc comment noted this was blocked on `meedya-metadata` landing — `meedya-metadata` is now implemented, so this is unblocked.
+### meedya-providers
+
+Provider framework. Re-exports: `MetadataProvider`, `ProviderCapabilities`, `ProviderError`, `SearchQuery`, `ProviderResult`, `MediaType`, `CoverArtInfo`, `CoverArtSize`, `CredentialStore`, `CredentialSource`, `ResolvedCredential`, `MatchScorer`, `ScoringWeights`, `ProviderRateLimiter`, `RateLimiterRegistry`. Modules: `traits`, `types`, `cover_art`, `credentials`, `match_scoring`, `rate_limiter`.
+
+### meedya-fingerprint
+
+- `acoustid` — `AcoustIdClient`, `AcoustIdResult`. Pure-Rust Chromaprint, no fpcalc binary. Rate-limited.
+- `replaygain` — `ReplayGainAnalyzer`, `ReplayGainResult`, `AlbumGainResult`, `DEFAULT_REFERENCE_LEVEL` (-18 LUFS).
+
+### meedya-db
+
+`MeedyaDbClient` (api.meedya.tv/v1), `DbExporter` trait, `MediaRecord`/`Track`/`Album`/`Artist` models.
+
+### meedya-core
+
+Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `providers` / `db` / `keyring` / `full`). Re-exports each crate as a top-level module. `meedya_core::prelude` re-exports common types. **Does not yet re-export `meedya-tags-extended` or `meedya-library-import`** — flagged follow-up.
 
 ## Key design decisions
 
-1. **Two tag-I/O foundations coexist.** `meedya-metadata` uses `mp4ameta` (M4A/MP4 only) for the Apple Music tagging flow. `meedya-tags-extended` uses `lofty` (multi-format: MP3/M4A/FLAC/WAV/AIFF/OGG/MKV) for the DJ-metadata + general-purpose flow. `meedya-lyrics` is format-agnostic for sidecar writes; tag-embed writes (when added) would route through one of these. Not unified — they serve different code paths.
+1. **Two tag-I/O foundations coexist.** `mp4ameta` for sandbox-safe Apple Music flow; `lofty` for multi-format DJ-metadata and general pass-through. Not unified — they serve different code paths.
 
 2. **Pass-through preservation.** `meedya-tags-extended::TagFile` round-trips unknown frames automatically (lofty design). MeedyaConverter re-encodes don't strip Serato/Rekordbox/Traktor blobs even when we don't model them.
 
-3. **Config-driven where possible.** [tags.toml](crates/meedya-metadata/tags.toml) defines Apple Music JSON → atom mappings declaratively; no Rust changes to add a tag.
+3. **Config-driven where possible.** [tags.toml](../crates/meedya-metadata/tags.toml) declarative; no Rust changes to add a tag.
 
-4. **Library importers don't match files.** `meedya-library-import` emits normalized records with `EntryLocator::{ Path | PersistentId }`; the consuming app handles filesystem resolution.
+4. **Library importers don't match files.** Normalized records with `EntryLocator::{ Path | PersistentId }`; consuming apps handle filesystem resolution.
 
-5. **MeedyaMeta atom namespace** (`MeedyaMeta`) is for MeedyaSuite-only fields that don't have standard equivalents (playback bounds, custom cue points). `com.apple.iTunes` namespace is used when the field has player compatibility precedent.
+5. **MeedyaMeta atom namespace** is for MeedyaSuite-only fields without standard equivalents (playback bounds, custom cue points). `com.apple.iTunes` namespace is used when the field has player compatibility precedent.
+
+6. **Results only, not side effects.** Crates return data; consumers handle I/O. `meedya-fingerprint` exemplifies this — it produces `AcoustIdResult` / `ReplayGainResult`, and `meedya-metadata::tag_io::write_acoustid_tags` / `write_replaygain_tags` handles file writes.
+
+7. **Fixture-based testing for proprietary parsers.** Won't write Serato/etc parsers from memory — every format needs validation against real DJ-tagged sample files. See [PROMPTS.md → Implementing a proprietary DJ reader](PROMPTS.md#implementing-a-proprietary-dj-reader).
 
 ## Build / test
 
 ```bash
-cargo build --workspace       # all crates
-cargo test  --workspace       # 95 tests
-cargo test -p meedya-metadata # single crate
-cargo build -p meedya-tags-extended
+cargo build --workspace          # all 9 crates
+cargo test  --workspace          # 211 tests
+cargo test  -p meedya-metadata   # single crate
+cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```
 
-Workspace uses Rust edition 2021, MIT license, copyright header `// Copyright (c) 2024-2026 MWBM Partners Ltd` on every source file.
+Workspace uses Rust edition 2021, MIT license, copyright header `// Copyright (c) 2024-2026 MWBM Partners Ltd` on new source files (older files retain `// Copyright (c) 2026 MWBMPartners`).
 
 ## Cross-repo coordination
 
-Each downstream app (MeedyaConverter, MeedyaManager, MeedyaDL) has a `claude/core-integration` branch where it adopts this workspace as a dependency. See auto-memory `project_core_integration.md` for the integration kickoff context.
+Each downstream app (MeedyaConverter, MeedyaManager, MeedyaDL) has or will have a `claude/core-integration` branch where it adopts this workspace as a dependency. Pre-drafted GitHub issues per app are in [`docs/cross-repo-issues.md`](../docs/cross-repo-issues.md). See auto-memory `project_core_integration.md` for the integration kickoff context.
 
 ## What NOT to assume
 
-- Don't assume codecs/db/fingerprint crates have implementations — they're placeholders on `main`. Use the `claude/interesting-mirzakhani` branch only as a reference for what those eventually look like.
-- Don't conflate `meedya-metadata` (Apple Music JSON tagger, mp4ameta) with `meedya-tags-extended` (multi-format DJ-aware reader/writer, lofty). They're separate by design.
-- Don't push proprietary DJ reader implementations into `meedya-tags-extended` from memory — every Serato/Rekordbox/Traktor format needs validation against real fixture files. See [PROMPTS.md](PROMPTS.md#implementing-a-proprietary-dj-reader).
+- Don't conflate `meedya-metadata` (mp4ameta + lofty surfaces) with `meedya-tags-extended` (lofty-only DJ-aware reader/writer). They're separate by design.
+- Don't push proprietary DJ reader implementations into `meedya-tags-extended` from memory — every Serato/Rekordbox/Traktor format needs validation against real fixture files.
+- Don't add features beyond what the task requires. Trait abstractions, optional fields, unused error variants — drop them.
+- Don't update `docs/API.md` as a follow-up commit when the public API changes — partner apps consume it as the integration reference; stale spec produces silent integration bugs. Update it in the same commit as the code change.
