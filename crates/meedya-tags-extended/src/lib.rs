@@ -16,6 +16,12 @@
 // - `io`        — `TagFile`: open/edit/save with foreign-frame preservation.
 // - `standard`  — BPM, key, comment via standard non-proprietary tags.
 //                 Covers Mixed In Key fully (it only writes standard tags).
+// - `mik`       — Mixed In Key reader. Recovers key/energy/tempo from
+//                 every location MIK is documented to write to (standard
+//                 fields, artist/title/comment/grouping/label prefixes,
+//                 suffixes and overwrites), then normalises into standard
+//                 `InitialKey` / `IntegerBpm` / `Bpm` plus
+//                 `MeedyaMeta:Energy` (no standard for energy).
 //
 // ## Future modules (proprietary readers — one per session)
 //
@@ -30,10 +36,12 @@
 // conflict.
 
 pub mod io;
+pub mod mik;
 pub mod model;
 pub mod standard;
 
 pub use io::TagFile;
+pub use mik::{read_mik, normalise_to_standards, MikAnalysis, MikField, MikKinds, MikPosition, MikSourceLocation};
 pub use model::{
     BeatGrid, BeatGridMarker, CuePoint, ExtendedTags, KeyMode, LoopPoint, MusicalKey, Note, Rgb,
     Source,
