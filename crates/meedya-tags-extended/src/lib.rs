@@ -41,7 +41,10 @@ pub mod model;
 pub mod standard;
 
 pub use io::TagFile;
-pub use mik::{read_mik, normalise_to_standards, MikAnalysis, MikField, MikKinds, MikPosition, MikSourceLocation};
+pub use mik::{
+    normalise_to_standards, read_mik, MikAnalysis, MikField, MikKinds, MikPosition,
+    MikSourceLocation,
+};
 pub use model::{
     BeatGrid, BeatGridMarker, CuePoint, ExtendedTags, KeyMode, LoopPoint, MusicalKey, Note, Rgb,
     Source,

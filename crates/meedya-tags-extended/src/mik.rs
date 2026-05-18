@@ -273,9 +273,7 @@ fn inspect_combo_field(
             for n in 1..all_tokens.len() {
                 let prefix_tokens = &all_tokens[..n];
                 let parsed = classify_tokens(prefix_tokens);
-                if parsed.kinds.any()
-                    && !leaves_unclassified(prefix_tokens, &parsed.classified)
-                {
+                if parsed.kinds.any() && !leaves_unclassified(prefix_tokens, &parsed.classified) {
                     best = Some(parsed);
                 }
             }
@@ -294,9 +292,7 @@ fn inspect_combo_field(
             for start in (0..all_tokens.len() - 1).rev() {
                 let suffix_tokens = &all_tokens[start + 1..];
                 let parsed = classify_tokens(suffix_tokens);
-                if parsed.kinds.any()
-                    && !leaves_unclassified(suffix_tokens, &parsed.classified)
-                {
+                if parsed.kinds.any() && !leaves_unclassified(suffix_tokens, &parsed.classified) {
                     best = Some(parsed);
                 } else {
                     break;

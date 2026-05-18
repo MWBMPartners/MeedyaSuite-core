@@ -120,7 +120,10 @@ pub fn embed_synced(media: &Path, lyrics: &Lyrics, lang: [u8; 3]) -> Result<()> 
     // fall back to the generic Tag API by removing-and-reinserting via a workaround.
     // lofty's Tag wraps Id3v2Tag transparently when the tag_type matches, but the
     // typed API requires us to round-trip through Id3v2Tag::from(&Tag) and back.
-    let mut id3v2_typed = Id3v2Tag::from(std::mem::replace(id3v2, lofty::tag::Tag::new(TagType::Id3v2)));
+    let mut id3v2_typed = Id3v2Tag::from(std::mem::replace(
+        id3v2,
+        lofty::tag::Tag::new(TagType::Id3v2),
+    ));
     id3v2_typed.remove(&frame_id).for_each(drop);
     id3v2_typed.insert(sylt_frame);
     *id3v2 = lofty::tag::Tag::from(id3v2_typed);
@@ -236,8 +239,12 @@ mod tests {
             plain: Some("only plain".into()),
             synced: None,
         };
-        let err = embed_synced(Path::new("/nonexistent/file.mp3"), &lyrics, DEFAULT_LANGUAGE)
-            .unwrap_err();
+        let err = embed_synced(
+            Path::new("/nonexistent/file.mp3"),
+            &lyrics,
+            DEFAULT_LANGUAGE,
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::NoSyncedLyrics));
     }
 
@@ -247,8 +254,12 @@ mod tests {
             plain: None,
             synced: Some(vec![]),
         };
-        let err = embed_synced(Path::new("/nonexistent/file.mp3"), &lyrics, DEFAULT_LANGUAGE)
-            .unwrap_err();
+        let err = embed_synced(
+            Path::new("/nonexistent/file.mp3"),
+            &lyrics,
+            DEFAULT_LANGUAGE,
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::NoSyncedLyrics));
     }
 
