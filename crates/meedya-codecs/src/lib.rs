@@ -1,4 +1,4 @@
-// Copyright (c) 2026 MWBMPartners
+// Copyright (c) 2026 MeedyaSuite
 // Licensed under the MIT License. See LICENSE file in the project root.
 //
 // meedya-codecs — Shared codec, container, and media format definitions

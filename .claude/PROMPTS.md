@@ -70,7 +70,7 @@ Add a new crate at crates/meedya-[name]/:
    - repository.workspace = true
    - description = "MeedyaSuite Core — [purpose]"
 3. Create crates/meedya-[name]/src/lib.rs with copyright header:
-   // Copyright (c) 2024-2026 MWBM Partners Ltd
+   // Copyright (c) 2026 MeedyaSuite
    // Licensed under the MIT License. See LICENSE file in the project root.
 4. Run `cargo build -p meedya-[name]` to verify wiring
 5. Update .claude/CONTEXT.md crate table

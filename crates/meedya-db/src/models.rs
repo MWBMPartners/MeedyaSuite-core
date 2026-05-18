@@ -1,4 +1,4 @@
-// Copyright (c) 2026 MWBMPartners
+// Copyright (c) 2026 MeedyaSuite
 // Licensed under the MIT License.
 //
 // Core media record types shared across all MeedyaSuite applications.

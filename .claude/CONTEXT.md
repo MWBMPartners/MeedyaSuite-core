@@ -114,7 +114,7 @@ cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```
 
-Workspace uses Rust edition 2021, MIT license, copyright header `// Copyright (c) 2024-2026 MWBM Partners Ltd` on new source files (older files retain `// Copyright (c) 2026 MWBMPartners`).
+Workspace uses Rust edition 2021, MIT license, copyright header `// Copyright (c) 2026 MeedyaSuite` on new source files (older files retain `// Copyright (c) 2026 MeedyaSuite`).
 
 ## Cross-repo coordination
 
