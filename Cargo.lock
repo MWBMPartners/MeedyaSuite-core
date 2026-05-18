@@ -908,9 +908,11 @@ dependencies = [
  "meedya-codecs",
  "meedya-db",
  "meedya-fingerprint",
+ "meedya-library-import",
  "meedya-lyrics",
  "meedya-metadata",
  "meedya-providers",
+ "meedya-tags-extended",
 ]
 
 [[package]]

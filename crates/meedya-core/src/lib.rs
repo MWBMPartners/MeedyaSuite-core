@@ -20,6 +20,10 @@
 //!   pulls in `metadata`)
 //! - `providers` — Provider traits, credentials, rate limiter, match scoring,
 //!   cover art utilities (default)
+//! - `tags-extended` — DJ metadata foundation: `ExtendedTags`, `MusicalKey`,
+//!   `CuePoint`, `BeatGrid`, multi-format tag I/O via lofty (default)
+//! - `library-import` — Ingest playback bounds + metadata from external
+//!   library databases (iTunes XML, CUE sheets) (default)
 //! - `db` — MeedyaDB client scaffolding
 //! - `keyring` — OS keyring credential storage (pulls in `providers`)
 //! - `full` — Everything
@@ -42,6 +46,12 @@ pub use meedya_providers as providers;
 #[cfg(feature = "db")]
 pub use meedya_db as db;
 
+#[cfg(feature = "tags-extended")]
+pub use meedya_tags_extended as tags_extended;
+
+#[cfg(feature = "library-import")]
+pub use meedya_library_import as library_import;
+
 pub mod prelude {
     //! Convenient imports for common types.
 
@@ -61,4 +71,12 @@ pub mod prelude {
 
     #[cfg(feature = "lyrics")]
     pub use meedya_lyrics::{Lyrics, LyricsProvider, SyncedLine, TrackQuery};
+
+    #[cfg(feature = "tags-extended")]
+    pub use meedya_tags_extended::{
+        BeatGrid, CuePoint, ExtendedTags, KeyMode, LoopPoint, MusicalKey, Note, Source, TagFile,
+    };
+
+    #[cfg(feature = "library-import")]
+    pub use meedya_library_import::{EntryLocator, ImportReport, LibraryEntry, SourceInfo};
 }
