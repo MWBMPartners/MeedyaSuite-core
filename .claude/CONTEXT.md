@@ -1,7 +1,7 @@
 # MeedyaSuite-core — Project Context
 
 > Snapshot maintained for Claude Code sessions. Reflects the actual state of `main`, not aspirational state.
-> Last updated: 2026-05-18 (post-PR #19 merge — consolidated 9-crate workspace).
+> Last updated: 2026-05-18 (post issues #26 SYLT + #27 facade re-exports + #31 Mixed In Key reader, on feature branch `claude/feature-batch-2026-05-18`).
 
 ## What this repo is
 
@@ -21,15 +21,15 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 |---|---|---|---|
 | [meedya-codecs](../crates/meedya-codecs/) | Audio/video/subtitle codecs, container formats, HDR, spatial audio, classification, FFprobe + MediaInfo integration | **Implemented** | 47 |
 | [meedya-metadata](../crates/meedya-metadata/) | Two coexisting tag I/O surfaces: `lofty`-backed (multi-format) and `mp4ameta`-backed (sandbox-safe). Tag registry, JSON path extraction, codec ID tags, playback bounds. | **Implemented** | 59 |
-| [meedya-tags-extended](../crates/meedya-tags-extended/) | Multi-format DJ metadata foundation (lofty). `ExtendedTags`/`MusicalKey`/`CuePoint`/`LoopPoint`/`BeatGrid`. Standard BPM+key+comment covers Mixed In Key. Proprietary readers pending. | **Implemented (foundation)** | 29 |
+| [meedya-tags-extended](../crates/meedya-tags-extended/) | Multi-format DJ metadata (lofty). `ExtendedTags`/`MusicalKey`/`CuePoint`/`LoopPoint`/`BeatGrid`. Standard BPM+key+comment + Mixed In Key reader (`mik`). Other proprietary readers pending. | **Implemented (foundation + MIK)** | 61 |
 | [meedya-library-import](../crates/meedya-library-import/) | External library ingestion: iTunes XML, CUE sheets. Emits normalized `LibraryEntry` records. | **Implemented** | 30 |
-| [meedya-lyrics](../crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O, tag-embed via `meedya-metadata::CommonTag::Lyrics`. | **Implemented** | 10 |
+| [meedya-lyrics](../crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O, plain-text and SYLT tag-embed. | **Implemented** | 15 |
 | [meedya-providers](../crates/meedya-providers/) | Provider framework: traits, capabilities, rate limiting, credentials, cover art, fuzzy match scoring. | **Implemented** | 27 |
 | [meedya-fingerprint](../crates/meedya-fingerprint/) | AcoustID client + ReplayGain EBU R128 analyser. Pure-Rust Chromaprint (no fpcalc). | **Implemented** | 6 |
 | [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 3 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 211 tests on `main`.** Workspace builds clean.
+**Total: 248 tests on feature branch (211 → 248 this batch).** Workspace builds clean.
 
 > **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 
@@ -48,11 +48,12 @@ Two surfaces coexist by design:
 
 **Adding a new tag**: edit `tags.toml`, zero Rust changes (PROMPTS.md has the template).
 
-### meedya-tags-extended (foundation only)
+### meedya-tags-extended
 
 - [src/io.rs](../crates/meedya-tags-extended/src/io.rs) — `TagFile`: lofty-based open/edit/save with foreign-frame pass-through.
 - [src/model.rs](../crates/meedya-tags-extended/src/model.rs) — `ExtendedTags`, `Source` enum, `CuePoint`, `LoopPoint`, `BeatGrid`, `Rgb`, `MusicalKey` (Camelot/Open Key/traditional round-tripping).
-- [src/standard.rs](../crates/meedya-tags-extended/src/standard.rs) — BPM/key/comment read+write. Covers Mixed In Key fully.
+- [src/standard.rs](../crates/meedya-tags-extended/src/standard.rs) — BPM/key/comment read+write across all lofty-supported formats.
+- [src/mik.rs](../crates/meedya-tags-extended/src/mik.rs) — Mixed In Key reader. `read_mik(tag) -> MikAnalysis` scans every documented MIK write location (standard fields, artist/title prefixes+suffixes, comment, grouping, label) and recovers key/energy/tempo. `normalise_to_standards(tag, &analysis)` writes the canonical values to standard tag fields (only Energy falls back to `MeedyaMeta:Energy` because no standard exists). Source fields are read-only — user data preserved.
 
 **Pending** (one session each, fixture-driven): Serato (Markers2/Autotags/BeatGrid), Rekordbox (ID3 PRIV + XML sidecar), Traktor (cue frames + collection.nml), Virtual DJ (.vdj sidecar + embedded markers).
 
@@ -68,7 +69,7 @@ Two surfaces coexist by design:
 - [src/provider/](../crates/meedya-lyrics/src/provider/) — `LyricsProvider` trait + `LrclibProvider`.
 - [src/lrc.rs](../crates/meedya-lyrics/src/lrc.rs) — LRC parser/writer (`[mm:ss.xx]`).
 - [src/sidecar.rs](../crates/meedya-lyrics/src/sidecar.rs) — `.lrc` sidecar writes.
-- [src/embed.rs](../crates/meedya-lyrics/src/embed.rs) — Tag-embed via `meedya-metadata::CommonTag::Lyrics` (plain text USLT/©lyr/LYRICS). **SYLT synchronised ID3v2 not yet supported.**
+- [src/embed.rs](../crates/meedya-lyrics/src/embed.rs) — Two embed paths: `embed()` writes plain text via `meedya-metadata::CommonTag::Lyrics` (USLT/©lyr/LYRICS); `embed_synced()` writes ID3v2 SYLT frames (errors on non-ID3v2 containers). UTF-16 BOM, MS timestamp format, lyrics content type.
 
 ### meedya-providers
 
@@ -85,10 +86,11 @@ Provider framework. Re-exports: `MetadataProvider`, `ProviderCapabilities`, `Pro
 
 ### meedya-core
 
-Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `providers` / `db` / `keyring` / `full`). Re-exports each crate as a top-level module. `meedya_core::prelude` re-exports common types. **Does not yet re-export `meedya-tags-extended` or `meedya-library-import`** — flagged follow-up.
+Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `providers` / `tags-extended` / `library-import` / `db` / `keyring` / `full`). All implemented crates re-exported as top-level modules. `meedya_core::prelude` re-exports common types: `CommonTag`, `MetadataError`, `TagRegistry`, `AudioCodec`, `ChannelConfig`, `CodecRegistry`, `ContainerFormat`, `SpatialType`, `MetadataProvider`, `ProviderCapabilities`, `CredentialStore`, `ProviderRateLimiter`, `ProviderResult`, `SearchQuery`, `Lyrics`, `LyricsProvider`, `SyncedLine`, `TrackQuery`, `TagFile`, `ExtendedTags`, `MusicalKey`, `KeyMode`, `Note`, `CuePoint`, `LoopPoint`, `BeatGrid`, `Source`, `LibraryEntry`, `EntryLocator`, `ImportReport`, `SourceInfo`.
 
 ## Key design decisions
 
+0. **Standards-first** (project-wide policy). Use standard metadata tags (ID3v2 / Vorbis / MP4 ilst spec fields) wherever they exist. Fall back to `MeedyaMeta:*` freeform atoms only when no standard equivalent exists — e.g., DJ energy ratings, playback bounds, audit trails. See [CLAUDE.md → Key design principles](CLAUDE.md#key-design-principles).
 1. **Two tag-I/O foundations coexist.** `mp4ameta` for sandbox-safe Apple Music flow; `lofty` for multi-format DJ-metadata and general pass-through. Not unified — they serve different code paths.
 
 2. **Pass-through preservation.** `meedya-tags-extended::TagFile` round-trips unknown frames automatically (lofty design). MeedyaConverter re-encodes don't strip Serato/Rekordbox/Traktor blobs even when we don't model them.
@@ -107,7 +109,7 @@ Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `p
 
 ```bash
 cargo build --workspace          # all 9 crates
-cargo test  --workspace          # 211 tests
+cargo test  --workspace          # 248 tests
 cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```
