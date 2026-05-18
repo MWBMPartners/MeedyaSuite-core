@@ -4,12 +4,15 @@
 //! reusable library so MeedyaDL, MeedyaConverter, and MeedyaManager can share
 //! the same lookup, parse, and write code paths.
 //!
-//! Tag-embed writes (USLT / Vorbis `LYRICS` / MP4 `©lyr`) will live in a
-//! future `embed` module once `meedya-metadata` lands; for now only sidecar
-//! writes are supported.
+//! Two write targets are supported:
+//! - [`sidecar::write`] — `.lrc` next to the media file (synced lyrics only).
+//! - [`embed::embed`] — plain-text tag via `meedya-metadata` (USLT for ID3v2,
+//!   `LYRICS` for Vorbis, `©lyr` for MP4). Synchronized ID3v2 SYLT is not
+//!   yet supported.
 //!
 //! [lrcget]: https://github.com/tranxuanthang/lrcget
 
+pub mod embed;
 pub mod error;
 pub mod lrc;
 pub mod lyrics;

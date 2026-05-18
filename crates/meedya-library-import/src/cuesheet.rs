@@ -120,8 +120,9 @@ impl CueTime {
     /// Convert to milliseconds, rounded to the nearest ms.
     /// 1 CD frame = 1/75 second; rounding bias of +37 frame-millis.
     pub fn to_milliseconds(self) -> u64 {
-        let total_frames =
-            u64::from(self.minutes) * 60 * 75 + u64::from(self.seconds) * 75 + u64::from(self.frames);
+        let total_frames = u64::from(self.minutes) * 60 * 75
+            + u64::from(self.seconds) * 75
+            + u64::from(self.frames);
         (total_frames * 1000 + 37) / 75
     }
 }
@@ -254,7 +255,7 @@ impl<'a> Parser<'a> {
                     sheet.files.push(file);
                 }
                 "CDTEXTFILE" => {} // ignored — external CD-Text binary
-                _ => {} // unknown disc-level directive — silently ignore
+                _ => {}            // unknown disc-level directive — silently ignore
             }
         }
 
@@ -428,8 +429,12 @@ fn parse_time(s: &str) -> Result<CueTime, String> {
     if parts.len() != 3 {
         return Err(format!("invalid time {s}"));
     }
-    let minutes: u32 = parts[0].parse().map_err(|_| format!("bad minutes in {s}"))?;
-    let seconds: u8 = parts[1].parse().map_err(|_| format!("bad seconds in {s}"))?;
+    let minutes: u32 = parts[0]
+        .parse()
+        .map_err(|_| format!("bad minutes in {s}"))?;
+    let seconds: u8 = parts[1]
+        .parse()
+        .map_err(|_| format!("bad seconds in {s}"))?;
     let frames: u8 = parts[2].parse().map_err(|_| format!("bad frames in {s}"))?;
     if seconds > 59 || frames > 74 {
         return Err(format!("time component out of range: {s}"));

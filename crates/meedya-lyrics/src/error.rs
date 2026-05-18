@@ -10,4 +10,6 @@ pub enum Error {
     NotFound,
     #[error("malformed LRC: {0}")]
     Lrc(String),
+    #[error("metadata: {0}")]
+    Metadata(#[from] meedya_metadata::MetadataError),
 }

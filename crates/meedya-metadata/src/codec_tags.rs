@@ -195,7 +195,11 @@ pub fn clear_binaural_downmix_tags(tag: &mut Tag) {
 /// file with `MeedyaMeta:SpatialAudioCodec` so downstream tools know
 /// this ISRC is from the spatial version of the track.
 pub fn write_spatial_codec_tag(tag: &mut Tag, codec: &CodecKind) {
-    let spatial_codecs = [CodecKind::Atmos, CodecKind::DolbyDigital, CodecKind::Binaural];
+    let spatial_codecs = [
+        CodecKind::Atmos,
+        CodecKind::DolbyDigital,
+        CodecKind::Binaural,
+    ];
     if spatial_codecs.contains(codec) {
         let ident = FreeformIdent::new_static(MEEDYA_NAMESPACE, "SpatialAudioCodec");
         tag.set_data(ident, Data::Utf8(codec.as_str().to_string()));

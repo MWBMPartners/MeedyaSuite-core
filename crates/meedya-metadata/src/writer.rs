@@ -53,9 +53,7 @@ pub fn write_tags_from_registry(
     if let Some(track_json) = track_json {
         if !track_json.is_null() {
             for def in &registry.track_tags {
-                if let Some(raw_value) =
-                    registry::extract_json_value(track_json, &def.json_path)
-                {
+                if let Some(raw_value) = registry::extract_json_value(track_json, &def.json_path) {
                     if let Some(string_value) =
                         registry::value_to_string(&raw_value, &def.value_type)
                     {

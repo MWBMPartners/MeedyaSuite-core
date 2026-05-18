@@ -1,0 +1,70 @@
+# MeedyaSuite-core — Project Brief
+
+## What Is This?
+
+MeedyaSuite-core is the shared Rust core library for the MeedyaSuite product family.
+It eliminates code duplication across MeedyaDL, MeedyaConverter, MeedyaManager, and
+MeedyaDB by providing canonical type definitions and shared business logic.
+
+## The Problem It Solves
+
+Before this library, three active projects independently maintained:
+- Audio/video codec enums (42+ audio codecs, 21+ video codecs)
+- Container format definitions (36+ formats with extensions, MIME types)
+- Metadata tag registries (TOML/JSON5-driven freeform atom definitions)
+- Audio fingerprinting (AcoustID/Chromaprint)
+- ReplayGain loudness analysis (EBU R128)
+- MeedyaDB API client code
+- Metadata provider integrations (MusicBrainz, TMDB, TheTVDB, etc.)
+
+This duplication existed across Rust (MeedyaDL, MeedyaManager) and Swift
+(MeedyaConverter), making changes error-prone and inconsistent.
+
+## Crate Responsibilities
+
+### meedya-codecs (Priority 1 — highest value)
+The single source of truth for codec identity. Defines AudioCodec, VideoCodec,
+SubtitleCodec, ContainerFormat, HdrFormat, SpatialAudioFormat enums with rich
+metadata (FFmpeg names, lossless flags, compatibility matrices, classification).
+
+### meedya-metadata (Priority 2)
+Config-driven metadata tag system. TagRegistry loads tag definitions from TOML
+(zero code changes to add tags). JSON path extraction engine for API responses.
+CommonTag enum mapping standard field names across iTunes atoms, Vorbis Comments,
+and ID3v2 frames.
+
+### meedya-fingerprint (Priority 3)
+Audio identification and loudness analysis. AcoustID API client with rate limiting.
+ReplayGain analyzer using FFmpeg EBU R128 filter. Returns results only — consumers
+handle tag writing via meedya-metadata.
+
+### meedya-db (Priority 4)
+Shared media record types (Track, Album, Artist). MeedyaDB API client for
+api.meedya.tv/v1. DbExporter trait for multi-backend database export.
+
+### meedya-providers (in progress)
+Centralised metadata provider framework. MetadataProvider trait, capabilities
+system, and shared implementations for services used across multiple apps
+(MusicBrainz, TMDB, TheTVDB, AcoustID, Discogs, FanArt.tv, etc.).
+
+## Integration Status
+
+| Consumer | Status | Integration Path |
+|----------|--------|-----------------|
+| MeedyaDL (Rust/Tauri) | Pending | Direct Cargo git dependency |
+| MeedyaManager (Rust) | Pending | Direct Cargo git dependency |
+| MeedyaConverter (Swift) | Pending | Via bindings/swift C FFI |
+| MeedyaDB (Swift) | Not started | Via bindings/swift C FFI |
+
+## Key Dependencies
+
+- serde (serialization), toml (config), thiserror (errors), strum (enum derive)
+- reqwest + tokio (HTTP/async for API clients)
+- lofty (planned: multi-format tag I/O)
+- rusty-chromaprint + symphonia (planned: pure-Rust fingerprinting)
+- chrono (timestamps), serde_json (JSON handling)
+
+## Testing
+
+55 unit tests across all crates. Run with `cargo test --workspace`.
+All tests must pass before any push.
