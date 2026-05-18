@@ -125,14 +125,55 @@ Refreshed all repo documentation to reflect the 9-crate state:
 ### Standing task established
 `docs/API.md` is now the contractual integration reference for partner apps. The CLAUDE.md standing task requires it be updated in the SAME commit as any public API change (no follow-up PRs). The procedure is captured in PROMPTS.md.
 
-### Open follow-ups (pending GitHub issue creation)
-- Serato reader (Markers2/Autotags/BeatGrid)
-- Rekordbox reader (ID3 PRIV + XML sidecar)
-- Traktor reader (cue frames + collection.nml)
-- Virtual DJ reader (.vdj sidecar + embedded markers)
-- Bindings/swift scaffold
-- Bindings/wasm scaffold
-- `meedya-core`: re-export `meedya-tags-extended` and `meedya-library-import`
-- `meedya-lyrics`: SYLT (synchronised ID3v2 lyrics) support
-- Chapter authoring (consume `CueSheet` indexes, write MP4 `chap` + `chpl`)
-- CI: stale-API.md check via `cargo public-api` diff
+### Open follow-ups (now tracked as GitHub issues)
+Issues #21-#30 created later in this session covering: Serato (#21), Rekordbox (#22), Traktor (#23), Virtual DJ (#24), chapter authoring crate (#25), meedya-lyrics SYLT (#26), meedya-core re-exports (#27), bindings/swift scaffold (#28), bindings/wasm scaffold (#29), CI stale-API.md check (#30).
+
+---
+
+## 2026-05-18 (later) — Feature batch on `claude/feature-batch-2026-05-18`
+
+Worked through a subset of issues #21-#30 plus new Mixed In Key issue (#31). Honest scoping: implemented the items that are tractable without proprietary-format fixture files; deferred issues #21-#24 (Serato/Rekordbox/Traktor/VirtualDJ readers) and #25/#28/#29/#30 (chapters/bindings/CI) per the standing "fixture-based testing" and "needs infrastructure decisions" guardrails.
+
+### Standards-first policy adopted
+User direction during the session: standards-first across the entire project. Added to [`.claude/CLAUDE.md`](CLAUDE.md#key-design-principles) as design principle #1. Standard tag fields are preferred wherever they exist; `MeedyaMeta:*` freeform atoms are reserved for fields with no standard (energy ratings, soft playback bounds, audit trails).
+
+### Issue #27 — meedya-core re-exports (commit `db98b89`)
+Added `tags-extended` and `library-import` feature flags to `meedya-core`. Both in `default` and `full`. Prelude extended with `TagFile`, `ExtendedTags`, `MusicalKey`, `KeyMode`, `Note`, `CuePoint`, `LoopPoint`, `BeatGrid`, `Source`, `LibraryEntry`, `EntryLocator`, `ImportReport`, `SourceInfo`. Internal workspace.dependencies registered both crates.
+
+### Issue #26 — meedya-lyrics SYLT (commit `77762e3`)
+Added `embed_synced(media, lyrics, lang) -> Result<()>` for ID3v2 SYLT writes. Errors with `Error::UnsupportedForSync` on non-ID3v2 containers. Uses UTF-16 with BOM, millisecond timestamps. Lofty 0.22 doesn't expose SYLT as a first-class `Frame` variant, so the implementation serializes a `SynchronizedTextFrame` and wraps the bytes in a `BinaryFrame` with frame ID `SYLT` — the documented escape hatch. 5 new tests, 10 → 15 in meedya-lyrics.
+
+### Issue #31 (new) — Mixed In Key reader (commit `b501104`)
+Created during this session. Implementation in new `meedya-tags-extended::mik` module:
+- `read_mik(tag) -> MikAnalysis` scans every documented MIK write location: standard `InitialKey`+BPM, artist prefix, title prefix+suffix, comment whole+prefix+suffix, grouping energy prefix, label energy whole.
+- Token classification handles all 8 documented "what to write" MIK combinations: key only, energy with word, key+energy with word, energy alone, key+energy, key+tempo, key+tempo+energy, tempo+key+energy.
+- Greedy prefix/suffix matching: `"10A - 126 - 7 - www.beatport.com"` recovers all three datapoints AND leaves the URL untouched.
+- Camelot zero-padding (`05A`), all 4 notations (Camelot/OpenKey/sharps/flats traditional), handled by existing `MusicalKey::parse`.
+- `normalise_to_standards(tag, &analysis)` writes to standard `InitialKey`/`IntegerBpm`/`Bpm`; only Energy falls back to `MeedyaMeta:Energy` (no standard exists). `MeedyaMeta:MikSourceLocations` carries an audit trail.
+- Source fields are read-only — original artist/title/comment strings preserved verbatim.
+- 32 new tests, 29 → 61 in meedya-tags-extended.
+
+### Documentation refresh
+- [`.claude/CLAUDE.md`](CLAUDE.md): added **standards-first** as design principle #1 (project-wide policy).
+- [`docs/API.md`](../docs/API.md): updated meedya-core feature flags + prelude, meedya-lyrics SYLT API, meedya-tags-extended `mik` module section, two new common-workflow examples, bumped test count 211 → 248.
+- [`.claude/CONTEXT.md`](CONTEXT.md): refreshed crate table for new test counts, added MIK module to tags-extended description, added standards-first to design decisions.
+
+### Deferred (with rationale)
+Issues #21-#24 (Serato/Rekordbox/Traktor/VirtualDJ readers) — explicitly say in their own bodies "DO NOT reverse-engineer from memory" and require real DJ-tagged fixture files. Implementing from memory in this session would produce subtly broken parsers that corrupt user DJ work — exactly the failure mode the guardrails were written to prevent.
+
+Issue #25 (chapters crate) — "Large" complexity, requires a prototype phase to choose between mp4ameta / mp4parse-rust / bento4 / hand-written atom emitters.
+
+Issue #28 (Swift bindings) — "Large" complexity, multi-tool multi-target, infrastructure decisions (cbindgen vs uniffi) best made together with the MeedyaConverter team.
+
+Issue #29 (WASM bindings) — "Medium" complexity, also needs scope decisions about what surface to expose given browser CORS / no-filesystem constraints.
+
+Issue #30 (CI stale-API check workflow) — needs PR-cycle iteration to validate the workflow YAML; committing untested CI code from a single session is risky.
+
+### Branching strategy
+All work this session is on `claude/feature-batch-2026-05-18` per user instruction. No PR opened — the user wants a single PR at the end consolidating all batch changes for a release. Workspace builds clean; 248 tests passing.
+
+### Commits on `claude/feature-batch-2026-05-18`
+- `db98b89` feat(meedya-core): re-export meedya-tags-extended and meedya-library-import
+- `77762e3` feat(meedya-lyrics): implement synchronised ID3v2 SYLT writer
+- `b501104` feat(meedya-tags-extended): Mixed In Key reader with standards-first normalisation
+- (this commit) docs: refresh API.md / CONTEXT.md / CLAUDE.md / HISTORY.md for the batch

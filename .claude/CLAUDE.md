@@ -38,13 +38,14 @@ Rust workspace, 9 crates, 211 tests passing. Two co-existing tag-I/O foundations
 
 ## Key design principles
 
-1. **Results only, not side effects**: Crates return data; consumers handle I/O (file writes, UI updates, DB persistence).
-2. **Config-driven where possible**: Tag definitions, codec registries etc. loaded from TOML — zero Rust changes to add entries.
-3. **No app-specific logic**: No Tauri, no SwiftUI, no CLI framework dependencies in core crates.
-4. **FFI-friendly types**: Public types in crates targeted at Swift consumption should be C-FFI compatible.
-5. **Feature-gated heavy deps**: Large dependencies (`symphonia`, `rusty-chromaprint`, OS keyring) behind optional features.
-6. **Two tag-I/O foundations coexist intentionally** — `mp4ameta` for the sandbox-safe Apple Music flow, `lofty` for multi-format DJ-metadata and pass-through. Do not try to unify them.
-7. **Fixture-based testing for proprietary format parsers** — don't reverse-engineer Serato/Rekordbox/Traktor formats from memory. Require real tagged sample files.
+1. **Standards-first**: Use standard metadata tags (ID3v2 / Vorbis / MP4 ilst spec fields) wherever they exist. Fall back to `MeedyaMeta:*` freeform atoms **only** when no standard equivalent exists (e.g., DJ energy ratings, internal audit trails, MeedyaSuite-only soft-playback bounds). Standards-first applies to every crate — not just MIK or DJ-metadata.
+2. **Results only, not side effects**: Crates return data; consumers handle I/O (file writes, UI updates, DB persistence).
+3. **Config-driven where possible**: Tag definitions, codec registries etc. loaded from TOML — zero Rust changes to add entries.
+4. **No app-specific logic**: No Tauri, no SwiftUI, no CLI framework dependencies in core crates.
+5. **FFI-friendly types**: Public types in crates targeted at Swift consumption should be C-FFI compatible.
+6. **Feature-gated heavy deps**: Large dependencies (`symphonia`, `rusty-chromaprint`, OS keyring) behind optional features.
+7. **Two tag-I/O foundations coexist intentionally** — `mp4ameta` for the sandbox-safe Apple Music flow, `lofty` for multi-format DJ-metadata and pass-through. Do not try to unify them.
+8. **Fixture-based testing for proprietary format parsers** — don't reverse-engineer Serato/Rekordbox/Traktor formats from memory. Require real tagged sample files.
 
 ## Standing tasks
 

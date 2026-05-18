@@ -14,15 +14,15 @@ Written in Rust. Distributable to all Meedya apps via:
 |---|---|---|---|
 | [`meedya-codecs`](crates/meedya-codecs) | Audio/video/subtitle codecs, container formats, HDR, spatial audio, media classification, FFprobe + MediaInfo integration | Implemented | 47 |
 | [`meedya-metadata`](crates/meedya-metadata) | Two coexisting tag-I/O surfaces: lofty-backed multi-format (`CommonTag`, `tag_io`, `tag_registry`) and `mp4ameta`-backed sandbox-safe registry for the Apple Music tagging flow. Includes `playback_bounds` (soft start/stop atoms) and codec ID tags. | Implemented | 59 |
-| [`meedya-tags-extended`](crates/meedya-tags-extended) | Multi-format tag I/O foundation with DJ metadata support. `ExtendedTags` model, `MusicalKey` (Camelot/Open Key/traditional), `CuePoint`/`LoopPoint`/`BeatGrid`, standard BPM+key+comment read/write covering Mixed In Key. Proprietary readers (Serato/Rekordbox/Traktor/VDJ) pending fixture-based sessions. | Implemented | 29 |
+| [`meedya-tags-extended`](crates/meedya-tags-extended) | Multi-format tag I/O foundation with DJ metadata support. `ExtendedTags` model, `MusicalKey` (Camelot/Open Key/traditional), `CuePoint`/`LoopPoint`/`BeatGrid`, standard BPM+key+comment read/write, **Mixed In Key reader** (`mik` module). Other proprietary readers (Serato/Rekordbox/Traktor/VDJ) pending fixture-based sessions. | Implemented | 61 |
 | [`meedya-library-import`](crates/meedya-library-import) | Ingest playback bounds + metadata from external library DBs. `itunes_xml` parses Music.app exports; `cuesheet` is a full CUE parser at CD-frame precision. | Implemented | 30 |
-| [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar writes, tag-embed via `meedya-metadata` `CommonTag::Lyrics`. | Implemented | 10 |
+| [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar writes, plain-text + synchronised ID3v2 SYLT tag-embed. | Implemented | 15 |
 | [`meedya-providers`](crates/meedya-providers) | Metadata provider framework: traits, capabilities, registry, rate limiting, cover art helpers, match scoring. | Implemented | 27 |
 | [`meedya-fingerprint`](crates/meedya-fingerprint) | AcoustID fingerprinting + ReplayGain/EBU R128 loudness analysis. | Implemented | 6 |
 | [`meedya-db`](crates/meedya-db) | MeedyaDB API client, shared media models (Track/Album/Artist), database export trait. | Implemented | 3 |
 | [`meedya-core`](crates/meedya-core) | Unified facade crate re-exporting the implemented crates behind feature flags. | Implemented | — |
 
-**Total: 211 tests passing**, workspace builds clean.
+**Total: 248 tests passing**, workspace builds clean.
 
 ## Quick Start
 
@@ -30,7 +30,7 @@ Written in Rust. Distributable to all Meedya apps via:
 # Build all crates
 cargo build --workspace
 
-# Run the full test suite (211 tests)
+# Run the full test suite (248 tests)
 cargo test --workspace
 
 # Build a single crate
@@ -85,7 +85,8 @@ Cross-format `CommonTag` enum maps the same logical tag across iTunes atoms, Vor
 - `ExtendedTags` aggregator across all source apps
 - `MusicalKey` with full Camelot / Open Key / traditional round-tripping
 - `CuePoint`, `LoopPoint`, `BeatGrid`, `Source` enum
-- BPM + key + comment read/write works today (covers Mixed In Key fully)
+- BPM + key + comment read/write works today
+- **Mixed In Key reader** — recovers key/energy/tempo from every documented MIK write location (standard fields, artist/title prefixes+suffixes, comment, grouping, label) and normalises into standard tag fields. `MeedyaMeta:Energy` only when no standard exists.
 - Serato, Rekordbox, Traktor, Virtual DJ proprietary readers pending — each requires fixture-based work against real DJ-tagged files
 
 ### Library import (`meedya-library-import`)

@@ -6,7 +6,7 @@
 >
 > **This is not a Swagger/OpenAPI spec.** `MeedyaSuite-core` is a Rust library workspace, not a web service. There are no HTTP endpoints. If you need an HTTP-shaped contract, build one in your downstream app on top of these crates.
 >
-> **Last refreshed**: 2026-05-18. See the [maintenance section](#maintenance) for how this stays in sync with the code.
+> **Last refreshed**: 2026-05-18 (post issues #26 SYLT + #27 facade re-exports + #31 Mixed In Key reader). See the [maintenance section](#maintenance) for how this stays in sync with the code.
 
 ---
 
@@ -37,16 +37,16 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | Crate | Public modules | Tests | Stability |
 |---|---|---|---|
 | `meedya-codecs` | `audio_codec`, `channel_config`, `classify`, `container`, `ffprobe`, `hdr`, `mediainfo`, `registry`, `spatial`, `spatial_type`, `subtitle_codec`, `tool_path`, `video_codec` | 47 | Stable for partner-app consumption |
-| `meedya-core` | (facade re-exports only) | 0 | Stable |
+| `meedya-core` | (facade re-exports only — `tags-extended` and `library-import` now included) | 0 | Stable |
 | `meedya-db` | `client`, `export`, `models` | 3 | Foundation stable; specific endpoints may evolve |
 | `meedya-fingerprint` | `acoustid`, `replaygain` | 6 | Stable |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
-| `meedya-lyrics` | `embed`, `lrc`, `lyrics`, `provider`, `sidecar` | 10 | Stable |
+| `meedya-lyrics` | `embed`, `lrc`, `lyrics`, `provider`, `sidecar` | 15 | Stable (plain + synced via SYLT for ID3v2) |
 | `meedya-metadata` | `codec_tags`, `common_tags`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `writer` | 59 | Stable (two co-existing surfaces) |
 | `meedya-providers` | `cover_art`, `credentials`, `match_scoring`, `rate_limiter`, `traits`, `types` | 27 | Stable foundation; specific provider implementations may evolve |
-| `meedya-tags-extended` | `io`, `model`, `standard` | 29 | Foundation stable; proprietary DJ readers pending |
+| `meedya-tags-extended` | `io`, `mik`, `model`, `standard` | 61 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 211 tests.** All passing on `main`.
+**Total: 248 tests.** All passing on the feature branch (211 → 248 this batch).
 
 ---
 
@@ -111,6 +111,8 @@ Unified facade crate that re-exports the other implemented crates behind feature
 | `fingerprint` | `meedya-fingerprint` | ✓ |
 | `lyrics` | `meedya-lyrics` (+ `metadata`) | ✓ |
 | `providers` | `meedya-providers` | ✓ |
+| `tags-extended` | `meedya-tags-extended` | ✓ |
+| `library-import` | `meedya-library-import` | ✓ |
 | `db` | `meedya-db` |  |
 | `keyring` | OS keyring (pulls `providers`) |  |
 | `full` | Everything |  |
@@ -124,6 +126,8 @@ pub use meedya_fingerprint as fingerprint;
 pub use meedya_lyrics as lyrics;
 pub use meedya_providers as providers;
 pub use meedya_db as db;
+pub use meedya_tags_extended as tags_extended;
+pub use meedya_library_import as library_import;
 ```
 
 #### `meedya_core::prelude`
@@ -135,9 +139,11 @@ pub use meedya_codecs::{AudioCodec, ChannelConfig, CodecRegistry, ContainerForma
 pub use meedya_providers::{CredentialStore, MetadataProvider, ProviderCapabilities,
                             ProviderRateLimiter, ProviderResult, SearchQuery};
 pub use meedya_lyrics::{Lyrics, LyricsProvider, SyncedLine, TrackQuery};
+pub use meedya_tags_extended::{
+    BeatGrid, CuePoint, ExtendedTags, KeyMode, LoopPoint, MusicalKey, Note, Source, TagFile,
+};
+pub use meedya_library_import::{EntryLocator, ImportReport, LibraryEntry, SourceInfo};
 ```
-
-> **Note**: `meedya-tags-extended` and `meedya-library-import` are not yet re-exported through `meedya-core`. Consume them directly until a feature flag is added.
 
 ---
 
@@ -264,6 +270,7 @@ LRCLIB client, LRC parser/writer, sidecar + tag-embed writes.
 #### Public re-exports
 
 ```rust
+pub use embed::{embed, embed_synced, DEFAULT_LANGUAGE};
 pub use error::{Error, Result};
 pub use lyrics::{Lyrics, SyncedLine};
 pub use provider::lrclib::LrclibProvider;
@@ -298,7 +305,9 @@ Implementation: `LrclibProvider` (calls lrclib.net).
 #### Write targets
 
 - **`sidecar::write(lyrics: &Lyrics, target_path: &Path) -> Result<()>`** — writes a `.lrc` file next to the source media.
-- **`embed::embed(...)`** — plain-text tag-embed via `meedya-metadata` (USLT for ID3v2, `LYRICS` for Vorbis, `©lyr` for MP4). Synchronised ID3v2 SYLT is **not yet** supported.
+- **`embed::embed(media: &Path, lyrics: &Lyrics) -> Result<bool>`** — plain-text tag-embed via `meedya-metadata` (USLT for ID3v2, `LYRICS` for Vorbis, `©lyr` for MP4).
+- **`embed::embed_synced(media: &Path, lyrics: &Lyrics, lang: [u8; 3]) -> Result<()>`** — synchronised ID3v2 SYLT frame. ID3v2-only by design; errors with `Error::UnsupportedForSync` on other formats. Encoding: UTF-16 with BOM; timestamp format: milliseconds. Recommended pattern: call both `embed()` and `embed_synced()` — the former handles cross-format plain text, the latter adds SYLT where applicable.
+- **`embed::DEFAULT_LANGUAGE`** — `*b"eng"`, the ISO-639-2 default for callers without a known language code.
 
 #### `lrc` module
 
@@ -432,6 +441,10 @@ Multi-format tag I/O foundation with DJ metadata support. Built on `lofty`. Desi
 
 ```rust
 pub use io::TagFile;
+pub use mik::{
+    read_mik, normalise_to_standards,
+    MikAnalysis, MikField, MikKinds, MikPosition, MikSourceLocation,
+};
 pub use model::{
     BeatGrid, BeatGridMarker, CuePoint, ExtendedTags, KeyMode,
     LoopPoint, MusicalKey, Note, Rgb, Source,
@@ -496,7 +509,7 @@ impl MusicalKey {
 
 #### `standard` module
 
-BPM / key / comment read+write across all `lofty`-supported formats. Covers Mixed In Key fully (MIK writes only standard tags).
+BPM / key / comment read+write across all `lofty`-supported formats.
 
 ```rust
 pub fn read_bpm(tag: &Tag) -> Option<f64>;
@@ -512,7 +525,49 @@ pub fn write_comment(tag: &mut Tag, value: String);
 pub fn clear_comment(tag: &mut Tag);
 ```
 
-#### Pending (foundation only; not yet implemented)
+#### `mik` module — Mixed In Key reader
+
+Recovers MIK's key / energy / tempo from every location MIK is documented to write to (standard fields, artist/title prefixes and suffixes, comment, grouping, label) and normalises into standard tag fields. Standards-first by design — only Energy falls back to `MeedyaMeta:Energy` because no widely-supported standard exists for it.
+
+```rust
+pub fn read_mik(tag: &Tag) -> MikAnalysis;
+pub fn normalise_to_standards(tag: &mut Tag, analysis: &MikAnalysis);
+
+pub struct MikAnalysis {
+    pub key: Option<MusicalKey>,
+    pub energy: Option<u8>,        // 1-10
+    pub bpm: Option<f64>,
+    pub sources: Vec<MikSourceLocation>,
+}
+
+pub struct MikSourceLocation {
+    pub field: MikField,
+    pub position: MikPosition,
+    pub kinds: MikKinds,
+}
+pub enum MikField { InitialKey, Bpm, Artist, Title, Comment, Grouping, Label }
+pub enum MikPosition { Whole, Prefix, Suffix }
+pub struct MikKinds { pub key: bool, pub bpm: bool, pub energy: bool }
+```
+
+**Normalisation** writes:
+
+- Key → `ItemKey::InitialKey` (TKEY / `----:com.apple.iTunes:initialkey` / INITIALKEY)
+- BPM → `ItemKey::IntegerBpm` + `ItemKey::Bpm` (TBPM / tmpo / BPM)
+- Energy → `MeedyaMeta:Energy` (no standard exists)
+- Audit trail → `MeedyaMeta:MikSourceLocations` (which location each datapoint came from)
+
+Source fields (Artist/Title/Comment/Grouping/Label) are **read-only**; the original strings are preserved verbatim. A separate opt-in cleanup pass could strip MIK prefixes later.
+
+**Token classification** (greedy prefix/suffix matching):
+
+- Camelot/OpenKey/traditional (with sharps OR flats) → key. Zero-padded `05A` supported.
+- `"Energy N"` (case-insensitive) → energy (1-10).
+- Bare integer 1-10 → energy.
+- Bare integer 40-250 → tempo.
+- `" - "` (space-dash-space) is the separator. `"10A-Feel"` (no spaces) is NOT classified as MIK.
+
+#### Pending (proprietary readers, fixture-driven)
 
 `serato`, `rekordbox`, `traktor`, `virtualdj` modules. Each will be implemented in its own focused session against real DJ-tagged fixture files. See [`.claude/PROMPTS.md`](../.claude/PROMPTS.md#implementing-a-proprietary-dj-reader) for the procedure and guardrails.
 
@@ -580,11 +635,36 @@ pub fn clear_comment(tag: &mut Tag);
 ### Read DJ metadata from a file
 
 ```text
-1. let tag_file = meedya_tags_extended::TagFile::open(&path)?;
-2. let tag      = tag_file.primary_tag().ok_or(...)?
-3. let bpm      = meedya_tags_extended::standard::read_bpm(tag);
-4. let key      = meedya_tags_extended::standard::read_key(tag);
+1. let mut tag_file = meedya_tags_extended::TagFile::open(&path)?;
+2. let tag         = tag_file.primary_tag().ok_or(...)?;
+3. let bpm         = meedya_tags_extended::standard::read_bpm(tag);
+4. let key         = meedya_tags_extended::standard::read_key(tag);
 5. (Future) let serato_data = meedya_tags_extended::serato::read(&tag_file)?;
+```
+
+### Recover Mixed In Key analysis and normalise to standard tags
+
+```text
+1. let mut tag_file = meedya_tags_extended::TagFile::open(&path)?;
+2. let analysis = meedya_tags_extended::read_mik(tag_file.primary_tag().unwrap());
+3. // Inspect analysis.key / .bpm / .energy / .sources for UI display, etc.
+4. meedya_tags_extended::normalise_to_standards(tag_file.primary_tag_mut(), &analysis);
+5. tag_file.save()?;
+// Result: standard InitialKey + IntegerBpm + Bpm now populated regardless of
+// where MIK originally wrote the data (e.g., comment prefix "10A - 126 - 7").
+// MeedyaMeta:Energy carries the energy rating (no standard for that field).
+// Original source fields (artist/title/comment/etc.) are NOT modified.
+```
+
+### Embed lyrics with both plain text and synchronised SYLT (MP3)
+
+```text
+1. let lyrics = LrclibProvider::new().fetch(&query).await?.unwrap();
+2. let _ = meedya_lyrics::embed(&path, &lyrics)?;     // USLT/©lyr/LYRICS
+3. if lyrics.synced.is_some() {
+       // SYLT — succeeds on ID3v2 (MP3) only; ignore Error::UnsupportedForSync.
+       let _ = meedya_lyrics::embed_synced(&path, &lyrics, meedya_lyrics::DEFAULT_LANGUAGE);
+   }
 ```
 
 ---
@@ -594,7 +674,7 @@ pub fn clear_comment(tag: &mut Tag);
 | Tier | Crates | Compatibility guarantee |
 |---|---|---|
 | **Stable** | `meedya-codecs`, `meedya-core`, `meedya-fingerprint`, `meedya-library-import`, `meedya-lyrics`, `meedya-metadata`, `meedya-providers` | Public APIs follow semver; breaking changes get a major-version bump. Foundation types (`AudioCodec`, `ContainerFormat`, `CommonTag`, `Track`/`Album`/`Artist`) are particularly stable. |
-| **Foundation stable** | `meedya-tags-extended` | Core types (`ExtendedTags`, `MusicalKey`, `CuePoint`) are stable. Proprietary reader modules (`serato`, `rekordbox`, `traktor`, `virtualdj`) are not yet implemented — when added, they will populate the existing `ExtendedTags` shape, not change it. |
+| **Foundation stable + MIK reader** | `meedya-tags-extended` | Core types (`ExtendedTags`, `MusicalKey`, `CuePoint`) and the Mixed In Key reader (`read_mik`, `normalise_to_standards`, `MikAnalysis`) are stable. Other proprietary reader modules (`serato`, `rekordbox`, `traktor`, `virtualdj`) are not yet implemented — when added, they will populate the existing `ExtendedTags` shape, not change it. |
 | **Experimental** | (none currently) | — |
 
 All crates share workspace `version = "0.1.0"`. Pre-1.0, minor-version bumps may include breaking changes; please pin to a git revision or tag in downstream apps until 1.0.

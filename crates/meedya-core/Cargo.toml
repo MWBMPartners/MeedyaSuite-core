@@ -8,15 +8,17 @@ repository.workspace = true
 description = "MeedyaSuite-core — unified re-export crate providing the complete MeedyaSuite shared library"
 
 [features]
-default = ["metadata", "codecs", "fingerprint", "lyrics", "providers"]
+default = ["metadata", "codecs", "fingerprint", "lyrics", "providers", "tags-extended", "library-import"]
 metadata = ["dep:meedya-metadata"]
 codecs = ["dep:meedya-codecs"]
 fingerprint = ["dep:meedya-fingerprint"]
 lyrics = ["dep:meedya-lyrics", "metadata"]
 providers = ["dep:meedya-providers"]
 db = ["dep:meedya-db"]
+tags-extended = ["dep:meedya-tags-extended"]
+library-import = ["dep:meedya-library-import"]
 keyring = ["providers", "meedya-providers/keyring-credentials"]
-full = ["metadata", "codecs", "fingerprint", "lyrics", "providers", "db", "keyring"]
+full = ["metadata", "codecs", "fingerprint", "lyrics", "providers", "db", "tags-extended", "library-import", "keyring"]
 
 [dependencies]
 meedya-metadata = { workspace = true, optional = true }
@@ -25,3 +27,5 @@ meedya-fingerprint = { workspace = true, optional = true }
 meedya-lyrics = { workspace = true, optional = true }
 meedya-providers = { workspace = true, optional = true }
 meedya-db = { workspace = true, optional = true }
+meedya-tags-extended = { workspace = true, optional = true }
+meedya-library-import = { workspace = true, optional = true }
