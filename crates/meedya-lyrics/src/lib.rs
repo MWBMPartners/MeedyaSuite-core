@@ -18,11 +18,16 @@ pub mod embed;
 pub mod error;
 pub mod lrc;
 pub mod lyrics;
+pub mod lyricsfile;
 pub mod provider;
 pub mod sidecar;
 
 pub use embed::{embed, embed_synced, DEFAULT_LANGUAGE};
 pub use error::{Error, Result};
 pub use lyrics::{Lyrics, SyncedLine};
+pub use lyricsfile::{
+    Lyricsfile, LyricsfileLine, LyricsfileMetadata, LyricsfileWord, INSTRUMENTAL_MARKER,
+    LYRICSFILE_VERSION,
+};
 pub use provider::lrclib::LrclibProvider;
 pub use provider::{LyricsProvider, TrackQuery};

@@ -18,4 +18,8 @@ pub enum Error {
     UnsupportedForSync { tag_type: String },
     #[error("invalid ISO-639-2 language code (must be 3 ASCII letters)")]
     InvalidLanguageCode,
+    #[error("malformed Lyricsfile YAML: {0}")]
+    LyricsfileYaml(String),
+    #[error("malformed TTML: {0}")]
+    Ttml(String),
 }
