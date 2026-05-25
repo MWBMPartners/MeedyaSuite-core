@@ -34,6 +34,11 @@ lofty = "0.22"
 # Audio fingerprinting
 rusty-chromaprint = "0.3"
 symphonia = { version = "0.5", features = ["all"] }
+# URL-safe base64 encoding used by the Chromaprint fingerprint
+# serialiser (#10 / MeedyaDL #353 Phase 3) — Chromaprint's binary
+# fingerprint blobs are encoded to text via URL_SAFE_NO_PAD for the
+# AcoustID API.
+base64 = "0.22"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "stream"] }
