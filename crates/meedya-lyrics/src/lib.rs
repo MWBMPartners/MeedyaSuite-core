@@ -19,6 +19,7 @@ pub mod error;
 pub mod lrc;
 pub mod lyrics;
 pub mod lyricsfile;
+pub mod lyricsfile_ttml;
 pub mod provider;
 pub mod sidecar;
 
