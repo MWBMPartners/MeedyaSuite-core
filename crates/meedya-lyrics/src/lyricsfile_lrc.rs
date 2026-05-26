@@ -35,10 +35,10 @@
 //   storage. Leave for a follow-up if it becomes user-visible.
 
 use crate::error::Result;
+use crate::lyricsfile::LyricsfileMetadata;
 use crate::lyricsfile::{
     Lyricsfile, LyricsfileLine, LyricsfileWord, INSTRUMENTAL_MARKER, LYRICSFILE_VERSION,
 };
-use crate::lyricsfile::LyricsfileMetadata;
 
 impl Lyricsfile {
     /// Convert a standard LRC (or Enhanced LRC) document into a

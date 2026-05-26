@@ -1,4 +1,4 @@
-// Copyright (c) 2026 MWBMPartners
+// Copyright (c) 2026 MeedyaSuite
 // Licensed under the MIT License.
 //
 // Chromaprint fingerprint generation — pure Rust, no external binaries.
@@ -140,9 +140,9 @@ pub fn generate_fingerprint(file_path: &Path) -> Result<(String, u32), Fingerpri
     // the same algorithm `fpcalc` uses by default.
     let config = Configuration::preset_test2();
     let mut printer = Fingerprinter::new(&config);
-    printer.start(sample_rate, channels).map_err(|e| {
-        FingerprintError::FingerprintFailed(format!("fingerprinter start: {e:?}"))
-    })?;
+    printer
+        .start(sample_rate, channels)
+        .map_err(|e| FingerprintError::FingerprintFailed(format!("fingerprinter start: {e:?}")))?;
 
     // Decode every packet, feed interleaved i16 samples to the
     // fingerprinter. `total_samples` tracks the cumulative count
@@ -158,11 +158,7 @@ pub fn generate_fingerprint(file_path: &Path) -> Result<(String, u32), Fingerpri
             {
                 break; // End of stream — clean termination.
             }
-            Err(e) => {
-                return Err(FingerprintError::DecodeError(format!(
-                    "next_packet: {e}"
-                )))
-            }
+            Err(e) => return Err(FingerprintError::DecodeError(format!("next_packet: {e}"))),
         };
 
         // Skip packets from other tracks (unlikely for single-track
@@ -196,11 +192,7 @@ pub fn generate_fingerprint(file_path: &Path) -> Result<(String, u32), Fingerpri
                 // next packet should be fine. A single bad packet
                 // shouldn't kill an otherwise valid fingerprint.
             }
-            Err(e) => {
-                return Err(FingerprintError::DecodeError(format!(
-                    "decode: {e}"
-                )))
-            }
+            Err(e) => return Err(FingerprintError::DecodeError(format!("decode: {e}"))),
         }
     }
 
@@ -274,10 +266,8 @@ mod tests {
     /// Avoids pulling `tempfile` as a dev-dep just for this single
     /// throwaway path.
     fn tempfile_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "meedya-fingerprint-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("meedya-fingerprint-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         dir
     }

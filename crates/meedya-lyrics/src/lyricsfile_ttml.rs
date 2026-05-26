@@ -471,7 +471,11 @@ mod tests {
         </div></body></tt>"#;
         let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
         assert_eq!(lf.lines.len(), 1);
-        assert!(lf.lines[0].words.is_empty(), "got words: {:?}", lf.lines[0].words);
+        assert!(
+            lf.lines[0].words.is_empty(),
+            "got words: {:?}",
+            lf.lines[0].words
+        );
         assert!(
             lf.lines[0].text.contains("Hello") && lf.lines[0].text.contains("world"),
             "got text: {:?}",

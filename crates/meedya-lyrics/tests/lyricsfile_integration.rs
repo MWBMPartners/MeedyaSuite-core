@@ -91,10 +91,16 @@ fn all_five_exports_produce_non_empty_output_for_sample() {
     let ass = lf.to_ass();
 
     assert!(lrc.contains("[00:01.00]"), "LRC missing timestamp: {lrc}");
-    assert!(enh.contains("<00:01.00>"), "Enhanced LRC missing word marker");
+    assert!(
+        enh.contains("<00:01.00>"),
+        "Enhanced LRC missing word marker"
+    );
     assert!(srt.contains("00:00:01,000 -->"), "SRT missing start");
     assert!(vtt.starts_with("WEBVTT"), "VTT missing header");
-    assert!(ass.contains("Dialogue: 0,0:00:01.00,"), "ASS missing dialogue");
+    assert!(
+        ass.contains("Dialogue: 0,0:00:01.00,"),
+        "ASS missing dialogue"
+    );
 }
 
 #[test]
@@ -120,7 +126,11 @@ fn yaml_output_is_self_documenting_and_human_readable() {
     // Field names should be unquoted (YAML default), values readable.
     assert!(yaml.contains("title: Hello"));
     assert!(yaml.contains("artist: Adele"));
-    assert!(yaml.contains("album: '25'") || yaml.contains("album: \"25\"") || yaml.contains("album: 25"));
+    assert!(
+        yaml.contains("album: '25'")
+            || yaml.contains("album: \"25\"")
+            || yaml.contains("album: 25")
+    );
     assert!(yaml.contains("duration_ms: 295000"));
     assert!(yaml.contains("language: en"));
     assert!(yaml.contains("instrumental: false"));

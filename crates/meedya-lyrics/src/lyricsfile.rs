@@ -376,10 +376,7 @@ lines:
     #[test]
     fn malformed_yaml_returns_lyricsfile_yaml_error() {
         let err = Lyricsfile::parse("not yaml at all: :\n  :").unwrap_err();
-        assert!(
-            matches!(err, Error::LyricsfileYaml(_)),
-            "got: {err:?}"
-        );
+        assert!(matches!(err, Error::LyricsfileYaml(_)), "got: {err:?}");
     }
 
     #[test]
