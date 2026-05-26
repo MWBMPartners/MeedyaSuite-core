@@ -1,4 +1,4 @@
-// Copyright (c) 2026 MWBMPartners
+// Copyright (c) 2026 MeedyaSuite
 // Licensed under the MIT License.
 //
 // meedya-providers — Shared metadata provider framework

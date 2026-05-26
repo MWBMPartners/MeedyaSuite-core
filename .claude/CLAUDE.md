@@ -26,7 +26,7 @@ Rust workspace, 9 crates, 211 tests passing. Two co-existing tag-I/O foundations
 
 - **Copyright header** on every source file:
   ```
-  // Copyright (c) 2024-2026 MWBM Partners Ltd
+  // Copyright (c) 2026 MeedyaSuite
   // Licensed under the MIT License. See LICENSE file in the project root.
   ```
 - **Module documentation**: comment block explaining purpose, source (which downstream app it was extracted from, if any), and consumers.

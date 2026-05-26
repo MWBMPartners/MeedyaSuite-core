@@ -18,7 +18,7 @@
 Every Rust source file starts with:
 
 ```rust
-// Copyright (c) 2024-2026 MWBM Partners Ltd
+// Copyright (c) 2026 MeedyaSuite
 // Licensed under the MIT License. See LICENSE file in the project root.
 ```
 
@@ -27,7 +27,7 @@ Every Rust source file starts with:
 ```toml
 version.workspace    = true
 edition.workspace    = true   # = 2021
-authors.workspace    = true   # = ["MWBMPartners"]
+authors.workspace    = true   # = ["MeedyaSuite"]
 license.workspace    = true   # = "MIT"
 repository.workspace = true
 description          = "MeedyaSuite Core — <purpose>"
