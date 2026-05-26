@@ -5,7 +5,10 @@
 // ====================================================================
 //
 // Provides:
-// - Chromaprint audio fingerprint generation (pure Rust, no fpcalc binary)
+// - Chromaprint audio fingerprint generation (pure Rust, no fpcalc
+//   binary; opt-in via the `chromaprint` cargo feature so consumers
+//   that only want AcoustID lookup or ReplayGain analysis don't pay
+//   the compile-time cost of `rusty-chromaprint` + `symphonia`).
 // - AcoustID API lookup with rate limiting
 // - EBU R128 loudness measurement and ReplayGain calculation
 //
@@ -16,10 +19,14 @@
 // Extracted from MeedyaDL acoustid_service.rs + replaygain_service.rs.
 
 pub mod acoustid;
+#[cfg(feature = "chromaprint")]
+pub mod chromaprint;
 mod error;
 pub mod replaygain;
 
 pub use acoustid::{AcoustIdClient, AcoustIdResult};
+#[cfg(feature = "chromaprint")]
+pub use chromaprint::generate_fingerprint;
 pub use error::FingerprintError;
 pub use replaygain::{
     AlbumGainResult, ReplayGainAnalyzer, ReplayGainResult, DEFAULT_REFERENCE_LEVEL,

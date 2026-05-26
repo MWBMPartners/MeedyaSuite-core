@@ -23,7 +23,10 @@ repository = "https://github.com/MWBMPartners/MeedyaSuite-core"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 toml = "0.8"
+# XML — used by meedya-lyrics for TTML parsing (#34)
+quick-xml = { version = "0.36", features = ["serialize"] }
 
 # Error handling
 thiserror = "2"
@@ -34,6 +37,11 @@ lofty = "0.22"
 # Audio fingerprinting
 rusty-chromaprint = "0.3"
 symphonia = { version = "0.5", features = ["all"] }
+# URL-safe base64 encoding used by the Chromaprint fingerprint
+# serialiser (#10 / MeedyaDL #353 Phase 3) — Chromaprint's binary
+# fingerprint blobs are encoded to text via URL_SAFE_NO_PAD for the
+# AcoustID API.
+base64 = "0.22"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "stream"] }
