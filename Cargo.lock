@@ -1038,7 +1038,9 @@ dependencies = [
  "chrono",
  "lofty 0.21.1",
  "log",
+ "serde",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

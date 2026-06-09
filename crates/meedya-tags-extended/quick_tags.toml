@@ -1,0 +1,49 @@
+# Quick Tag schema — default vocabulary.
+#
+# Predefined buckets for rapid manual tagging in MeedyaManager-style
+# interfaces (keyboard-shortcut driven). The schema lives in core so the
+# vocabulary is shared across MeedyaSuite apps; keybindings live in the
+# apps.
+#
+# Each `[category]` has:
+#   - `values`: an ordered list of valid tag strings
+#   - `multi`:  whether a track can carry multiple values (true) or only
+#               one at a time (false)
+#
+# Custom categories beyond these defaults can be added by loading a
+# different TOML via `QuickTagSchema::load_from_str`. Tools should
+# round-trip categories they don't know about (preserve atoms even if
+# they don't render UI for them).
+
+[mood]
+values = [
+    "euphoric",
+    "melancholy",
+    "dark",
+    "uplifting",
+    "chill",
+    "aggressive",
+    "romantic",
+    "funky",
+    "dreamy",
+    "nostalgic",
+]
+multi = true
+
+[energy]
+values = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+multi = false
+
+[crowd_response]
+values = [
+    "peak-time",
+    "set-opener",
+    "set-closer",
+    "warm-up",
+    "after-hours",
+]
+multi = true
+
+[mixing_role]
+values = ["intro", "build", "drop", "breakdown", "outro", "vocal-cue"]
+multi = true

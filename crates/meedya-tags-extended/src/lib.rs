@@ -42,6 +42,7 @@ pub(crate) mod meedya_atom;
 pub mod mik;
 pub mod model;
 pub mod play_history;
+pub mod quick_tag;
 pub mod standard;
 pub mod stems;
 
@@ -63,5 +64,9 @@ pub use model::{
 pub use play_history::{
     clear_play_history, read_play_history, record_play, record_skip, write_play_history,
     PlayHistory,
+};
+pub use quick_tag::{
+    clear_quick_tags, read_quick_tags, validate as validate_quick_tags, write_quick_tags,
+    QuickTagCategory, QuickTagSchema, QuickTagValidationError, QuickTagValues,
 };
 pub use stems::{clear_stems, read_stems, write_stems, StemMetadata, StemRole, StemSource};
