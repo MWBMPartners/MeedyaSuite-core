@@ -1,4 +1,19 @@
-use crate::types::CoverArtInfo;
+use crate::types::{CoverArtInfo, ProviderResult};
+
+/// Returns the cover art entry with the most pixels (width × height).
+///
+/// Entries with missing `width` or `height` are treated as zero pixels.
+/// Returns `None` if the result has no cover art at all.
+pub fn best_cover_art(r: &ProviderResult) -> Option<&CoverArtInfo> {
+    r.cover_art
+        .iter()
+        .max_by_key(|a| u64::from(a.width.unwrap_or(0)) * u64::from(a.height.unwrap_or(0)))
+}
+
+/// Returns `true` if the result has at least one cover art entry.
+pub fn has_cover_art(r: &ProviderResult) -> bool {
+    !r.cover_art.is_empty()
+}
 
 /// Size classification for cover art.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

@@ -33,6 +33,18 @@ pub enum ProviderError {
     Other(String),
 }
 
+/// Returns `true` for transient errors that may succeed on retry.
+///
+/// Useful for orchestrators (retry loops, circuit breakers) deciding whether
+/// to back off and try again or fail fast. Network errors and explicit
+/// rate-limit responses are retryable; auth failures and parse errors are not.
+pub fn is_retryable(err: &ProviderError) -> bool {
+    matches!(
+        err,
+        ProviderError::NetworkError(_) | ProviderError::RateLimited(_)
+    )
+}
+
 /// Capabilities that a metadata provider supports.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProviderCapabilities {
