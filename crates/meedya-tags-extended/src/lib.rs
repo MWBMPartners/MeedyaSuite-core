@@ -36,6 +36,7 @@
 // conflict.
 
 pub mod ai_content;
+pub mod genre_hierarchy;
 pub mod io;
 pub(crate) mod meedya_atom;
 pub mod mik;
@@ -46,6 +47,9 @@ pub mod stems;
 
 pub use ai_content::{
     clear_ai_content, parse_bool_truthy, read_ai_content, write_ai_content, AiContentFlags,
+};
+pub use genre_hierarchy::{
+    clear_genre_hierarchy, read_genre_hierarchy, write_genre_hierarchy, GenreHierarchy,
 };
 pub use io::TagFile;
 pub use mik::{
