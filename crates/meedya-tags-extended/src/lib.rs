@@ -36,6 +36,7 @@
 // conflict.
 
 pub mod ai_content;
+pub mod conflict_policy;
 pub mod genre_hierarchy;
 pub mod io;
 pub(crate) mod meedya_atom;
@@ -48,6 +49,10 @@ pub mod stems;
 
 pub use ai_content::{
     clear_ai_content, parse_bool_truthy, read_ai_content, write_ai_content, AiContentFlags,
+};
+pub use conflict_policy::{
+    resolve as resolve_conflict, Candidate, ConflictPolicy, ResolutionError, ResolvableField,
+    Tiebreak,
 };
 pub use genre_hierarchy::{
     clear_genre_hierarchy, read_genre_hierarchy, write_genre_hierarchy, GenreHierarchy,
