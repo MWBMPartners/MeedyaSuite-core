@@ -8,6 +8,7 @@ repository.workspace = true
 description = "MeedyaSuite Core — multi-format tag I/O with DJ metadata support (Serato, Rekordbox, Traktor, VDJ, Mixed In Key)"
 
 [dependencies]
+chrono = { workspace = true }
 lofty = "0.21"
 log = "0.4"
 

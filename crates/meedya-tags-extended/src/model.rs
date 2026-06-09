@@ -39,6 +39,8 @@ pub struct ExtendedTags {
     pub ai_content: crate::ai_content::AiContentFlags,
     /// Music stems metadata when this file is part of a stems collection.
     pub stems: Option<crate::stems::StemMetadata>,
+    /// Play / skip history with timestamps.
+    pub play_history: crate::play_history::PlayHistory,
 }
 
 /// Energy value with explicit source-scale awareness.

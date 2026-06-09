@@ -1035,6 +1035,7 @@ dependencies = [
 name = "meedya-tags-extended"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "lofty 0.21.1",
  "log",
  "tempfile",
