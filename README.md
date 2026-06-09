@@ -22,7 +22,7 @@ Written in Rust. Distributable to all Meedya apps via:
 | [`meedya-db`](crates/meedya-db) | MeedyaDB API client, shared media models (Track/Album/Artist), database export trait. | Implemented | 3 |
 | [`meedya-core`](crates/meedya-core) | Unified facade crate re-exporting the implemented crates behind feature flags. | Implemented | — |
 
-**Total: 248 tests passing**, workspace builds clean.
+**Total: 466 tests passing**, workspace builds clean.
 
 ## Quick Start
 
@@ -30,7 +30,7 @@ Written in Rust. Distributable to all Meedya apps via:
 # Build all crates
 cargo build --workspace
 
-# Run the full test suite (248 tests)
+# Run the full test suite (466 tests)
 cargo test --workspace
 
 # Build a single crate

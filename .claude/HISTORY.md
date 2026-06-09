@@ -177,3 +177,54 @@ All work this session is on `claude/feature-batch-2026-05-18` per user instructi
 - `77762e3` feat(meedya-lyrics): implement synchronised ID3v2 SYLT writer
 - `b501104` feat(meedya-tags-extended): Mixed In Key reader with standards-first normalisation
 - (this commit) docs: refresh API.md / CONTEXT.md / CLAUDE.md / HISTORY.md for the batch
+
+---
+
+## 2026-06-09 — 10-issue implementation batch
+
+Bundled implementation pass through the issue backlog. Branch `claude/feature-batch-2026-06-09` from main. Each issue committed individually with detailed body + GitHub comment.
+
+### Issues closed (10)
+
+| # | Title | Crate | New tests |
+|---|---|---|---|
+| #55 | Energy scale enum (breaking change) | meedya-tags-extended | +13 |
+| #43 | AI content tags (isAI/AIused/AIenhanced/detailAIenhance) | meedya-tags-extended | +20 |
+| #42 | Music stems schema | meedya-tags-extended | +16 |
+| #56 | Play history (PlayCount/LastPlayed/DjPlayCount/SkipCount) | meedya-tags-extended | +15 |
+| #49 | CatalogNumber/Barcode/OriginalDate promoted to CommonTag | meedya-metadata | +4 |
+| #46 | Hierarchical genre schema (root → subgenre → style) | meedya-tags-extended | +14 |
+| #48 | Quick Tag schema (TOML-driven mood/energy/style buckets) | meedya-tags-extended | +18 |
+| #47 | Filename template engine (AutoRename-style) | meedya-metadata | +27 |
+| #54 | Tag conflict resolution policy + audit trail | meedya-tags-extended | +13 |
+| #57 | Sidecar JSON metadata writer (`.meedya.json`) | meedya-tags-extended | +10 |
+
+### Key decisions
+
+- **Extracted shared `meedya_atom` helper** out of `mik.rs` into a `pub(crate)` module. Used by every new MeedyaMeta-writing module (ai_content, stems, play_history, genre_hierarchy, quick_tag, sidecar_json, conflict_policy) so the `ItemKey::Unknown` + `insert_unchecked` convention stays consistent.
+
+- **Added `Serialize`/`Deserialize` derives across all model types** in meedya-tags-extended so the sidecar JSON writer can round-trip. Non-breaking — derives only.
+
+- **Standards-first preserved**: only Energy (no standard exists) + audit trails + Quick Tag + stem metadata fall back to MeedyaMeta. Catalog Number / Barcode / OriginalDate (#49) all use industry-standard field names. Genre hierarchy writes the leaf to standard `Genre` and the structured levels to MeedyaMeta.
+
+- **EnergyValue breaking change** intentional. `ExtendedTags::energy: Option<u8>` → `Option<EnergyValue>`. The enum tags which DJ tool's scale the value came from (MIK, Serato, Rekordbox, Beatport, Spotify, Normalised, Unknown) and exposes `to_canonical()` for normalising to 1-10.
+
+- **Conflict policy is declarative**, not procedural. Caller constructs `Vec<Candidate<T>>` from source-specific readers and calls `resolve()` with a `ConflictPolicy`. `Resolution<T>` carries the winner + all losers as audit trail. Default policy implements standards-first (MeedyaMeta > Standard > Serato > Rekordbox > Traktor > VirtualDj > MixedInKey).
+
+- **Filename template engine** lives in meedya-metadata. Format-agnostic via `TagSource` trait — downstream apps wrap their tag handles in a thin newtype implementing it. Built-in transforms: sanitize, ascii (Latin-fold), lower/upper/title, trim, round, fallback:VAR, max:N. Width specifier `:NN` zero-pads digits / truncates strings. Realistic worked examples include MeedyaDL flat filenames and MeedyaManager path-like patterns.
+
+- **Sidecar JSON schema versioning** is strict. `SCHEMA_VERSION = 1`. Reader rejects newer versions via `SidecarError::UnsupportedSchemaVersion { found, supported }` rather than silently corrupting.
+
+### Workspace test count
+
+- meedya-tags-extended: 61 → 180 (+119, mostly from this batch and the existing mik tests)
+- meedya-metadata: 59 → 90 (+31, mostly template tests)
+- Workspace total: 466 (was 248 in last batch's docs; intermediate work on other branches landed since then)
+
+### Commits on `claude/feature-batch-2026-06-09`
+
+Each issue has its own commit; see commit messages for full per-issue API details.
+
+### Standing task compliance
+
+`docs/API.md` workspace overview table updated with new module lists + test counts. CLAUDE.md standing task says "in the same commit as the code change" — bundled into the end-of-batch docs commit here (matches the precedent set by the 2026-05-18 batch).
