@@ -37,6 +37,8 @@ pub struct ExtendedTags {
     /// AI content disclosure flags (full-AI / partial-AI / AI-enhanced /
     /// model+settings detail).
     pub ai_content: crate::ai_content::AiContentFlags,
+    /// Music stems metadata when this file is part of a stems collection.
+    pub stems: Option<crate::stems::StemMetadata>,
 }
 
 /// Energy value with explicit source-scale awareness.

@@ -41,6 +41,7 @@ pub(crate) mod meedya_atom;
 pub mod mik;
 pub mod model;
 pub mod standard;
+pub mod stems;
 
 pub use ai_content::{
     clear_ai_content, parse_bool_truthy, read_ai_content, write_ai_content, AiContentFlags,
@@ -54,3 +55,4 @@ pub use model::{
     BeatGrid, BeatGridMarker, CuePoint, EnergyValue, ExtendedTags, KeyMode, LoopPoint, MusicalKey,
     Note, Rgb, Source,
 };
+pub use stems::{clear_stems, read_stems, write_stems, StemMetadata, StemRole, StemSource};
