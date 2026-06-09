@@ -38,7 +38,7 @@ Rust workspace, 9 crates, 211 tests passing. Two co-existing tag-I/O foundations
 
 ## Key design principles
 
-1. **Standards-first**: Use standard metadata tags (ID3v2 / Vorbis / MP4 ilst spec fields) wherever they exist. Fall back to `MeedyaMeta:*` freeform atoms **only** when no standard equivalent exists (e.g., DJ energy ratings, internal audit trails, MeedyaSuite-only soft-playback bounds). Standards-first applies to every crate — not just MIK or DJ-metadata.
+lets 1. **Standards-first**: Use standard metadata tags (ID3v2 / Vorbis / MP4 ilst spec fields) wherever they exist. Fall back to `MeedyaMeta:*` freeform atoms **only** when no standard equivalent exists (e.g., DJ energy ratings, internal audit trails, MeedyaSuite-only soft-playback bounds). Standards-first applies to every crate — not just MIK or DJ-metadata.
 2. **Results only, not side effects**: Crates return data; consumers handle I/O (file writes, UI updates, DB persistence).
 3. **Config-driven where possible**: Tag definitions, codec registries etc. loaded from TOML — zero Rust changes to add entries.
 4. **No app-specific logic**: No Tauri, no SwiftUI, no CLI framework dependencies in core crates.
@@ -73,13 +73,31 @@ Update [CONTEXT.md](CONTEXT.md) whenever the workspace structure changes meaning
 
 Append a dated entry to [HISTORY.md](HISTORY.md) at the end of any substantial session — what landed, design decisions, deferred follow-ups. **Append, do not rewrite.** The history value is the chronological narrative across sessions; rewriting older entries destroys context.
 
+### Open a GitHub issue for every feature, tweak, and enhancement raised — even uncommitted ones
+
+**Trigger**: any substantive new feature, design tweak, code-quality enhancement, follow-up, or research direction surfaced during a session — including ones the user hasn't yet committed to building.
+
+**Action**: before the session ends, open a GitHub issue in this repo with full detail (problem statement, scope, acceptance criteria, references, complexity estimate). Use the issue templates implicitly modelled by issues #21–#58 — they read like mini design docs.
+
+**Why**: "ideas raised once and not picked up are otherwise lost." Even rejected or deferred ideas deserve a tracked record so the team can revisit decisions, the rationale survives staff turnover, and partner-app developers can see what's on the roadmap. The cost of opening an issue is small; the cost of losing a decision is not.
+
+**How to apply**:
+
+- One issue per distinct idea — don't bundle multiple proposals into a single tracker.
+- Ideas the user explicitly **rejected** still get captured (one reference issue listing them plus the rationale), so the "no" is on record and reversible.
+- Label appropriately: `enhancement` for new features, `meedya-<crate>` for crate-targeted work, plus the topical labels (`dj-metadata`, `bindings`, etc.) where they fit.
+- If the project has the `for consideration` label set up, use it for ideas the user hasn't actively endorsed, so they're distinguishable from owner-confirmed enhancements.
+- Cross-reference related issues at the bottom of each body so reviewers see the constellation.
+
+**Skip rule**: trivial typo fixes, single-line lint adjustments, and questions answered inline don't need their own issue. The line is "would a partner-app dev care to see this on the roadmap?" — if yes, open the issue.
+
 ## Working with this codebase
 
 ### Build / test
 
 ```bash
 cargo build --workspace
-cargo test  --workspace                       # 211 tests
+cargo test  --workspace                       # 248 tests
 cargo test  -p meedya-tags-extended           # single crate
 cargo doc   --workspace --no-deps --open      # exhaustive auto-generated docs
 ```
