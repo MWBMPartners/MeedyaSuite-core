@@ -35,11 +35,16 @@
 // `Source` recording origin so consumers can disambiguate when fields
 // conflict.
 
+pub mod ai_content;
 pub mod io;
+pub(crate) mod meedya_atom;
 pub mod mik;
 pub mod model;
 pub mod standard;
 
+pub use ai_content::{
+    clear_ai_content, parse_bool_truthy, read_ai_content, write_ai_content, AiContentFlags,
+};
 pub use io::TagFile;
 pub use mik::{
     normalise_to_standards, read_mik, MikAnalysis, MikField, MikKinds, MikPosition,

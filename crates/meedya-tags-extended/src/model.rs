@@ -34,6 +34,9 @@ pub struct ExtendedTags {
     pub beat_grid: Option<BeatGrid>,
     /// Free-text comment from the standard `COMM` / `©cmt` / `comment` field.
     pub comment: Option<String>,
+    /// AI content disclosure flags (full-AI / partial-AI / AI-enhanced /
+    /// model+settings detail).
+    pub ai_content: crate::ai_content::AiContentFlags,
 }
 
 /// Energy value with explicit source-scale awareness.
