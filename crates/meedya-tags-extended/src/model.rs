@@ -21,9 +21,11 @@ pub struct ExtendedTags {
     pub bpm: Option<f64>,
     /// Musical key, normalized across Camelot / Open Key / traditional notations.
     pub key: Option<MusicalKey>,
-    /// Energy rating (typically 1-10). No widely standardised storage; readers
-    /// extract from source-specific fields where supported.
-    pub energy: Option<u8>,
+    /// Energy rating with source-scale awareness. Different DJ tools use
+    /// different scales (MIK 1-10, Serato float 1-10, Spotify 0-1) and the
+    /// variant tracks which so consumers can canonicalise via
+    /// [`EnergyValue::to_canonical`].
+    pub energy: Option<EnergyValue>,
     /// Cue points (memory cues, hot cues), aggregated from all sources.
     pub cue_points: Vec<CuePoint>,
     /// Loop regions.
@@ -32,6 +34,56 @@ pub struct ExtendedTags {
     pub beat_grid: Option<BeatGrid>,
     /// Free-text comment from the standard `COMM` / `©cmt` / `comment` field.
     pub comment: Option<String>,
+}
+
+/// Energy value with explicit source-scale awareness.
+///
+/// DJ tools use different scales: MIK / Rekordbox / Beatport use integer 1-10,
+/// Serato uses a float (typically 1.0-10.0), Spotify Audio Features uses
+/// 0.0-1.0. Storing the source variant lets consumers either display the
+/// native value or [`EnergyValue::to_canonical`] to a normalised 1-10 scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EnergyValue {
+    /// Mixed In Key — canonical integer 1-10.
+    Mik(u8),
+    /// Serato Autotags — float, typically 1.0-10.0.
+    Serato(f32),
+    /// Rekordbox — integer 1-10.
+    Rekordbox(u8),
+    /// Beatport (newer releases) — integer 1-10.
+    Beatport(u8),
+    /// Spotify Audio Features — continuous 0.0-1.0.
+    Spotify(f32),
+    /// Already canonical 1-10 (e.g., from Quick Tag user input).
+    Normalised(u8),
+    /// Raw value whose scale is not known. `to_canonical` returns `None`.
+    Unknown(f32),
+}
+
+impl EnergyValue {
+    /// Convert to canonical 1-10 scale (`u8`).
+    ///
+    /// Conversion rules:
+    /// - `Mik`, `Rekordbox`, `Beatport`, `Normalised` → passthrough (clamped 1..=10).
+    /// - `Serato(f)` → `f.round() as u8`, clamped to 1..=10.
+    /// - `Spotify(f)` → `(f * 10.0).round() as u8`, clamped to 1..=10. Note that
+    ///   Spotify's `energy` is roughly linear so simple scaling is acceptable.
+    /// - `Unknown(_)` → `None` (we don't guess about scale).
+    pub fn to_canonical(self) -> Option<u8> {
+        let raw = match self {
+            EnergyValue::Mik(v)
+            | EnergyValue::Rekordbox(v)
+            | EnergyValue::Beatport(v)
+            | EnergyValue::Normalised(v) => return Some(v.clamp(1, 10)),
+            EnergyValue::Serato(f) => f.round(),
+            EnergyValue::Spotify(f) => (f * 10.0).round(),
+            EnergyValue::Unknown(_) => return None,
+        };
+        if !raw.is_finite() {
+            return None;
+        }
+        Some((raw as i32).clamp(1, 10) as u8)
+    }
 }
 
 /// Origin of a particular tag value, used when aggregating across sources.
@@ -495,5 +547,85 @@ mod tests {
     fn parse_garbage_returns_none() {
         assert!(MusicalKey::parse("xyz").is_none());
         assert!(MusicalKey::parse("99Z").is_none());
+    }
+
+    // ---- EnergyValue ----
+
+    #[test]
+    fn energy_mik_passthrough() {
+        assert_eq!(EnergyValue::Mik(7).to_canonical(), Some(7));
+    }
+
+    #[test]
+    fn energy_rekordbox_passthrough() {
+        assert_eq!(EnergyValue::Rekordbox(5).to_canonical(), Some(5));
+    }
+
+    #[test]
+    fn energy_beatport_passthrough() {
+        assert_eq!(EnergyValue::Beatport(10).to_canonical(), Some(10));
+    }
+
+    #[test]
+    fn energy_normalised_passthrough() {
+        assert_eq!(EnergyValue::Normalised(3).to_canonical(), Some(3));
+    }
+
+    #[test]
+    fn energy_passthrough_clamps_above_10() {
+        assert_eq!(EnergyValue::Mik(11).to_canonical(), Some(10));
+        assert_eq!(EnergyValue::Rekordbox(99).to_canonical(), Some(10));
+    }
+
+    #[test]
+    fn energy_passthrough_clamps_zero_to_one() {
+        // u8 0 is below MIK's 1-10 scale; clamp up to 1.
+        assert_eq!(EnergyValue::Mik(0).to_canonical(), Some(1));
+    }
+
+    #[test]
+    fn energy_serato_rounds() {
+        assert_eq!(EnergyValue::Serato(7.4).to_canonical(), Some(7));
+        assert_eq!(EnergyValue::Serato(7.6).to_canonical(), Some(8));
+        assert_eq!(EnergyValue::Serato(7.5).to_canonical(), Some(8));
+    }
+
+    #[test]
+    fn energy_serato_clamps() {
+        assert_eq!(EnergyValue::Serato(0.4).to_canonical(), Some(1));
+        assert_eq!(EnergyValue::Serato(11.6).to_canonical(), Some(10));
+        assert_eq!(EnergyValue::Serato(-5.0).to_canonical(), Some(1));
+    }
+
+    #[test]
+    fn energy_spotify_scales() {
+        // Spotify is 0.0-1.0 → 1-10 canonical.
+        assert_eq!(EnergyValue::Spotify(0.0).to_canonical(), Some(1));
+        assert_eq!(EnergyValue::Spotify(0.5).to_canonical(), Some(5));
+        assert_eq!(EnergyValue::Spotify(1.0).to_canonical(), Some(10));
+        assert_eq!(EnergyValue::Spotify(0.75).to_canonical(), Some(8));
+    }
+
+    #[test]
+    fn energy_spotify_out_of_band_clamps() {
+        assert_eq!(EnergyValue::Spotify(-0.5).to_canonical(), Some(1));
+        assert_eq!(EnergyValue::Spotify(2.0).to_canonical(), Some(10));
+    }
+
+    #[test]
+    fn energy_unknown_returns_none() {
+        assert_eq!(EnergyValue::Unknown(42.0).to_canonical(), None);
+    }
+
+    #[test]
+    fn energy_non_finite_returns_none() {
+        assert_eq!(EnergyValue::Serato(f32::NAN).to_canonical(), None);
+        assert_eq!(EnergyValue::Spotify(f32::INFINITY).to_canonical(), None);
+    }
+
+    #[test]
+    fn extended_tags_default_energy_is_none() {
+        let tags = ExtendedTags::default();
+        assert!(tags.energy.is_none());
     }
 }

@@ -46,6 +46,6 @@ pub use mik::{
     MikSourceLocation,
 };
 pub use model::{
-    BeatGrid, BeatGridMarker, CuePoint, ExtendedTags, KeyMode, LoopPoint, MusicalKey, Note, Rgb,
-    Source,
+    BeatGrid, BeatGridMarker, CuePoint, EnergyValue, ExtendedTags, KeyMode, LoopPoint, MusicalKey,
+    Note, Rgb, Source,
 };
