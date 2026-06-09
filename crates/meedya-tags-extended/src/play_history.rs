@@ -18,6 +18,7 @@
 
 use chrono::{DateTime, Utc};
 use lofty::tag::Tag;
+use serde::{Deserialize, Serialize};
 
 use crate::meedya_atom::{clear_meedya_atom, read_meedya_atom, write_meedya_atom};
 
@@ -33,7 +34,7 @@ const ATOM_SKIP_COUNT: &str = "SkipCount";
 // ============================================================
 
 /// Play history fields. All optional — readers leave absent atoms as `None`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayHistory {
     /// Total times the file has been played (any context).
     pub play_count: Option<u32>,

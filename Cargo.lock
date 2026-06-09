@@ -1039,6 +1039,7 @@ dependencies = [
  "lofty 0.21.1",
  "log",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
 ]

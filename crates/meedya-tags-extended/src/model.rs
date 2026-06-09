@@ -10,12 +10,14 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// Aggregated extended tag data for a single audio file.
 ///
 /// Fields default to `None` / empty when the underlying source did not
 /// supply that datapoint. A reader that fails to parse a particular source
 /// leaves its corresponding contributions out without erroring the rest.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExtendedTags {
     /// Beats per minute. Float to allow non-integer values from Serato/MIK.
     pub bpm: Option<f64>,
@@ -49,7 +51,7 @@ pub struct ExtendedTags {
 /// Serato uses a float (typically 1.0-10.0), Spotify Audio Features uses
 /// 0.0-1.0. Storing the source variant lets consumers either display the
 /// native value or [`EnergyValue::to_canonical`] to a normalised 1-10 scale.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum EnergyValue {
     /// Mixed In Key — canonical integer 1-10.
     Mik(u8),
@@ -94,7 +96,7 @@ impl EnergyValue {
 }
 
 /// Origin of a particular tag value, used when aggregating across sources.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Source {
     /// MeedyaSuite-native tags (`MeedyaMeta:*`).
     MeedyaMeta,
@@ -116,7 +118,7 @@ pub enum Source {
 
 /// A single cue point. Hot cues are numbered (0-7 typically); memory cues
 /// have `hot_cue_index = None`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CuePoint {
     pub position_ms: u64,
     pub label: Option<String>,
@@ -126,7 +128,7 @@ pub struct CuePoint {
     pub source: Source,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoopPoint {
     pub start_ms: u64,
     pub end_ms: u64,
@@ -136,7 +138,7 @@ pub struct LoopPoint {
     pub source: Source,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Rgb {
     pub r: u8,
     pub g: u8,
@@ -150,13 +152,13 @@ pub struct Rgb {
 /// A beat grid: anchor points marking downbeats with the BPM in effect.
 /// Most rippers/analysers store one anchor + a constant BPM; tracks with
 /// tempo changes carry multiple anchors.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BeatGrid {
     pub markers: Vec<BeatGridMarker>,
     pub source: Source,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BeatGridMarker {
     pub position_ms: u64,
     pub bpm: f64,
@@ -166,13 +168,13 @@ pub struct BeatGridMarker {
 // Musical Key
 // ============================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MusicalKey {
     pub tonic: Note,
     pub mode: KeyMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Note {
     C,
     CSharp,
@@ -188,7 +190,7 @@ pub enum Note {
     B,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum KeyMode {
     Major,
     Minor,

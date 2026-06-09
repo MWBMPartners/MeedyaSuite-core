@@ -18,6 +18,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use lofty::tag::Tag;
+use serde::{Deserialize, Serialize};
 
 use crate::meedya_atom::{clear_meedya_atom, read_meedya_atom, write_meedya_atom};
 
@@ -39,7 +40,7 @@ const ATOM_MODEL_VERSION: &str = "StemModelVersion";
 ///
 /// `role` is the only required field at write time (a stem with no role
 /// isn't really a stem). All others are optional.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StemMetadata {
     /// What musical component this stem represents.
     pub role: StemRole,
@@ -64,7 +65,7 @@ pub struct StemMetadata {
 }
 
 /// What musical component a stem represents.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StemRole {
     Drums,
     Bass,
@@ -83,7 +84,7 @@ pub enum StemRole {
 }
 
 /// What tool produced a stem.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StemSource {
     /// facebookresearch/demucs (open-source).
     Demucs,

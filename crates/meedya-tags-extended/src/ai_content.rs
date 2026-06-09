@@ -23,6 +23,7 @@
 // we don't guess). Writes always emit `\"1\"` / `\"0\"` for consistency.
 
 use lofty::tag::{ItemKey, ItemValue, Tag, TagItem};
+use serde::{Deserialize, Serialize};
 
 use crate::meedya_atom::{clear_meedya_atom, read_meedya_atom, write_meedya_atom};
 
@@ -48,7 +49,7 @@ const GENERIC_AI_ENHANCE_DETAIL: &str = "AI_ENHANCE_DETAIL";
 /// that are `Some`; readers leave absent fields as `None` rather than
 /// defaulting to false, so callers can distinguish \"explicitly not AI\"
 /// from \"unspecified\".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AiContentFlags {
     /// Content was created **fully** using AI (e.g. Suno, Udio output with
     /// no human stems).

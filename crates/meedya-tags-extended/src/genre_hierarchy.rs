@@ -16,6 +16,7 @@
 // for hierarchical genres exists in ID3v2 / Vorbis / MP4.
 
 use lofty::tag::{ItemKey, Tag};
+use serde::{Deserialize, Serialize};
 
 use crate::meedya_atom::{clear_meedya_atom, read_meedya_atom, write_meedya_atom};
 
@@ -35,7 +36,7 @@ const FULL_SEPARATOR: &str = " > ";
 ///
 /// Most platforms expose at most three levels; deeper trees are rare and
 /// usually flattened into the style field by the source itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GenreHierarchy {
     /// Root genre (e.g., "House"). The only required level.
     pub root: String,

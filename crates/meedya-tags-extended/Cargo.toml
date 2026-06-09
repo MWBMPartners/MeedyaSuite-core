@@ -12,6 +12,7 @@ chrono = { workspace = true }
 lofty = "0.21"
 log = "0.4"
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]

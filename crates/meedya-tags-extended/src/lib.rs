@@ -44,6 +44,7 @@ pub mod mik;
 pub mod model;
 pub mod play_history;
 pub mod quick_tag;
+pub mod sidecar_json;
 pub mod standard;
 pub mod stems;
 
@@ -73,5 +74,9 @@ pub use play_history::{
 pub use quick_tag::{
     clear_quick_tags, read_quick_tags, validate as validate_quick_tags, write_quick_tags,
     QuickTagCategory, QuickTagSchema, QuickTagValidationError, QuickTagValues,
+};
+pub use sidecar_json::{
+    read_sidecar, sidecar_path_for, write_sidecar, write_sidecar_with_format, MeedyaSidecar,
+    SidecarError, SidecarFormat, SCHEMA_VERSION as SIDECAR_SCHEMA_VERSION, SIDECAR_SUFFIX,
 };
 pub use stems::{clear_stems, read_stems, write_stems, StemMetadata, StemRole, StemSource};
