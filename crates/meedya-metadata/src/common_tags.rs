@@ -59,6 +59,18 @@ pub enum CommonTag {
     ReplayGainAlbumGain,
     ReplayGainAlbumPeak,
     ReplayGainReferenceLoudness,
+
+    // --- Catalog / IDs (promoted to first-class) ---
+    /// Label's release catalog code (e.g. `SCR-001`). Widely supported by
+    /// Mp3tag, MusicBrainz Picard, foobar2000, beets.
+    CatalogNumber,
+    /// EAN/UPC barcode — separate from `Upc` so callers expecting the
+    /// industry-canonical `BARCODE` tag name find it.
+    Barcode,
+    /// Original release date (for re-releases / remasters) — when the
+    /// original was released vs. `ReleaseDate` which refers to this
+    /// pressing's date.
+    OriginalDate,
 }
 
 impl CommonTag {
@@ -95,6 +107,9 @@ impl CommonTag {
             Self::ReplayGainAlbumGain => "REPLAYGAIN_ALBUM_GAIN",
             Self::ReplayGainAlbumPeak => "REPLAYGAIN_ALBUM_PEAK",
             Self::ReplayGainReferenceLoudness => "REPLAYGAIN_REFERENCE_LOUDNESS",
+            Self::CatalogNumber => "CATALOGNUMBER",
+            Self::Barcode => "BARCODE",
+            Self::OriginalDate => "ORIGINALDATE",
         }
     }
 
@@ -130,6 +145,9 @@ impl CommonTag {
             Self::ReplayGainAlbumGain => "REPLAYGAIN_ALBUM_GAIN",
             Self::ReplayGainAlbumPeak => "REPLAYGAIN_ALBUM_PEAK",
             Self::ReplayGainReferenceLoudness => "REPLAYGAIN_REFERENCE_LOUDNESS",
+            Self::CatalogNumber => "CATALOGNUMBER",
+            Self::Barcode => "BARCODE",
+            Self::OriginalDate => "ORIGINALDATE",
         }
     }
 
@@ -166,6 +184,9 @@ impl CommonTag {
             Self::ReplayGainAlbumGain => "TXXX:REPLAYGAIN_ALBUM_GAIN",
             Self::ReplayGainAlbumPeak => "TXXX:REPLAYGAIN_ALBUM_PEAK",
             Self::ReplayGainReferenceLoudness => "TXXX:REPLAYGAIN_REFERENCE_LOUDNESS",
+            Self::CatalogNumber => "TXXX:CATALOGNUMBER",
+            Self::Barcode => "TXXX:BARCODE",
+            Self::OriginalDate => "TDOR",
         }
     }
 }
@@ -179,6 +200,53 @@ mod tests {
         assert_eq!(CommonTag::Isrc.itunes_atom_name(), "ISRC");
         assert_eq!(CommonTag::Isrc.vorbis_comment_name(), "ISRC");
         assert_eq!(CommonTag::Isrc.id3v2_frame(), "TSRC");
+    }
+
+    #[test]
+    fn catalog_number_across_formats() {
+        assert_eq!(CommonTag::CatalogNumber.itunes_atom_name(), "CATALOGNUMBER");
+        assert_eq!(
+            CommonTag::CatalogNumber.vorbis_comment_name(),
+            "CATALOGNUMBER"
+        );
+        assert_eq!(CommonTag::CatalogNumber.id3v2_frame(), "TXXX:CATALOGNUMBER");
+    }
+
+    #[test]
+    fn barcode_across_formats() {
+        assert_eq!(CommonTag::Barcode.itunes_atom_name(), "BARCODE");
+        assert_eq!(CommonTag::Barcode.vorbis_comment_name(), "BARCODE");
+        assert_eq!(CommonTag::Barcode.id3v2_frame(), "TXXX:BARCODE");
+    }
+
+    #[test]
+    fn original_date_across_formats() {
+        assert_eq!(CommonTag::OriginalDate.itunes_atom_name(), "ORIGINALDATE");
+        assert_eq!(
+            CommonTag::OriginalDate.vorbis_comment_name(),
+            "ORIGINALDATE"
+        );
+        // TDOR is the dedicated ID3v2.4 frame for "original release time".
+        assert_eq!(CommonTag::OriginalDate.id3v2_frame(), "TDOR");
+    }
+
+    #[test]
+    fn promoted_ids_distinct_from_musicbrainz_ids() {
+        // CatalogNumber is the label's catalog code (e.g., SCR-001),
+        // NOT the MusicBrainz release ID. They should map to different
+        // atoms in every format.
+        assert_ne!(
+            CommonTag::CatalogNumber.itunes_atom_name(),
+            CommonTag::MusicBrainzReleaseId.itunes_atom_name()
+        );
+        assert_ne!(
+            CommonTag::CatalogNumber.vorbis_comment_name(),
+            CommonTag::MusicBrainzReleaseId.vorbis_comment_name()
+        );
+        assert_ne!(
+            CommonTag::CatalogNumber.id3v2_frame(),
+            CommonTag::MusicBrainzReleaseId.id3v2_frame()
+        );
     }
 
     #[test]
