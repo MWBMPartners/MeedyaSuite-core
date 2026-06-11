@@ -470,12 +470,7 @@ impl ContainerFormat {
         let ext_lower = ext_lower.strip_prefix('.').unwrap_or(&ext_lower);
 
         use strum::IntoEnumIterator;
-        for fmt in Self::iter() {
-            if fmt.extensions().iter().any(|e| *e == ext_lower) {
-                return Some(fmt);
-            }
-        }
-        None
+        Self::iter().find(|fmt| fmt.extensions().contains(&ext_lower))
     }
 }
 

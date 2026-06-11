@@ -50,6 +50,60 @@ pub struct SearchQuery {
     pub musicbrainz_id: Option<String>,
 }
 
+impl SearchQuery {
+    /// Create a simple title + artist music query (max 10 results).
+    pub fn music(title: impl Into<String>, artist: impl Into<String>) -> Self {
+        Self {
+            title: Some(title.into()),
+            artist: Some(artist.into()),
+            media_type: Some(MediaType::Music),
+            max_results: Some(10),
+            ..Default::default()
+        }
+    }
+
+    /// Create a video / film lookup query (max 10 results).
+    pub fn video(title: impl Into<String>, year: Option<u32>) -> Self {
+        Self {
+            title: Some(title.into()),
+            year,
+            media_type: Some(MediaType::Video),
+            max_results: Some(10),
+            ..Default::default()
+        }
+    }
+
+    /// Create a query by ISRC identifier (max 5 results).
+    pub fn by_isrc(isrc: impl Into<String>) -> Self {
+        Self {
+            isrc: Some(isrc.into()),
+            media_type: Some(MediaType::Identifier),
+            max_results: Some(5),
+            ..Default::default()
+        }
+    }
+
+    /// Create a query by ISWC identifier (max 5 results).
+    pub fn by_iswc(iswc: impl Into<String>) -> Self {
+        Self {
+            iswc: Some(iswc.into()),
+            media_type: Some(MediaType::Identifier),
+            max_results: Some(5),
+            ..Default::default()
+        }
+    }
+
+    /// Create a query by EIDR identifier (max 5 results).
+    pub fn by_eidr(eidr: impl Into<String>) -> Self {
+        Self {
+            eidr: Some(eidr.into()),
+            media_type: Some(MediaType::Identifier),
+            max_results: Some(5),
+            ..Default::default()
+        }
+    }
+}
+
 /// A standardized result returned by any provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderResult {

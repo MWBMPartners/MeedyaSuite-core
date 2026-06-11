@@ -26,6 +26,49 @@ tempfile = { workspace = true }
 default = []
 keyring-credentials = ["dep:keyring"]
 
+# Per-provider features. Each adds a single provider module under
+# `providers/<name>.rs`. Apps opt into only what they need; the default
+# feature set ships ZERO providers so a consumer that just wants the
+# `MetadataProvider` trait + infrastructure has no extra build cost.
+provider-musicbrainz    = []
+provider-spotify        = ["dep:oauth2"]
+provider-apple-music    = ["dep:jsonwebtoken"]
+provider-deezer         = []
+provider-tmdb           = []
+provider-thetvdb        = []
+provider-omdb           = []
+provider-apple-tv       = []
+provider-itunes-store   = []
+provider-apple-podcasts = []
+provider-isrc           = []
+provider-eidr           = []
+provider-iswc           = []
+
+# Convenience: enable all real providers in one go.
+provider-all = [
+    "provider-musicbrainz",
+    "provider-spotify",
+    "provider-apple-music",
+    "provider-deezer",
+    "provider-tmdb",
+    "provider-thetvdb",
+    "provider-omdb",
+    "provider-apple-tv",
+    "provider-itunes-store",
+    "provider-apple-podcasts",
+    "provider-isrc",
+    "provider-eidr",
+    "provider-iswc",
+]
+
 [dependencies.keyring]
 version = "3"
+optional = true
+
+[dependencies.oauth2]
+version = "5"
+optional = true
+
+[dependencies.jsonwebtoken]
+version = "10"
 optional = true
