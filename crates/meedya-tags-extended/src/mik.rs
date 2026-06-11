@@ -40,10 +40,10 @@
 
 use lofty::tag::{ItemKey, Tag};
 
+use crate::meedya_atom::{write_meedya_atom, MEEDYA_NAMESPACE};
 use crate::model::MusicalKey;
 use crate::standard;
 
-const MEEDYA_NAMESPACE: &str = "MeedyaMeta";
 const MIK_ENERGY_ATOM: &str = "Energy";
 const MIK_AUDIT_ATOM: &str = "MikSourceLocations";
 
@@ -493,20 +493,8 @@ fn split_at_last_separator(s: &str) -> Option<(&str, &str)> {
 }
 
 // ============================================================
-// MeedyaMeta Atom Writers (energy + audit trail)
+// MIK Audit Trail Formatter
 // ============================================================
-
-fn write_meedya_atom(tag: &mut Tag, name: &str, value: &str) {
-    // Lofty's `insert_text` rejects `ItemKey::Unknown` for tag types that
-    // don't recognise the unknown key. We use `insert_unchecked` because
-    // MeedyaMeta atoms are intentionally non-standard — the abstract tag
-    // shouldn't gatekeep them.
-    let item_key = ItemKey::Unknown(format!("----:{MEEDYA_NAMESPACE}:{name}"));
-    tag.insert_unchecked(lofty::tag::TagItem::new(
-        item_key,
-        lofty::tag::ItemValue::Text(value.to_owned()),
-    ));
-}
 
 fn format_audit_trail(sources: &[MikSourceLocation]) -> String {
     sources

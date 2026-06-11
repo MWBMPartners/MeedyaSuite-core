@@ -31,6 +31,7 @@ pub mod playback_bounds;
 pub mod registry;
 pub mod tag_io;
 pub mod tag_registry;
+pub mod template;
 pub mod writer;
 
 pub use common_tags::{CommonTag, STANDARD_NAMESPACES};
@@ -40,3 +41,4 @@ pub use tag_io::{
     read_tags, write_acoustid_tags, write_registry_tags, write_replaygain_tags, write_tags, TagMap,
 };
 pub use tag_registry::{AtomTarget, TagDefinition, TagRegistry, TagScope, TagValueType};
+pub use template::{TagSource, Template, TemplateError};

@@ -447,6 +447,24 @@ fn write_common_tag_to_lofty(tag: &mut Tag, common_tag: CommonTag, value: &str) 
                 ItemValue::Text(value.into()),
             ));
         }
+        CommonTag::CatalogNumber => {
+            tag.insert(TagItem::new(
+                ItemKey::CatalogNumber,
+                ItemValue::Text(value.into()),
+            ));
+        }
+        CommonTag::Barcode => {
+            tag.insert(TagItem::new(
+                ItemKey::Barcode,
+                ItemValue::Text(value.into()),
+            ));
+        }
+        CommonTag::OriginalDate => {
+            tag.insert(TagItem::new(
+                ItemKey::OriginalReleaseDate,
+                ItemValue::Text(value.into()),
+            ));
+        }
     }
 }
 

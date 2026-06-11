@@ -35,17 +35,48 @@
 // `Source` recording origin so consumers can disambiguate when fields
 // conflict.
 
+pub mod ai_content;
+pub mod conflict_policy;
+pub mod genre_hierarchy;
 pub mod io;
+pub(crate) mod meedya_atom;
 pub mod mik;
 pub mod model;
+pub mod play_history;
+pub mod quick_tag;
+pub mod sidecar_json;
 pub mod standard;
+pub mod stems;
 
+pub use ai_content::{
+    clear_ai_content, parse_bool_truthy, read_ai_content, write_ai_content, AiContentFlags,
+};
+pub use conflict_policy::{
+    resolve as resolve_conflict, Candidate, ConflictPolicy, ResolutionError, ResolvableField,
+    Tiebreak,
+};
+pub use genre_hierarchy::{
+    clear_genre_hierarchy, read_genre_hierarchy, write_genre_hierarchy, GenreHierarchy,
+};
 pub use io::TagFile;
 pub use mik::{
     normalise_to_standards, read_mik, MikAnalysis, MikField, MikKinds, MikPosition,
     MikSourceLocation,
 };
 pub use model::{
-    BeatGrid, BeatGridMarker, CuePoint, ExtendedTags, KeyMode, LoopPoint, MusicalKey, Note, Rgb,
-    Source,
+    BeatGrid, BeatGridMarker, CuePoint, EnergyValue, ExtendedTags, KeyMode, LoopPoint, MusicalKey,
+    Note, Rgb, Source,
 };
+pub use play_history::{
+    clear_play_history, read_play_history, record_play, record_skip, write_play_history,
+    PlayHistory,
+};
+pub use quick_tag::{
+    clear_quick_tags, read_quick_tags, validate as validate_quick_tags, write_quick_tags,
+    QuickTagCategory, QuickTagSchema, QuickTagValidationError, QuickTagValues,
+};
+pub use sidecar_json::{
+    read_sidecar, sidecar_path_for, write_sidecar, write_sidecar_with_format, MeedyaSidecar,
+    SidecarError, SidecarFormat, SCHEMA_VERSION as SIDECAR_SCHEMA_VERSION, SIDECAR_SUFFIX,
+};
+pub use stems::{clear_stems, read_stems, write_stems, StemMetadata, StemRole, StemSource};

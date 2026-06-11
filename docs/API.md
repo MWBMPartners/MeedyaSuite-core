@@ -46,7 +46,7 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-providers` | `cover_art`, `credentials`, `match_scoring`, `rate_limiter`, `traits`, `types` | 27 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `io`, `mik`, `model`, `standard` | 61 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 248 tests.** All passing on the feature branch (211 → 248 this batch).
+**Total: 466 tests.** All passing on the feature branch (post 2026-06-09 implementation batch — 248 → 466 tests, 10 issues closed).
 
 ---
 

@@ -29,7 +29,7 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 3 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 248 tests on feature branch (211 → 248 this batch).** Workspace builds clean.
+**Total: 466 tests on feature branch (post 2026-06-09 implementation batch — 248 → 466 tests, 10 issues closed).** Workspace builds clean.
 
 > **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 
@@ -109,7 +109,7 @@ Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `p
 
 ```bash
 cargo build --workspace          # all 9 crates
-cargo test  --workspace          # 248 tests
+cargo test  --workspace          # 466 tests
 cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```
