@@ -2,6 +2,17 @@
   <head>
     <metadata>
       <ttm:agent type="person" xml:id="v1"/>
+      <iTunesMetadata xmlns="http://music.apple.com/lyric-ttml-internal" leadingSilence="0.280">
+        <translations/>
+        <songwriters>
+          <songwriter>Bernt Rune Stray</songwriter>
+          <songwriter>M. Beite</songwriter>
+          <songwriter>Mikkel S. Eriksen</songwriter>
+          <songwriter>Shaffer Smith</songwriter>
+          <songwriter>Tor Erik Hermansen</songwriter>
+        </songwriters>
+        <audio lyricOffset="-0.271" role="spatial"/>
+      </iTunesMetadata>
     </metadata>
   </head>
   <body dur="3:54.360">

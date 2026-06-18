@@ -125,6 +125,18 @@ impl Lyricsfile {
         //   (whitespace OR non-whitespace — both indicate the next
         //   span is not adjacent in document order).
         let mut pair_eligible_with_prev_span: bool = false;
+        // **Apple `lyricOffset` extraction** (#61 — issue body documents
+        // sign convention).
+        //
+        // Tracks whether we're currently inside `<head><metadata>
+        // <iTunesMetadata>` so the `lyricOffset` read on `<audio>` is
+        // scoped — we don't want a stray `lyricOffset` attribute on
+        // some unrelated element to feed `metadata.offset_ms`.
+        //
+        // First valid `lyricOffset` value wins. Subsequent occurrences
+        // (which shouldn't exist in well-formed TTML) are ignored.
+        let mut in_itunes_metadata: bool = false;
+        let mut lyric_offset_ms: Option<i64> = None;
 
         let mut buf = Vec::new();
         loop {
@@ -140,6 +152,16 @@ impl Lyricsfile {
                                     read_attr(e, b"lang").ok().flatten()
                                 });
                             }
+                        }
+                        b"iTunesMetadata" => {
+                            in_itunes_metadata = true;
+                        }
+                        b"audio" if in_itunes_metadata && lyric_offset_ms.is_none() => {
+                            // Open form `<audio lyricOffset="...">`.
+                            // Real Apple TTML usually self-closes this
+                            // element (handled in the Empty branch
+                            // below), but we accept both shapes.
+                            lyric_offset_ms = read_lyric_offset_attr(e);
                         }
                         b"p" => {
                             let begin = read_time_attr(e, b"begin")?;
@@ -206,6 +228,9 @@ impl Lyricsfile {
                 }
                 Ok(Event::End(ref e)) => {
                     match local_name(e.name().as_ref()) {
+                        b"iTunesMetadata" => {
+                            in_itunes_metadata = false;
+                        }
                         b"span" => {
                             if let Some(word) = current_word.take() {
                                 if let Some(line) = current_line.as_mut() {
@@ -301,6 +326,8 @@ impl Lyricsfile {
                     }
                 }
                 Ok(Event::Empty(ref e)) => {
+                    let qualified_name = e.name();
+                    let name = local_name(qualified_name.as_ref());
                     // Self-closing <p/> or <span/> — rare in Apple TTML
                     // but handle for spec compliance. A self-closing
                     // timed span has no inner text so it can't be a
@@ -308,7 +335,7 @@ impl Lyricsfile {
                     // it as a new (text-less) word. Set the
                     // pair-eligibility flag so a FOLLOWING text-bearing
                     // span can still pair-join (rare but defensive).
-                    if local_name(e.name().as_ref()) == b"span" {
+                    if name == b"span" {
                         if let (Some(start_ms), Some(line)) =
                             (read_time_attr(e, b"begin")?, current_line.as_mut())
                         {
@@ -320,6 +347,14 @@ impl Lyricsfile {
                             });
                             pair_eligible_with_prev_span = true;
                         }
+                    } else if name == b"audio"
+                        && in_itunes_metadata
+                        && lyric_offset_ms.is_none()
+                    {
+                        // Apple's canonical form:
+                        //   <audio lyricOffset="-0.271" role="spatial"/>
+                        // Self-closed and nested inside iTunesMetadata.
+                        lyric_offset_ms = read_lyric_offset_attr(e);
                     }
                 }
                 Ok(Event::Eof) => break,
@@ -336,6 +371,9 @@ impl Lyricsfile {
 
         if document_language.is_some() {
             lf.metadata.language = document_language;
+        }
+        if lyric_offset_ms.is_some() {
+            lf.metadata.offset_ms = lyric_offset_ms;
         }
         Ok(lf)
     }
@@ -449,6 +487,53 @@ fn parse_ttml_time(raw: &str) -> Result<i64> {
 fn parse_uint(s: &str) -> Result<u64> {
     s.parse::<u64>()
         .map_err(|_| Error::Ttml(format!("invalid integer: {s}")))
+}
+
+/// Read Apple's `lyricOffset` attribute off `<audio>` and convert from
+/// seconds (float) to milliseconds (i64).
+///
+/// # Sign convention — **ASSUMPTION**, not verified
+///
+/// Apple's TTML emits `lyricOffset` as a signed float in seconds
+/// (Closer fixture: `lyricOffset="-0.271"`). LRC's `[offset:NNN]` tag
+/// stores a signed integer in milliseconds with the convention
+/// "positive shifts lyrics LATER than the marked timestamp, negative
+/// shifts EARLIER" (and that's what every major LRC consumer —
+/// foobar2000, MusicBee, Plex, Synchronicity — honours).
+///
+/// **This function PRESERVES Apple's sign verbatim.** We assume
+/// Apple's `lyricOffset` uses the same sign convention as LRC's
+/// `[offset:]` tag, so `-0.271` seconds → `Some(-271)` ms. If that
+/// assumption turns out to be inverted, the fix is a one-line
+/// negation: change `(secs * 1000.0).round() as i64` to
+/// `-(secs * 1000.0).round() as i64`. The fixture-based test
+/// `extracts_lyric_offset_from_closer_fixture` pins our current
+/// assumption explicitly so a future verifier knows exactly what
+/// flipping the sign would change.
+///
+/// **How to verify** (tracked as MeedyaSuite-core #61):
+/// 1. Pick ~5 songs across genres, download via MeedyaDL.
+/// 2. A/B compare uncalibrated-LRC vs calibrated-LRC in a player
+///    that honours `[offset:]` (foobar2000 + LRC plugin, MusicBee).
+/// 3. If the calibrated output IMPROVES sync → sign is right; mark
+///    #61 verified and close.
+/// 4. If the calibrated output WORSENS sync by the same magnitude
+///    in the opposite direction → flip the sign + update the test.
+///
+/// # `leadingSilence` deliberately ignored
+///
+/// Apple's `<iTunesMetadata leadingSilence="0.280">` is the AAC
+/// encoder pre-roll silence and is handled by the audio decoder's
+/// gapless-playback machinery (CoreAudio, libavcodec). Lifting it
+/// into `metadata.offset_ms` would double-correct on any player
+/// that already honours the AAC priming sample. Out of scope here.
+fn read_lyric_offset_attr(elem: &BytesStart) -> Option<i64> {
+    let raw = read_attr(elem, b"lyricOffset").ok().flatten()?;
+    let secs: f64 = raw.trim().parse().ok()?;
+    // f64 → i64 via round. Apple emits at most 3 fractional digits
+    // (millisecond precision), so round() is exact; we never lose
+    // sub-ms accuracy.
+    Some((secs * 1000.0).round() as i64)
 }
 
 // ============================================================
@@ -803,6 +888,138 @@ mod tests {
             .find(|w| w.text == "closer")
             .expect("syllable-merged closer present in PreChorus line");
         assert_eq!(closer_word.syllables.len(), 2);
+    }
+
+    // ------------------------------------------------------------
+    // Apple `lyricOffset` extraction tests (#61 partial implementation)
+    // ------------------------------------------------------------
+    //
+    // These tests pin the SIGN CONVENTION assumption made by
+    // `read_lyric_offset_attr`. Apple's `lyricOffset="-0.271"`
+    // currently maps to `metadata.offset_ms = Some(-271)` — sign
+    // preserved verbatim. If a future verifier finds the convention
+    // is inverted in real players, the fix is a single negation
+    // inside the helper AND the assertions below need to flip too.
+
+    #[test]
+    fn extracts_lyric_offset_negative_from_self_closing_audio() {
+        // Real Apple shape: <audio lyricOffset="-0.271" role="spatial"/>
+        // — self-closing inside <iTunesMetadata>.
+        let ttml = r#"<tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal">
+            <head><metadata>
+                <iTunesMetadata xmlns="http://music.apple.com/lyric-ttml-internal" leadingSilence="0.280">
+                    <audio lyricOffset="-0.271" role="spatial"/>
+                </iTunesMetadata>
+            </metadata></head>
+            <body><div><p begin="0.0">hi</p></div></body>
+        </tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        assert_eq!(lf.metadata.offset_ms, Some(-271));
+    }
+
+    #[test]
+    fn extracts_lyric_offset_positive_value() {
+        let ttml = r#"<tt><head><metadata>
+            <iTunesMetadata>
+                <audio lyricOffset="0.500"/>
+            </iTunesMetadata>
+        </metadata></head><body><div><p begin="0.0">hi</p></div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        assert_eq!(lf.metadata.offset_ms, Some(500));
+    }
+
+    #[test]
+    fn extracts_lyric_offset_zero_value() {
+        // Apple sometimes emits 0.0 — should land as Some(0), not None,
+        // so the downstream `to_lrc` no-op-skip logic correctly omits
+        // the tag (rather than emitting `[offset:0]`).
+        let ttml = r#"<tt><head><metadata>
+            <iTunesMetadata>
+                <audio lyricOffset="0.0"/>
+            </iTunesMetadata>
+        </metadata></head><body><div><p begin="0.0">hi</p></div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        assert_eq!(lf.metadata.offset_ms, Some(0));
+    }
+
+    #[test]
+    fn lyric_offset_absent_yields_none() {
+        // No iTunesMetadata, no audio element — offset_ms stays None.
+        let ttml = r#"<tt><body><div><p begin="0.0">hi</p></div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        assert_eq!(lf.metadata.offset_ms, None);
+    }
+
+    #[test]
+    fn lyric_offset_on_audio_outside_itunes_metadata_is_ignored() {
+        // Defensive: a stray `<audio lyricOffset>` outside of
+        // iTunesMetadata should NOT feed offset_ms. Only the
+        // scoped-by-parent attribute counts.
+        let ttml = r#"<tt><head>
+            <audio lyricOffset="-0.500"/>
+        </head><body><div><p begin="0.0">hi</p></div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        assert_eq!(lf.metadata.offset_ms, None);
+    }
+
+    #[test]
+    fn lyric_offset_first_value_wins_against_duplicates() {
+        // Multi-tag conflict — first valid lyricOffset wins. Apple's
+        // TTML shouldn't ever have two but defensive against future
+        // format quirks.
+        let ttml = r#"<tt><head><metadata>
+            <iTunesMetadata>
+                <audio lyricOffset="-0.271"/>
+                <audio lyricOffset="0.500"/>
+            </iTunesMetadata>
+        </metadata></head><body><div><p begin="0.0">hi</p></div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        assert_eq!(lf.metadata.offset_ms, Some(-271));
+    }
+
+    #[test]
+    fn lyric_offset_malformed_value_silently_skipped() {
+        // Recoverable: malformed value yields None rather than an
+        // error. Lyrics still play without calibration.
+        let ttml = r#"<tt><head><metadata>
+            <iTunesMetadata>
+                <audio lyricOffset="not-a-number"/>
+            </iTunesMetadata>
+        </metadata></head><body><div><p begin="0.0">hi</p></div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        assert_eq!(lf.metadata.offset_ms, None);
+    }
+
+    #[test]
+    fn extracts_lyric_offset_from_closer_fixture() {
+        // Real-world fixture pin. Closer's `<audio lyricOffset="-0.271"
+        // role="spatial"/>` → offset_ms = -271. THIS IS THE SIGN-
+        // CONVENTION ASSUMPTION ANCHOR — see #61.
+        let ttml = include_str!("../test-fixtures/closer-syllable-pretty.ttml");
+        let lf = Lyricsfile::from_ttml(ttml, "Closer", "Ne-Yo").unwrap();
+        assert_eq!(
+            lf.metadata.offset_ms,
+            Some(-271),
+            "Apple's lyricOffset=-0.271 should map to offset_ms=-271 (sign preserved verbatim)"
+        );
+    }
+
+    #[test]
+    fn lyric_offset_round_trips_from_ttml_to_lrc_export() {
+        // End-to-end: Apple TTML → Lyricsfile → LRC export. The
+        // [offset:] header tag must appear in the exported LRC with
+        // the same sign that came out of the TTML.
+        let ttml = r#"<tt><head><metadata>
+            <iTunesMetadata>
+                <audio lyricOffset="-0.271"/>
+            </iTunesMetadata>
+        </metadata></head><body><div><p begin="00:00:01.000">Hello</p></div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        let lrc = lf.to_lrc();
+        assert!(
+            lrc.starts_with("[offset:-271]\n"),
+            "expected Apple lyricOffset to flow through to LRC export, got: {lrc:?}"
+        );
     }
 
     #[test]
