@@ -35,9 +35,10 @@
 > Every section is annotated with one of:
 >
 > - **VERIFIED** — observed directly in the canonical fixture
->   ([Closer_PrettyPrint.ttml][fixture-source]) AND in at least one
->   cross-source (the ITAM Enhancer userscript, an independent
->   reverse-engineering effort that consumes the same endpoints).
+>   ([closer-syllable-pretty.ttml][fixture] — committed in this crate's
+>   `test-fixtures/`) AND in at least one cross-source (the ITAM
+>   Enhancer userscript, an independent reverse-engineering effort that
+>   consumes the same endpoints).
 > - **ASSUMED** — inferred from a single source or from naming
 >   conventions. May be wrong. Flagged explicitly inline so a future
 >   verifier knows where to focus.
@@ -51,8 +52,9 @@
 > ## Provenance
 >
 > - Reference fixture: [closer-syllable-pretty.ttml][fixture]
->   (committed in this crate; trimmed from MeedyaDL's
->   [`.examplefiles/Syllable Level Synced Lyrics/Apple Music/1 - 01 - Closer_PrettyPrint.ttml`][fixture-source]).
+>   (committed in this crate's `test-fixtures/`; trimmed from a local
+>   working copy of Apple's pretty-printed `/syllable-lyrics` response
+>   for *Closer* by Ne-Yo).
 > - **Endpoint audit** (2026-06-18): MeedyaDL workflow `w9zs75kdr` —
 >   four parallel reverse-engineering agents cross-validated the HTTP
 >   contract against the ITAM Enhancer userscript. See commit history
@@ -66,7 +68,6 @@
 
 [itam]: https://skriptey.github.io/Userscripts/ITAMenhancer/ITAMenhancer.user.js
 [fixture]: ../test-fixtures/closer-syllable-pretty.ttml
-[fixture-source]: https://github.com/MWBMPartners/MeedyaDL/blob/main/.examplefiles/Syllable%20Level%20Synced%20Lyrics/Apple%20Music/1%20-%2001%20-%20Closer_PrettyPrint.ttml
 [dq]: https://github.com/MWBMPartners/MeedyaDL/blob/main/src-tauri/src/services/download_queue.rs
 [ama]: https://github.com/MWBMPartners/MeedyaDL/blob/main/src-tauri/src/services/apple_music_api.rs
 

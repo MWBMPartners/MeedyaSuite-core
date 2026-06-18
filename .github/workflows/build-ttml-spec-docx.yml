@@ -1,0 +1,103 @@
+# Copyright (c) 2026 MeedyaSuite
+# Licensed under the MIT License. See LICENSE file in the project root.
+#
+# Apple Music TTML Spec → .docx artifact build
+# ============================================
+#
+# Whenever `APPLE_MUSIC_TTML_SPEC.md` changes (or someone manually
+# triggers the workflow), this job runs pandoc to render the markdown
+# into a Microsoft Word `.docx` document and uploads it as a workflow
+# artifact. Reviewers and stakeholders who want the spec in Word form
+# (paper draft circulation, redlining, archiving) can download the
+# artifact directly from the workflow run page without having to run
+# pandoc locally.
+#
+# **Why an artifact rather than auto-committing the .docx back**:
+# - .docx is a binary format — committing it bloats the git history.
+# - The markdown is the source of truth; the .docx is a derived view.
+# - Artifacts are retained for 90 days by default which is plenty for
+#   "I need to email this to legal" use cases.
+#
+# Path filter scoped tightly so unrelated PRs don't trigger pandoc
+# downloads + a 30-second Ubuntu run for nothing.
+
+name: Build TTML Spec docx
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/meedya-lyrics/docs/APPLE_MUSIC_TTML_SPEC.md'
+      - '.github/workflows/build-ttml-spec-docx.yml'
+  pull_request:
+    paths:
+      - 'crates/meedya-lyrics/docs/APPLE_MUSIC_TTML_SPEC.md'
+      - '.github/workflows/build-ttml-spec-docx.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ttml-spec-docx-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Render spec.md → spec.docx
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Install pandoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends pandoc
+          pandoc --version | head -1
+
+      - name: Render markdown to .docx
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          pandoc \
+            --from=gfm \
+            --to=docx \
+            --standalone \
+            --toc \
+            --toc-depth=3 \
+            --metadata title="Apple Music TTML Lyrics — Reverse-Engineered Specification" \
+            --metadata subtitle="MeedyaSuite reference document — UNOFFICIAL" \
+            --output=out/APPLE_MUSIC_TTML_SPEC.docx \
+            crates/meedya-lyrics/docs/APPLE_MUSIC_TTML_SPEC.md
+
+          # Sanity check: file exists, non-trivial size (≥10 KB),
+          # and the embedded docProps title matches what we expect.
+          size=$(stat -c '%s' out/APPLE_MUSIC_TTML_SPEC.docx)
+          echo "Rendered .docx size: ${size} bytes"
+          if [ "${size}" -lt 10000 ]; then
+            echo "::error::Rendered .docx is suspiciously small — pandoc may have produced an empty document."
+            exit 1
+          fi
+
+      - name: Upload .docx as artifact
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: APPLE_MUSIC_TTML_SPEC-${{ github.sha }}
+          path: out/APPLE_MUSIC_TTML_SPEC.docx
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          {
+            echo "### Apple Music TTML Spec — Word Document"
+            echo ""
+            echo "The latest .docx render is attached as an artifact on this workflow run."
+            echo ""
+            echo "Download via:"
+            echo "1. The **Artifacts** section at the bottom of [the workflow run page](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo "2. \`gh run download ${{ github.run_id }} --name APPLE_MUSIC_TTML_SPEC-${{ github.sha }}\`"
+            echo ""
+            echo "Source: \`crates/meedya-lyrics/docs/APPLE_MUSIC_TTML_SPEC.md\` @ \`${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
