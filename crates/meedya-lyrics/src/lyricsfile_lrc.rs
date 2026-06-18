@@ -42,7 +42,7 @@
 use crate::error::Result;
 use crate::lyricsfile::LyricsfileMetadata;
 use crate::lyricsfile::{
-    Lyricsfile, LyricsfileLine, LyricsfileWord, INSTRUMENTAL_MARKER, LYRICSFILE_VERSION,
+    Lyricsfile, LyricsfileLine, LyricsfileWord, LYRICSFILE_VERSION,
 };
 
 impl Lyricsfile {
