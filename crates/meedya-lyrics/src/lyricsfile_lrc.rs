@@ -30,9 +30,14 @@
 // - **LRC metadata tags** (`[ti:...]`, `[ar:...]`, `[al:...]`) — title,
 //   artist, and album come from the caller. The LRC metadata block is
 //   often missing or stale; callers know what they wanted to tag.
-// - **`[offset:N]` tag** — could be lifted into `metadata.offset_ms`,
-//   but in practice the offset is applied at playback time, not at
-//   storage. Leave for a follow-up if it becomes user-visible.
+//
+// ## What we DO preserve
+//
+// - **`[offset:N]` tag** — round-tripped into
+//   `metadata.offset_ms` and back out by `to_lrc` / `to_enhanced_lrc`.
+//   Positive values shift lyrics later relative to the audio per the
+//   LRC convention; negative shifts earlier. Players that consume the
+//   exported LRC honour the tag without any caller involvement.
 
 use crate::error::Result;
 use crate::lyricsfile::LyricsfileMetadata;
@@ -66,6 +71,14 @@ impl Lyricsfile {
             return Ok(lf);
         }
 
+        // Scan for an `[offset:NNN]` calibration tag before the
+        // line-parsing pass. Tag can appear anywhere — most LRC
+        // writers put it in the header, but the spec doesn't pin a
+        // position. First valid occurrence wins (subsequent tags are
+        // ignored — matches LRCGET reference behaviour and avoids
+        // silent multi-tag conflicts).
+        let offset_ms = parse_lrc_offset_tag(lrc);
+
         let mut lines: Vec<LyricsfileLine> = Vec::new();
         for raw in lrc.lines() {
             for entry in parse_lrc_line(raw) {
@@ -92,7 +105,7 @@ impl Lyricsfile {
                 artist,
                 album: None,
                 duration_ms: None,
-                offset_ms: None,
+                offset_ms,
                 language: None,
                 instrumental: false,
             },
@@ -100,6 +113,34 @@ impl Lyricsfile {
             plain: None,
         })
     }
+}
+
+/// Parse an `[offset:NNN]` LRC header tag, returning the millisecond
+/// value when present.
+///
+/// Accepts `[offset:280]`, `[offset:+280]`, `[offset:-271]`, and
+/// `[offset: -271 ]` (leading / trailing whitespace inside the tag).
+/// Returns `None` when the tag is absent or unparseable — silent
+/// rather than fatal because a malformed `[offset:]` is recoverable:
+/// the lyrics still play, just without calibration.
+fn parse_lrc_offset_tag(input: &str) -> Option<i64> {
+    for raw in input.lines() {
+        let trimmed = raw.trim();
+        let Some(rest) = trimmed.strip_prefix("[offset:") else {
+            continue;
+        };
+        let Some(inner) = rest.strip_suffix(']') else {
+            continue;
+        };
+        let value = inner.trim();
+        // i64::from_str accepts a leading `-` natively and rejects
+        // `+`; strip a leading `+` ourselves so `+280` parses too.
+        let normalized = value.strip_prefix('+').unwrap_or(value);
+        if let Ok(ms) = normalized.parse::<i64>() {
+            return Some(ms);
+        }
+    }
+    None
 }
 
 /// `true` when `[au: instrumental]` (case-insensitive) appears anywhere
@@ -379,5 +420,67 @@ mod tests {
         // Leading text is preserved and prepended to the joined word text.
         assert!(lf.lines[0].text.contains("intro"));
         assert!(lf.lines[0].text.contains("word"));
+    }
+
+    // ------------------------------------------------------------
+    // [offset:] tag parsing tests (#60 follow-up — quick win C)
+    // ------------------------------------------------------------
+
+    #[test]
+    fn from_lrc_reads_positive_offset_tag() {
+        let lrc = "[offset:280]\n[00:01.00]Hello";
+        let lf = Lyricsfile::from_lrc(lrc, "T", "A").unwrap();
+        assert_eq!(lf.metadata.offset_ms, Some(280));
+    }
+
+    #[test]
+    fn from_lrc_reads_negative_offset_tag() {
+        let lrc = "[offset:-271]\n[00:01.00]Hello";
+        let lf = Lyricsfile::from_lrc(lrc, "T", "A").unwrap();
+        assert_eq!(lf.metadata.offset_ms, Some(-271));
+    }
+
+    #[test]
+    fn from_lrc_tolerates_leading_plus_sign_on_offset() {
+        // `[offset:+280]` is accepted by several LRC writers though
+        // not strictly spec'd. Accept defensively for compatibility.
+        let lrc = "[offset:+280]\n[00:01.00]Hello";
+        let lf = Lyricsfile::from_lrc(lrc, "T", "A").unwrap();
+        assert_eq!(lf.metadata.offset_ms, Some(280));
+    }
+
+    #[test]
+    fn from_lrc_tolerates_whitespace_inside_offset_tag() {
+        // Some hand-edited files have `[offset: 280 ]` — survive it.
+        let lrc = "[offset: 280 ]\n[00:01.00]Hello";
+        let lf = Lyricsfile::from_lrc(lrc, "T", "A").unwrap();
+        assert_eq!(lf.metadata.offset_ms, Some(280));
+    }
+
+    #[test]
+    fn from_lrc_returns_none_offset_when_tag_absent() {
+        let lrc = "[00:01.00]Hello\n[00:02.00]world";
+        let lf = Lyricsfile::from_lrc(lrc, "T", "A").unwrap();
+        assert_eq!(lf.metadata.offset_ms, None);
+    }
+
+    #[test]
+    fn from_lrc_returns_none_offset_for_malformed_tag() {
+        // Malformed offset tags must not propagate as errors — the
+        // lyrics still play; calibration is just unavailable. Pins
+        // the silent-recovery contract.
+        let lrc = "[offset:not-a-number]\n[00:01.00]Hello";
+        let lf = Lyricsfile::from_lrc(lrc, "T", "A").unwrap();
+        assert_eq!(lf.metadata.offset_ms, None);
+    }
+
+    #[test]
+    fn from_lrc_first_offset_tag_wins_against_duplicates() {
+        // Multi-tag conflict resolution: first valid value wins.
+        // Avoids silently averaging or last-wins behaviour that
+        // could surprise users editing files by hand.
+        let lrc = "[offset:100]\n[offset:200]\n[00:01.00]Hello";
+        let lf = Lyricsfile::from_lrc(lrc, "T", "A").unwrap();
+        assert_eq!(lf.metadata.offset_ms, Some(100));
     }
 }
