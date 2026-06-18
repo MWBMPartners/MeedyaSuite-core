@@ -278,11 +278,13 @@ mod tests {
                             text: "First".into(),
                             start_ms: 1_000,
                             end_ms: Some(2_000),
+                            syllables: Vec::new(),
                         },
                         LyricsfileWord {
                             text: "line".into(),
                             start_ms: 2_100,
                             end_ms: Some(3_000),
+                            syllables: Vec::new(),
                         },
                     ],
                 },

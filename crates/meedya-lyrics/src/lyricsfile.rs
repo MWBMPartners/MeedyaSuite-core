@@ -139,8 +139,57 @@ pub struct LyricsfileLine {
 }
 
 /// A single timed word inside a line.
+///
+/// The optional `syllables` vector carries sub-word atomic timing
+/// fragments — used by Apple Music's `/syllable-lyrics` endpoint where
+/// a single word can be split into multiple `<span begin>` elements
+/// (e.g. "Closer" → "Clos" + "er", each with its own millisecond
+/// timestamp) for karaoke-style highlighting.
+///
+/// When `syllables` is non-empty:
+/// - `text` is the concatenation of `syllables[*].text` (no separator —
+///   the absence of inter-syllable whitespace is the signal that they
+///   compose a single word rather than two adjacent words).
+/// - `start_ms` equals `syllables.first().start_ms`.
+/// - `end_ms` equals `syllables.last().end_ms` (when set).
+///
+/// When `syllables` is empty (the v1.0 default), the word has line- or
+/// word-level granularity only; renderers should fall through to
+/// `text` + `start_ms` + `end_ms` as before.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LyricsfileWord {
+    pub text: String,
+    pub start_ms: i64,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_ms: Option<i64>,
+
+    /// Sub-word atomic timing fragments. Empty for word-level files;
+    /// non-empty when the source carried syllable-level timing (e.g.
+    /// Apple Music's `/syllable-lyrics?extend=ttmlLocalizations`).
+    ///
+    /// `#[serde(default, skip_serializing_if = "Vec::is_empty")]` keeps
+    /// the wire format byte-identical for word-only files: word-level
+    /// YAML emitted today is unchanged going forward (no `syllables:`
+    /// key when the vec is empty), and v1.0 readers ignore the field
+    /// on a v1.0+syllables file per the existing forward-compat policy
+    /// (`forward_compat_unknown_field_in_line_does_not_fail`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub syllables: Vec<LyricsfileSyllable>,
+}
+
+/// A single timed syllable inside a word. Same shape as
+/// [`LyricsfileWord`] but represents one phonetic/visual fragment of a
+/// word rather than a whole word.
+///
+/// Syllables are emitted by Apple Music's `/syllable-lyrics` endpoint
+/// for tracks where word-level highlighting would feel coarse (long
+/// drawn-out vowels in choruses, hold-note ornaments, multi-syllable
+/// words in slow ballads). Concatenating `syllables[*].text` inside a
+/// word reconstructs the word text byte-for-byte with no inter-syllable
+/// separator.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LyricsfileSyllable {
     pub text: String,
     pub start_ms: i64,
 
@@ -199,6 +248,17 @@ impl Lyricsfile {
     pub fn has_word_level_timing(&self) -> bool {
         self.lines.iter().any(|l| !l.words.is_empty())
     }
+
+    /// `true` when this Lyricsfile has at least one word with non-empty
+    /// `syllables`. Strict superset of [`has_word_level_timing`] — a
+    /// syllable-level file is by definition also word-level. Consumers
+    /// pick the richer export (e.g. syllable Enhanced LRC) when this
+    /// returns `true`.
+    pub fn has_syllable_level_timing(&self) -> bool {
+        self.lines
+            .iter()
+            .any(|l| l.words.iter().any(|w| !w.syllables.is_empty()))
+    }
 }
 
 // ============================================================
@@ -231,16 +291,19 @@ mod tests {
                             text: "Hello,".into(),
                             start_ms: 1000,
                             end_ms: Some(1800),
+                            syllables: Vec::new(),
                         },
                         LyricsfileWord {
                             text: "it's".into(),
                             start_ms: 1900,
                             end_ms: Some(2400),
+                            syllables: Vec::new(),
                         },
                         LyricsfileWord {
                             text: "me".into(),
                             start_ms: 2500,
                             end_ms: Some(3500),
+                            syllables: Vec::new(),
                         },
                     ],
                 },
@@ -354,6 +417,125 @@ lines:
             line.words.clear();
         }
         assert!(!no_words.has_word_level_timing());
+    }
+
+    // ------------------------------------------------------------
+    // Syllable schema tests (#60)
+    // ------------------------------------------------------------
+
+    fn syllable_sample() -> Lyricsfile {
+        // "Closer" split into "Clos" + "er" syllables, mirroring the
+        // actual Apple Music TTML at .examplefiles/.../Closer_PrettyPrint.ttml
+        // line 20: `<span begin="7.516" end="8.097">Clos</span><span
+        // begin="8.097" end="8.904">er</span>`.
+        Lyricsfile {
+            version: LYRICSFILE_VERSION.to_string(),
+            metadata: LyricsfileMetadata {
+                title: "Closer".into(),
+                artist: "Ne-Yo".into(),
+                album: None,
+                duration_ms: None,
+                offset_ms: None,
+                language: Some("en".into()),
+                instrumental: false,
+            },
+            lines: vec![LyricsfileLine {
+                text: "Closer".into(),
+                start_ms: 7_516,
+                end_ms: Some(8_904),
+                words: vec![LyricsfileWord {
+                    text: "Closer".into(),
+                    start_ms: 7_516,
+                    end_ms: Some(8_904),
+                    syllables: vec![
+                        LyricsfileSyllable {
+                            text: "Clos".into(),
+                            start_ms: 7_516,
+                            end_ms: Some(8_097),
+                        },
+                        LyricsfileSyllable {
+                            text: "er".into(),
+                            start_ms: 8_097,
+                            end_ms: Some(8_904),
+                        },
+                    ],
+                }],
+            }],
+            plain: None,
+        }
+    }
+
+    #[test]
+    fn empty_syllables_vec_is_omitted_from_output() {
+        // Pin the wire compat property: a word-level Lyricsfile (no
+        // syllables) must serialise byte-identical pre/post #60.
+        let mut lf = Lyricsfile::new("T", "A");
+        lf.lines.push(LyricsfileLine {
+            text: "hi".into(),
+            start_ms: 0,
+            end_ms: None,
+            words: vec![LyricsfileWord {
+                text: "hi".into(),
+                start_ms: 0,
+                end_ms: None,
+                syllables: Vec::new(),
+            }],
+        });
+        let yaml = lf.to_yaml().unwrap();
+        assert!(
+            !yaml.contains("syllables:"),
+            "empty syllables vec must not emit the key: {yaml}"
+        );
+    }
+
+    #[test]
+    fn has_syllable_level_timing_detects_syllables() {
+        assert!(syllable_sample().has_syllable_level_timing());
+        // Word-only file must NOT report syllable-level.
+        assert!(!sample().has_syllable_level_timing());
+        // Line-only file must NOT report syllable-level.
+        let mut line_only = sample();
+        for line in &mut line_only.lines {
+            line.words.clear();
+        }
+        assert!(!line_only.has_syllable_level_timing());
+    }
+
+    #[test]
+    fn syllable_roundtrip_through_yaml() {
+        let input = syllable_sample();
+        let yaml = input.to_yaml().expect("serialise");
+        // The syllables key must appear when syllables exist.
+        assert!(yaml.contains("syllables:"), "missing syllables key: {yaml}");
+        let parsed = Lyricsfile::parse(&yaml).expect("parse");
+        assert_eq!(input, parsed);
+    }
+
+    #[test]
+    fn syllable_schema_is_forward_compat_with_word_only_readers() {
+        // A v1.0 reader that knows about words but not syllables must
+        // still successfully parse a v1.0+syllables document. This pins
+        // the additive-field policy that justifies keeping
+        // LYRICSFILE_VERSION at 1.0.
+        let yaml = r#"
+version: "1.0"
+metadata: { title: T, artist: A, instrumental: false }
+lines:
+  - text: "hi"
+    start_ms: 0
+    words:
+      - text: "hi"
+        start_ms: 0
+        syllables:
+          - text: "h"
+            start_ms: 0
+          - text: "i"
+            start_ms: 100
+"#;
+        let lf = Lyricsfile::parse(yaml).expect("forward-compat parse");
+        assert_eq!(lf.lines[0].words[0].syllables.len(), 2);
+        assert_eq!(lf.lines[0].words[0].syllables[1].text, "i");
+        assert_eq!(lf.lines[0].words[0].syllables[1].start_ms, 100);
     }
 
     #[test]

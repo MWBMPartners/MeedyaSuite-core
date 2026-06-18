@@ -47,7 +47,8 @@ use quick_xml::Reader;
 
 use crate::error::{Error, Result};
 use crate::lyricsfile::{
-    Lyricsfile, LyricsfileLine, LyricsfileMetadata, LyricsfileWord, LYRICSFILE_VERSION,
+    Lyricsfile, LyricsfileLine, LyricsfileMetadata, LyricsfileSyllable, LyricsfileWord,
+    LYRICSFILE_VERSION,
 };
 
 impl Lyricsfile {
@@ -84,7 +85,13 @@ impl Lyricsfile {
         };
 
         let mut reader = Reader::from_str(ttml);
-        reader.config_mut().trim_text(true);
+        // CRITICAL: trim_text(false) preserves whitespace-only text
+        // nodes between sibling elements. We need that to distinguish
+        // word-level TTML (timed spans separated by whitespace text
+        // nodes) from syllable-level TTML (timed spans with no text
+        // node between — direct tag adjacency). Inside spans we trim
+        // the accumulated text manually on close.
+        reader.config_mut().trim_text(false);
 
         // Tracks whether we're inside a <p> that we're currently
         // accumulating into. When word-level <span> elements appear
@@ -100,6 +107,24 @@ impl Lyricsfile {
         let mut line_text_buf = String::new();
         // Document-level language hint from `xml:lang` on <tt>.
         let mut document_language: Option<String> = None;
+        // **Syllable grouping signal** (#60).
+        //
+        // `true` iff the immediately-preceding sibling event in the
+        // current <p> was a `</span>` that closed a timed span AND no
+        // whitespace text node has been observed between then and now.
+        //
+        // When the next `<span begin>` opens with this flag still
+        // `true`, the new span is a SYLLABLE CONTINUATION of the
+        // previous word — its content is appended to the previous
+        // word's `syllables` vec rather than emitted as a new word.
+        //
+        // Lifecycle:
+        // - Reset to `false` on entering `<p>` (first span starts a new word).
+        // - Set to `true` on `</span>` close inside a `<p>`.
+        // - Reset to `false` on any non-empty text event between spans
+        //   (whitespace OR non-whitespace — both indicate the next
+        //   span is not adjacent in document order).
+        let mut pair_eligible_with_prev_span: bool = false;
 
         let mut buf = Vec::new();
         loop {
@@ -126,6 +151,10 @@ impl Lyricsfile {
                                     words: Vec::new(),
                                 });
                                 line_text_buf.clear();
+                                // First span inside the <p> is always
+                                // a new word, never a syllable
+                                // continuation.
+                                pair_eligible_with_prev_span = false;
                             }
                         }
                         b"span" => {
@@ -134,11 +163,22 @@ impl Lyricsfile {
                             // wrapper and we let its text fall through
                             // into the plain-text buffer.
                             if let Some(start_ms) = read_time_attr(e, b"begin")? {
+                                // Capture syllable-grouping decision
+                                // BEFORE we reset the flag for the
+                                // current span's lifetime.
+                                let is_syllable_continuation =
+                                    pair_eligible_with_prev_span;
                                 current_word = Some(PendingWord {
                                     start_ms,
                                     end_ms: read_time_attr(e, b"end")?,
                                     text: String::new(),
+                                    is_syllable_continuation,
                                 });
+                                // While inside a span, the flag has
+                                // no meaning (the next span pair-joins
+                                // with the CLOSING of this one, not
+                                // with its opening).
+                                pair_eligible_with_prev_span = false;
                             }
                         }
                         _ => {}
@@ -152,6 +192,15 @@ impl Lyricsfile {
                     if let Some(word) = current_word.as_mut() {
                         word.text.push_str(&text);
                     } else if current_line.is_some() {
+                        // Outside a span but inside a <p>. Any
+                        // non-empty text between sibling spans —
+                        // whitespace OR otherwise — terminates the
+                        // pair-joining eligibility with the previous
+                        // span, because the next span isn't adjacent
+                        // in document order any more.
+                        if !text.is_empty() {
+                            pair_eligible_with_prev_span = false;
+                        }
                         line_text_buf.push_str(&text);
                     }
                 }
@@ -162,13 +211,64 @@ impl Lyricsfile {
                                 if let Some(line) = current_line.as_mut() {
                                     let trimmed = word.text.trim().to_string();
                                     if !trimmed.is_empty() {
-                                        line.words.push(LyricsfileWord {
-                                            text: trimmed,
-                                            start_ms: word.start_ms,
-                                            end_ms: word.end_ms,
-                                        });
+                                        if word.is_syllable_continuation && !line.words.is_empty() {
+                                            // Append this span as a
+                                            // syllable of the previous
+                                            // word. If it's the FIRST
+                                            // continuation (prev word's
+                                            // syllables is empty),
+                                            // first promote prev's
+                                            // own text/timing into
+                                            // syllables[0] so the
+                                            // schema invariant
+                                            // "concat(syllables[*].
+                                            // text) == word.text"
+                                            // holds.
+                                            let prev = line
+                                                .words
+                                                .last_mut()
+                                                .expect("non-empty checked above");
+                                            if prev.syllables.is_empty() {
+                                                prev.syllables.push(LyricsfileSyllable {
+                                                    text: prev.text.clone(),
+                                                    start_ms: prev.start_ms,
+                                                    end_ms: prev.end_ms,
+                                                });
+                                            }
+                                            prev.syllables.push(LyricsfileSyllable {
+                                                text: trimmed.clone(),
+                                                start_ms: word.start_ms,
+                                                end_ms: word.end_ms,
+                                            });
+                                            // Rebuild the merged
+                                            // word's surface fields
+                                            // from the syllables vec.
+                                            // start_ms stays at the
+                                            // first syllable; end_ms
+                                            // walks forward with each
+                                            // appended syllable.
+                                            prev.text = prev
+                                                .syllables
+                                                .iter()
+                                                .map(|s| s.text.as_str())
+                                                .collect::<String>();
+                                            prev.end_ms = word.end_ms;
+                                        } else {
+                                            line.words.push(LyricsfileWord {
+                                                text: trimmed,
+                                                start_ms: word.start_ms,
+                                                end_ms: word.end_ms,
+                                                syllables: Vec::new(),
+                                            });
+                                        }
                                     }
                                 }
+                            }
+                            // Closing a timed span — the next sibling
+                            // span (if it arrives without whitespace
+                            // between) is a syllable continuation.
+                            if current_line.is_some() {
+                                pair_eligible_with_prev_span = true;
                             }
                         }
                         b"p" => {
@@ -202,7 +302,12 @@ impl Lyricsfile {
                 }
                 Ok(Event::Empty(ref e)) => {
                     // Self-closing <p/> or <span/> — rare in Apple TTML
-                    // but handle for spec compliance.
+                    // but handle for spec compliance. A self-closing
+                    // timed span has no inner text so it can't be a
+                    // meaningful syllable continuation; we always emit
+                    // it as a new (text-less) word. Set the
+                    // pair-eligibility flag so a FOLLOWING text-bearing
+                    // span can still pair-join (rare but defensive).
                     if local_name(e.name().as_ref()) == b"span" {
                         if let (Some(start_ms), Some(line)) =
                             (read_time_attr(e, b"begin")?, current_line.as_mut())
@@ -211,7 +316,9 @@ impl Lyricsfile {
                                 text: String::new(),
                                 start_ms,
                                 end_ms: read_time_attr(e, b"end")?,
+                                syllables: Vec::new(),
                             });
+                            pair_eligible_with_prev_span = true;
                         }
                     }
                 }
@@ -248,6 +355,11 @@ struct PendingWord {
     start_ms: i64,
     end_ms: Option<i64>,
     text: String,
+    /// Set on `<span begin>` Start when the immediately-preceding
+    /// sibling was a `</span>` close with no whitespace text node
+    /// between. On Close, this drives the merge-into-previous-word
+    /// branch (syllable promotion).
+    is_syllable_continuation: bool,
 }
 
 /// Strip an XML namespace prefix (`tt:p` → `p`, `itunes:timing` →
@@ -554,5 +666,168 @@ mod tests {
         </div></body></tt>"#;
         let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
         assert_eq!(lf.metadata.language, Some("ja".into()));
+    }
+
+    // ------------------------------------------------------------
+    // Syllable grouping tests (#60)
+    // ------------------------------------------------------------
+
+    #[test]
+    fn syllable_pair_groups_into_one_word_with_two_syllables() {
+        // Two adjacent timed spans with NO whitespace text node
+        // between them — the canonical Apple syllable encoding.
+        // Mirrors `.examplefiles/.../Closer_PrettyPrint.ttml` line 20:
+        // `<span begin="7.516" end="8.097">Clos</span><span
+        // begin="8.097" end="8.904">er</span>`.
+        let ttml = r#"<tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word"><body><div><p begin="7.516" end="8.904"><span begin="7.516" end="8.097">Clos</span><span begin="8.097" end="8.904">er</span></p></div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "Closer", "Ne-Yo").unwrap();
+        assert_eq!(lf.lines.len(), 1);
+        let line = &lf.lines[0];
+        // Expect a SINGLE merged word with two syllables, not two
+        // separate words. This is the key #60 grouping behaviour.
+        assert_eq!(
+            line.words.len(),
+            1,
+            "expected 1 merged word, got {}: {:?}",
+            line.words.len(),
+            line.words
+        );
+        let word = &line.words[0];
+        assert_eq!(word.text, "Closer");
+        assert_eq!(word.start_ms, 7_516);
+        assert_eq!(word.end_ms, Some(8_904));
+        assert_eq!(word.syllables.len(), 2);
+        assert_eq!(word.syllables[0].text, "Clos");
+        assert_eq!(word.syllables[0].start_ms, 7_516);
+        assert_eq!(word.syllables[0].end_ms, Some(8_097));
+        assert_eq!(word.syllables[1].text, "er");
+        assert_eq!(word.syllables[1].start_ms, 8_097);
+        assert_eq!(word.syllables[1].end_ms, Some(8_904));
+    }
+
+    #[test]
+    fn word_with_whitespace_between_does_not_group_into_syllables() {
+        // Spaces between sibling timed spans — the canonical
+        // word-level encoding. Each span stays a separate word, no
+        // syllables vec populated. Pins the inverse of the syllable
+        // pair test.
+        let ttml = r#"<tt itunes:timing="Word"><body><div><p begin="0.0"><span begin="0.0">Hello</span> <span begin="0.5">world</span></p></div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        assert_eq!(lf.lines[0].words.len(), 2);
+        assert_eq!(lf.lines[0].words[0].text, "Hello");
+        assert!(lf.lines[0].words[0].syllables.is_empty());
+        assert_eq!(lf.lines[0].words[1].text, "world");
+        assert!(lf.lines[0].words[1].syllables.is_empty());
+    }
+
+    #[test]
+    fn mixed_line_groups_syllable_pair_but_leaves_other_words_alone() {
+        // Real-world shape from Closer L31: "Come <Clos><er>" — first
+        // word is standalone, then a syllable pair. The parser must
+        // produce 2 words for the line, where word[1] has 2
+        // syllables and word[0] does not.
+        let ttml = r#"<tt itunes:timing="Word"><body><div><p begin="1:53.630"><span begin="1:53.630" end="1:54.187">Come</span> <span begin="1:54.187" end="1:55.121">clos</span><span begin="1:55.121" end="1:56.818">er</span></p></div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        let line = &lf.lines[0];
+        assert_eq!(line.words.len(), 2, "got: {:?}", line.words);
+        assert_eq!(line.words[0].text, "Come");
+        assert!(line.words[0].syllables.is_empty());
+        assert_eq!(line.words[1].text, "closer");
+        assert_eq!(line.words[1].syllables.len(), 2);
+        assert_eq!(line.words[1].syllables[0].text, "clos");
+        assert_eq!(line.words[1].syllables[1].text, "er");
+        // 1:54.187 = 60_000 + 54_000 + 187 = 114_187ms
+        assert_eq!(line.words[1].start_ms, 114_187);
+        // 1:56.818 = 60_000 + 56_000 + 818 = 116_818ms
+        assert_eq!(line.words[1].end_ms, Some(116_818));
+    }
+
+    #[test]
+    fn three_syllable_word_promotes_first_span_then_appends_two_more() {
+        // A word split into 3 syllables — exercises the
+        // promote-prev-text-to-syllables[0] branch followed by two
+        // continuation appends.
+        let ttml = r#"<tt itunes:timing="Word"><body><div><p begin="0.0"><span begin="0.0" end="0.3">be</span><span begin="0.3" end="0.6">au</span><span begin="0.6" end="1.0">ti</span></p></div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        let line = &lf.lines[0];
+        assert_eq!(line.words.len(), 1);
+        assert_eq!(line.words[0].text, "beauti");
+        assert_eq!(line.words[0].syllables.len(), 3);
+        assert_eq!(line.words[0].syllables[0].text, "be");
+        assert_eq!(line.words[0].syllables[1].text, "au");
+        assert_eq!(line.words[0].syllables[2].text, "ti");
+        assert_eq!(line.words[0].start_ms, 0);
+        assert_eq!(line.words[0].end_ms, Some(1_000));
+    }
+
+    #[test]
+    fn syllable_grouping_against_pretty_fixture_file() {
+        // End-to-end test against the committed pretty-printed
+        // fixture. Confirms the parser handles real Apple TTML
+        // (indented, namespace-decorated, with multiple <div>s).
+        let ttml = include_str!("../test-fixtures/closer-syllable-pretty.ttml");
+        let lf = Lyricsfile::from_ttml(ttml, "Closer", "Ne-Yo").unwrap();
+
+        // Line 1 ("Closer" — syllable pair) — first line in the file.
+        let l1 = &lf.lines[0];
+        assert_eq!(l1.words.len(), 1, "L1 should be one merged word");
+        assert_eq!(l1.words[0].text, "Closer");
+        assert_eq!(l1.words[0].syllables.len(), 2);
+
+        // The Verse line ("Turn the lights off in this place") should
+        // produce 7 distinct words, none with syllables.
+        let verse_idx = lf
+            .lines
+            .iter()
+            .position(|l| l.text.starts_with("Turn"))
+            .expect("Turn line present in fixture");
+        let verse = &lf.lines[verse_idx];
+        assert_eq!(verse.words.len(), 7, "got: {:?}", verse.words);
+        assert!(verse.words.iter().all(|w| w.syllables.is_empty()));
+
+        // The PreChorus L31 line should produce "Come" + "closer"
+        // (syllable-merged) at minimum. The x-bg wrapper's nested
+        // spans may or may not contribute additional words depending
+        // on whether the parser descends into them — for v1, the
+        // primary expectation is that the main-vocal syllable pair
+        // groups correctly.
+        let pre_idx = lf
+            .lines
+            .iter()
+            .position(|l| l.text.contains("Come"))
+            .expect("Come line present");
+        let pre = &lf.lines[pre_idx];
+        let closer_word = pre
+            .words
+            .iter()
+            .find(|w| w.text == "closer")
+            .expect("syllable-merged closer present in PreChorus line");
+        assert_eq!(closer_word.syllables.len(), 2);
+    }
+
+    #[test]
+    fn syllable_grouping_against_minified_word_fixture_does_not_false_positive() {
+        // Adversarial-verifier amendment: minified word-only TTML
+        // must NOT be misclassified as syllable-level. The fixture
+        // has all whitespace between structural elements stripped,
+        // BUT preserves the literal spaces between word-level
+        // <span>s inside each <p>. The parser must still produce
+        // separate words with no syllables vec populated.
+        let ttml = include_str!("../test-fixtures/word-only-minified.ttml");
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        // Expect multiple words per line, none with syllables.
+        for line in &lf.lines {
+            assert!(
+                !line.words.is_empty(),
+                "minified word-only fixture should produce words"
+            );
+            for word in &line.words {
+                assert!(
+                    word.syllables.is_empty(),
+                    "minified word-only fixture should not produce syllables: word={:?}",
+                    word
+                );
+            }
+        }
     }
 }

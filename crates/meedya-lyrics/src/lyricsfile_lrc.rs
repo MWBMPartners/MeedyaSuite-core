@@ -216,6 +216,12 @@ fn extract_enhanced_words(body: &str) -> (String, Vec<LyricsfileWord>) {
                 text: trimmed.to_string(),
                 start_ms,
                 end_ms: None,
+                // LRC has no syllable representation — Enhanced LRC
+                // word-level markers (`<mm:ss.xx>word`) decode to
+                // whole-word atoms, never sub-word fragments. A
+                // syllable-aware reverse path would have to consume
+                // a richer source format (e.g. syllable TTML).
+                syllables: Vec::new(),
             });
         }
         rest = next_rest;

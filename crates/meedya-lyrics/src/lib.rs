@@ -43,6 +43,7 @@ pub mod lyricsfile;
 pub mod lyricsfile_export;
 pub mod lyricsfile_lrc;
 pub mod lyricsfile_ttml;
+pub mod lyricsfile_ttml_classify;
 pub mod provider;
 pub mod sidecar;
 
@@ -50,8 +51,9 @@ pub use embed::{embed, embed_synced, DEFAULT_LANGUAGE};
 pub use error::{Error, Result};
 pub use lyrics::{Lyrics, SyncedLine};
 pub use lyricsfile::{
-    Lyricsfile, LyricsfileLine, LyricsfileMetadata, LyricsfileWord, INSTRUMENTAL_MARKER,
-    LYRICSFILE_VERSION,
+    Lyricsfile, LyricsfileLine, LyricsfileMetadata, LyricsfileSyllable, LyricsfileWord,
+    INSTRUMENTAL_MARKER, LYRICSFILE_VERSION,
 };
+pub use lyricsfile_ttml_classify::{classify_ttml_granularity, TtmlGranularity};
 pub use provider::lrclib::LrclibProvider;
 pub use provider::{LyricsProvider, TrackQuery};
