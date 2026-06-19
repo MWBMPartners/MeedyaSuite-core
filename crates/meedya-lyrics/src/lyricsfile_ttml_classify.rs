@@ -253,9 +253,7 @@ pub fn classify_ttml_granularity(ttml: &str) -> TtmlGranularity {
                     if in_pair_container_depth > 0 {
                         // Inspect / mutate the current container's
                         // pair-state.
-                        let state = stack
-                            .last_mut()
-                            .expect("depth > 0 implies stack non-empty");
+                        let state = stack.last_mut().expect("depth > 0 implies stack non-empty");
                         if is_timed {
                             has_timed_span = true;
                             // Pair-joined-with-prev check: previous
@@ -365,11 +363,8 @@ pub fn classify_ttml_granularity(ttml: &str) -> TtmlGranularity {
                 if local_name(e.name().as_ref()) == b"span" && has_begin_attr(e) {
                     has_timed_span = true;
                     if in_pair_container_depth > 0 {
-                        let state = stack
-                            .last_mut()
-                            .expect("depth > 0 implies stack non-empty");
-                        if state.prev_span_was_timed
-                            && !state.whitespace_seen_since_prev_timed_span
+                        let state = stack.last_mut().expect("depth > 0 implies stack non-empty");
+                        if state.prev_span_was_timed && !state.whitespace_seen_since_prev_timed_span
                         {
                             has_gap_joined_pair = true;
                         }
@@ -386,8 +381,9 @@ pub fn classify_ttml_granularity(ttml: &str) -> TtmlGranularity {
                 // mediated by content, not by spacing.
                 if in_pair_container_depth > 0 {
                     let bytes: &[u8] = t.as_ref();
-                    let is_whitespace_only =
-                        bytes.iter().all(|&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'));
+                    let is_whitespace_only = bytes
+                        .iter()
+                        .all(|&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'));
                     if let Some(state) = stack.last_mut() {
                         if is_whitespace_only && !bytes.is_empty() {
                             // Whitespace-only text → word boundary
@@ -522,7 +518,10 @@ mod tests {
     #[test]
     fn empty_input_returns_unknown() {
         assert_eq!(classify_ttml_granularity(""), TtmlGranularity::Unknown);
-        assert_eq!(classify_ttml_granularity("   \n  "), TtmlGranularity::Unknown);
+        assert_eq!(
+            classify_ttml_granularity("   \n  "),
+            TtmlGranularity::Unknown
+        );
     }
 
     #[test]

@@ -41,9 +41,7 @@
 
 use crate::error::Result;
 use crate::lyricsfile::LyricsfileMetadata;
-use crate::lyricsfile::{
-    Lyricsfile, LyricsfileLine, LyricsfileWord, LYRICSFILE_VERSION,
-};
+use crate::lyricsfile::{Lyricsfile, LyricsfileLine, LyricsfileWord, LYRICSFILE_VERSION};
 
 impl Lyricsfile {
     /// Convert a standard LRC (or Enhanced LRC) document into a

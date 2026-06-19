@@ -188,8 +188,7 @@ impl Lyricsfile {
                                 // Capture syllable-grouping decision
                                 // BEFORE we reset the flag for the
                                 // current span's lifetime.
-                                let is_syllable_continuation =
-                                    pair_eligible_with_prev_span;
+                                let is_syllable_continuation = pair_eligible_with_prev_span;
                                 current_word = Some(PendingWord {
                                     start_ms,
                                     end_ms: read_time_attr(e, b"end")?,
@@ -347,10 +346,7 @@ impl Lyricsfile {
                             });
                             pair_eligible_with_prev_span = true;
                         }
-                    } else if name == b"audio"
-                        && in_itunes_metadata
-                        && lyric_offset_ms.is_none()
-                    {
+                    } else if name == b"audio" && in_itunes_metadata && lyric_offset_ms.is_none() {
                         // Apple's canonical form:
                         //   <audio lyricOffset="-0.271" role="spatial"/>
                         // Self-closed and nested inside iTunesMetadata.
