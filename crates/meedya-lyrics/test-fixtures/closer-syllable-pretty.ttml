@@ -1,0 +1,30 @@
+<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" itunes:timing="Word" xml:lang="en">
+  <head>
+    <metadata>
+      <ttm:agent type="person" xml:id="v1"/>
+      <iTunesMetadata xmlns="http://music.apple.com/lyric-ttml-internal" leadingSilence="0.280">
+        <translations/>
+        <songwriters>
+          <songwriter>Bernt Rune Stray</songwriter>
+          <songwriter>M. Beite</songwriter>
+          <songwriter>Mikkel S. Eriksen</songwriter>
+          <songwriter>Shaffer Smith</songwriter>
+          <songwriter>Tor Erik Hermansen</songwriter>
+        </songwriters>
+        <audio lyricOffset="-0.271" role="spatial"/>
+      </iTunesMetadata>
+    </metadata>
+  </head>
+  <body dur="3:54.360">
+    <div begin="7.516" end="15.514" itunes:songPart="Intro">
+      <p begin="7.516" end="8.904" itunes:key="L1" ttm:agent="v1"><span begin="7.516" end="8.097">Clos</span><span begin="8.097" end="8.904">er</span></p>
+      <p begin="9.390" end="10.736" itunes:key="L2" ttm:agent="v1"><span begin="9.390" end="9.939">Clos</span><span begin="9.939" end="10.736">er</span></p>
+    </div>
+    <div begin="16.554" end="31.112" itunes:songPart="Verse">
+      <p begin="16.554" end="19.949" itunes:key="L6" ttm:agent="v1"><span begin="16.554" end="17.058">Turn</span> <span begin="17.058" end="17.410">the</span> <span begin="17.410" end="17.727">lights</span> <span begin="17.727" end="18.093">off</span> <span begin="18.093" end="18.426">in</span> <span begin="18.426" end="18.791">this</span> <span begin="18.791" end="19.949">place</span></p>
+    </div>
+    <div begin="1:53.630" end="1:58.313" itunes:songPart="PreChorus">
+      <p begin="1:53.630" end="1:58.313" itunes:key="L31" ttm:agent="v1"><span begin="1:53.630" end="1:54.187">Come</span> <span begin="1:54.187" end="1:55.121">clos</span><span begin="1:55.121" end="1:56.818">er</span> <span ttm:role="x-bg"><span begin="1:56.181" end="1:57.086">(Clos</span><span begin="1:57.086" end="1:58.313">er)</span></span></p>
+    </div>
+  </body>
+</tt>

@@ -39,12 +39,20 @@ const DEFAULT_TRAILING_DURATION_MS: i64 = 3_000;
 impl Lyricsfile {
     /// Export to standard LRC. Word-level timing is collapsed to line
     /// level. Instrumental Lyricsfiles emit `[au: instrumental]`.
+    ///
+    /// When [`LyricsfileMetadata::offset_ms`] is set, emits an
+    /// `[offset:NNN]` header tag at the top of the document — the
+    /// standard LRC calibration tag every major player honours
+    /// (LRCGET, Plex, foobar2000, MusicBee, Synchronicity). Positive
+    /// values shift lyrics later relative to the audio, negative
+    /// values shift earlier.
     pub fn to_lrc(&self) -> String {
         if self.metadata.instrumental {
             return format!("{INSTRUMENTAL_MARKER}\n");
         }
 
         let mut out = String::new();
+        emit_offset_tag(&mut out, self.metadata.offset_ms);
         for line in &self.lines {
             let _ = writeln!(out, "{}{}", format_lrc_timestamp(line.start_ms), line.text);
         }
@@ -53,12 +61,19 @@ impl Lyricsfile {
 
     /// Export to Enhanced LRC. Lines with `words` get inline word
     /// timestamps; lines without fall back to plain LRC.
+    ///
+    /// Like [`to_lrc`], emits an `[offset:NNN]` header tag at the top
+    /// when [`LyricsfileMetadata::offset_ms`] is set, so player-side
+    /// calibration survives a Lyricsfile → Enhanced LRC export.
+    ///
+    /// [`to_lrc`]: Self::to_lrc
     pub fn to_enhanced_lrc(&self) -> String {
         if self.metadata.instrumental {
             return format!("{INSTRUMENTAL_MARKER}\n");
         }
 
         let mut out = String::new();
+        emit_offset_tag(&mut out, self.metadata.offset_ms);
         for line in &self.lines {
             let stamp = format_lrc_timestamp(line.start_ms);
             if line.words.is_empty() {
@@ -241,6 +256,22 @@ fn ass_escape(input: &str) -> String {
         .replace('}', "\\}")
 }
 
+/// Emit an `[offset:NNN]` LRC header tag into `out` when `offset_ms`
+/// is set.
+///
+/// LRC convention: positive values shift lyrics later relative to the
+/// audio, negative values shift earlier. Zero is the no-op default
+/// and we deliberately skip emission for it — every major player
+/// treats absent and `[offset:0]` identically and skipping keeps the
+/// output minimal for files with no calibration needed.
+fn emit_offset_tag(out: &mut String, offset_ms: Option<i64>) {
+    if let Some(ms) = offset_ms {
+        if ms != 0 {
+            let _ = writeln!(out, "[offset:{ms}]");
+        }
+    }
+}
+
 // `LyricsfileWord` is currently only used inside the Enhanced LRC path;
 // keep the import so future word-level VTT / ASS exporters (NotePoint
 // for #34 follow-up) can lift it without re-importing.
@@ -278,11 +309,13 @@ mod tests {
                             text: "First".into(),
                             start_ms: 1_000,
                             end_ms: Some(2_000),
+                            syllables: Vec::new(),
                         },
                         LyricsfileWord {
                             text: "line".into(),
                             start_ms: 2_100,
                             end_ms: Some(3_000),
+                            syllables: Vec::new(),
                         },
                     ],
                 },
@@ -502,5 +535,98 @@ mod tests {
         let back = Lyricsfile::from_lrc(&lrc, "Quiet", "Some Composer").unwrap();
         assert!(back.metadata.instrumental);
         assert!(back.lines.is_empty());
+    }
+
+    // ------------------------------------------------------------
+    // LRC [offset:] round-trip tests (#60 follow-up — quick win C)
+    // ------------------------------------------------------------
+    //
+    // Pin the contract: when `metadata.offset_ms` is set, both LRC
+    // exporters emit a `[offset:NNN]` header tag, AND `from_lrc`
+    // reads it back into `metadata.offset_ms`. Apple Music's
+    // `lyricOffset` TTML attribute (deferred for-consideration
+    // separately) would then flow through the conversion chain
+    // without any caller plumbing.
+
+    fn lrc_sample_with_offset(offset_ms: Option<i64>) -> Lyricsfile {
+        let mut lf = Lyricsfile::new("Title", "Artist");
+        lf.metadata.offset_ms = offset_ms;
+        lf.lines.push(LyricsfileLine {
+            text: "Hello world".into(),
+            start_ms: 1_234,
+            end_ms: None,
+            words: Vec::new(),
+        });
+        lf
+    }
+
+    #[test]
+    fn to_lrc_emits_offset_header_when_set_positive() {
+        let lrc = lrc_sample_with_offset(Some(280)).to_lrc();
+        assert!(
+            lrc.starts_with("[offset:280]\n"),
+            "expected [offset:280] header, got: {lrc:?}"
+        );
+    }
+
+    #[test]
+    fn to_lrc_emits_offset_header_when_set_negative() {
+        let lrc = lrc_sample_with_offset(Some(-271)).to_lrc();
+        assert!(
+            lrc.starts_with("[offset:-271]\n"),
+            "expected [offset:-271] header, got: {lrc:?}"
+        );
+    }
+
+    #[test]
+    fn to_lrc_omits_offset_header_when_none() {
+        // Round-trip behaviour for files with no calibration: do NOT
+        // emit `[offset:]` at all. Pins the no-op default.
+        let lrc = lrc_sample_with_offset(None).to_lrc();
+        assert!(
+            !lrc.contains("offset:"),
+            "expected no offset tag, got: {lrc:?}"
+        );
+    }
+
+    #[test]
+    fn to_lrc_omits_offset_header_when_zero() {
+        // Zero is the no-op LRC offset and every player treats
+        // absent and `[offset:0]` identically. Skip emission to keep
+        // the output minimal for files with explicit-but-trivial
+        // offset_ms = 0.
+        let lrc = lrc_sample_with_offset(Some(0)).to_lrc();
+        assert!(
+            !lrc.contains("offset:"),
+            "expected no offset tag for zero offset, got: {lrc:?}"
+        );
+    }
+
+    #[test]
+    fn to_enhanced_lrc_emits_offset_header_when_set() {
+        // Same contract for Enhanced LRC — the calibration tag must
+        // survive the word-marker export path too.
+        let mut lf = lrc_sample_with_offset(Some(280));
+        lf.lines[0].words.push(LyricsfileWord {
+            text: "Hello".into(),
+            start_ms: 1_234,
+            end_ms: None,
+            syllables: Vec::new(),
+        });
+        let lrc = lf.to_enhanced_lrc();
+        assert!(
+            lrc.starts_with("[offset:280]\n"),
+            "expected [offset:280] header in Enhanced LRC, got: {lrc:?}"
+        );
+    }
+
+    #[test]
+    fn lrc_offset_round_trips_through_export_and_import() {
+        // Full round-trip: build Lyricsfile with offset → export to
+        // LRC → re-import via from_lrc → expect the offset survives.
+        let original = lrc_sample_with_offset(Some(-271));
+        let lrc = original.to_lrc();
+        let back = Lyricsfile::from_lrc(&lrc, "Title", "Artist").unwrap();
+        assert_eq!(back.metadata.offset_ms, Some(-271));
     }
 }
