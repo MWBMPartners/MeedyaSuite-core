@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.rs$\")",
+      "Bash(cargo check:*)",
+      "Read(//Users/lance.manasse/.cargo/bin/**)",
+      "Read(//Users/lance.manasse/.rustup/toolchains/**)",
+      "Bash(export PATH=\"$HOME/.cargo/bin:$PATH\")",
+      "Bash(cargo test:*)",
+      "Bash(cargo build *)",
+      "Bash(find ~/.cargo/registry/src -type d -name \"lofty-0.21.1\" 2>/dev/null | head -1)",
+      "Read(//Users/lance.manasse/.cargo/registry/src/**)",
+      "Bash(git commit -m ' *)",
+      "Bash(git fetch *)",
+      "Bash(git rebase *)",
+      "Bash(git restore *)",
+      "Bash(git push *)",
+      "Bash(git branch *)",
+      "Bash(gh pr create --base retro/pre-2026-05-10-session --head main --title 'Retroactive PR: 2026-05-10 session \\(already merged to main\\)' --body ' *)"
+    ]
+  }
+}

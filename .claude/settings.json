@@ -7,5 +7,8 @@
       "Bash(cargo fmt:*)",
       "Bash(git:*)"
     ]
+  },
+  "enabledPlugins": {
+    "dev-team@dev-team": true
   }
 }
