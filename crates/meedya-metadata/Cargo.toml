@@ -15,5 +15,7 @@ thiserror = { workspace = true }
 log = { workspace = true }
 lofty = { workspace = true }
 mp4ameta = "0.13"
+regex = { workspace = true }
+strum = { workspace = true }
 meedya-codecs = { workspace = true }
 meedya-fingerprint = { workspace = true }

@@ -6,7 +6,7 @@
 >
 > **This is not a Swagger/OpenAPI spec.** `MeedyaSuite-core` is a Rust library workspace, not a web service. There are no HTTP endpoints. If you need an HTTP-shaped contract, build one in your downstream app on top of these crates.
 >
-> **Last refreshed**: 2026-05-18 (post issues #26 SYLT + #27 facade re-exports + #31 Mixed In Key reader). See the [maintenance section](#maintenance) for how this stays in sync with the code.
+> **Last refreshed**: 2026-08-03 (post issue #65 identifier-types registry + CommonTag #[non_exhaustive] + core-info variants). See the [maintenance section](#maintenance) for how this stays in sync with the code.
 
 ---
 
@@ -41,12 +41,12 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-db` | `client`, `export`, `models` | 3 | Foundation stable; specific endpoints may evolve |
 | `meedya-fingerprint` | `acoustid`, `replaygain` | 6 | Stable |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
-| `meedya-lyrics` | `embed`, `lrc`, `lyrics`, `provider`, `sidecar` | 15 | Stable (plain + synced via SYLT for ID3v2) |
-| `meedya-metadata` | `codec_tags`, `common_tags`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `writer` | 59 | Stable (two co-existing surfaces) |
-| `meedya-providers` | `cover_art`, `credentials`, `match_scoring`, `rate_limiter`, `traits`, `types` | 27 | Stable foundation; specific provider implementations may evolve |
-| `meedya-tags-extended` | `io`, `mik`, `model`, `standard` | 61 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
+| `meedya-lyrics` | `embed`, `lrc`, `lyrics`, `provider`, `sidecar` | 128 | Stable (plain + synced via SYLT for ID3v2) |
+| `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `writer` | 111 | Stable (two co-existing surfaces + identifier-types registry) |
+| `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 28 | Stable foundation; specific provider implementations may evolve |
+| `meedya-tags-extended` | `io`, `mik`, `model`, `standard` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 466 tests.** All passing on the feature branch (post 2026-06-09 implementation batch — 248 → 466 tests, 10 issues closed).
+**Total: 533 tests** (623 with --all-features, the CI configuration). All passing on the feature branch (post #65 identifier-types registry batch — 511 → 533 measured; the +4 over the batch's 529 are tag-I/O save/reload round-trip tests added with the #65 silent-data-loss fix). Previous totals in this file were stale: it long read 466, but the measured pre-#65 count was actually 511 — the count-drift itself is tracked as a follow-up (§9 of the #65 build spec, "for consideration").
 
 ---
 
@@ -327,6 +327,10 @@ Tag schemas, metadata read/write, and a config-driven TOML tag registry. Two par
 ```rust
 pub use common_tags::{CommonTag, STANDARD_NAMESPACES};
 pub use error::MetadataError;
+pub use identifier_types::{
+    active_identifier_slugs, identifier_type, identifier_types, IdentifierScope,
+    IdentifierStatus, IdentifierType, IdentifierValidation, IDENTIFIER_TYPES_TOML,
+};
 pub use json_path::{extract_json_value, value_to_string};
 pub use tag_io::{read_tags, write_acoustid_tags, write_registry_tags,
                  write_replaygain_tags, write_tags, TagMap};
@@ -337,7 +341,8 @@ pub use tag_registry::{AtomTarget, TagDefinition, TagRegistry, TagScope, TagValu
 
 For MP3 / M4A / FLAC / WAV / AIFF / OGG and downstream-app general use.
 
-- **`common_tags`** — `CommonTag` enum (`Title`, `Artist`, `Album`, `Lyrics`, `Bpm`, `InitialKey`, etc.) with `STANDARD_NAMESPACES` mapping each to its ID3v2 / Vorbis / MP4 ilst frame name.
+- **`common_tags`** — `CommonTag` enum (core identifiers — `Isrc`/`Upc`/MusicBrainz IDs/`AcoustId`; basic metadata — `Title`/`Artist`/`Album`/etc.; extended metadata; ReplayGain; catalog/date fields; and, as of #65, MB Release-Group/Work IDs + `Iswc` + core-info/contributor-role fields — see below) with `STANDARD_NAMESPACES` mapping each to its ID3v2 / Vorbis / MP4 ilst frame name. `Bpm`/`InitialKey` are **not** `CommonTag` concepts — those live in `meedya-tags-extended::standard` (DJ metadata), a distinct surface.
+- **`identifier_types`** — Cross-repo identifier-type registry (#65). DATA, not an enum: see the dedicated subsection below.
 - **`tag_io`** — Lofty-driven file I/O:
   - `read_tags(path: &Path) -> Result<TagMap>`
   - `write_tags(path: &Path, tags: &TagMap) -> Result<()>`
@@ -346,6 +351,94 @@ For MP3 / M4A / FLAC / WAV / AIFF / OGG and downstream-app general use.
   - `write_replaygain_tags(path, result: &ReplayGainResult) -> Result<()>`
 - **`tag_registry`** — `TagDefinition`, `TagRegistry`, `TagScope`, `TagValueType`, `AtomTarget` for declarative tag mapping loaded from TOML.
 - **`json_path`** — Dot-path extraction (`extract_json_value`, `value_to_string`) with array indexing for API JSON → tag-value pipelines.
+
+#### Identifier-types registry (`identifier_types`, #65)
+
+The canonical, cross-repo vocabulary of external/catalogue identifier types: scope → slug → validation shape. This is **DATA, not an enum** — adding an identifier type is a TOML edit (`crates/meedya-metadata/identifier_types.toml`), not a Rust code change.
+
+**Consumers**: MeedyaManager / MeedyaDL (Rust) via `identifier_types()`; MeedyaConverter (Swift, planned bindings) via the raw `IDENTIFIER_TYPES_TOML` byte-level artifact; iHymns (PHP) mirrors the artifact and appends its own domain-only extensions (`ccli`, `hymnary-tune`, ...) — domain IDs never flow upstream into this repo's artifact.
+
+Per-entry schema (`[[identifier]]` in the TOML):
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `slug` | string | yes | Canonical kebab-case key (`^[a-z0-9][a-z0-9-]*$`). The map key consumers use in `external_ids` / `ProviderResult.metadata` / iHymns' mirror. |
+| `display_name` | string | yes | Human label ("ISRC"). |
+| `standard` | string | no | Issuing standard ("ISO 3901:2019"). |
+| `scope` | string | yes | Luminate entity: `artist` \| `song` \| `recording` \| `work` \| `release-group` \| `release` \| `product` \| `party` \| `audiovisual-work`. |
+| `status` | string | yes | `active` (consumers may store/exchange under this slug now) \| `reserved` (slug + shape claimed at zero cost; no storage surface yet). |
+| `validation` | inline table | yes | `{ kind = "regex", pattern = '<anchored regex>' }` or `{ kind = "free" }`. Validates the **canonical compact form** (normalise first: uppercase; strip `-`, `.`, spaces). |
+| `check` | string | no | Advisory check-digit algorithm name (`gs1`, `iswc-mod10`, `iso7064-mod11-2`, `iso7064-mod37-36`) — **data only, not executed in v1**. |
+| `example` | string | required when `validation.kind = "regex"` | A syntactically valid sample; guard-tested to match its own pattern. |
+| `notes` | string | no | Cross-references / caveats. |
+
+**Seed set**: 15 active — `acoustid, bowi, eidr, grid, icpn, ipi, isni, isrc, iswc, musicbrainz-artist, musicbrainz-recording, musicbrainz-release, musicbrainz-release-group, musicbrainz-work, upc` — and 4 reserved — `dpid, hfa, ipn, label-code`.
+
+```rust
+pub const IDENTIFIER_TYPES_TOML: &str = /* compiled-in artifact, byte-for-byte */;
+
+pub enum IdentifierScope { Artist, Song, Recording, Work, ReleaseGroup, Release, Product, Party, AudiovisualWork } // #[non_exhaustive]
+pub enum IdentifierStatus { Active, Reserved }                                                                     // #[non_exhaustive]
+pub enum IdentifierValidation { Regex { pattern: String }, Free }                                                  // #[non_exhaustive]
+
+pub struct IdentifierType {
+    pub slug: String,
+    pub display_name: String,
+    pub standard: Option<String>,
+    pub scope: IdentifierScope,
+    pub status: IdentifierStatus,
+    pub validation: IdentifierValidation,
+    pub check: Option<String>,
+    pub example: Option<String>,
+    pub notes: Option<String>,
+}
+impl IdentifierType {
+    pub fn matches_format(&self, value: &str) -> bool; // caller normalises first
+}
+
+pub fn identifier_types() -> &'static [IdentifierType];       // all, sorted by slug
+pub fn identifier_type(slug: &str) -> Option<&'static IdentifierType>;
+pub fn active_identifier_slugs() -> Vec<&'static str>;         // active slugs, sorted
+```
+
+**Guard contract**: `crates/meedya-metadata/tests/identifier_registry_guard.rs` holds the *deliberate declaration* side of a change-detector (`EXPECTED_ACTIVE_SLUGS` / `EXPECTED_RESERVED_SLUGS`) — the other side is always **derived** (parsed from the artifact via `identifier_types()`, or iterated from `CommonTag` via `strum::EnumIter`), never a second hand-typed copy. Changing the TOML without updating the expected lists (or vice versa) fails CI. Each downstream repo that mirrors the artifact (MeedyaManager, iHymns) holds its own guard against its own mirror — this repo does not, and cannot, verify another repo's copy stayed in sync.
+
+**FFI note**: `IdentifierType` is Rust-only for now (`String`/`Option<String>` fields, no `#[repr(C)]`) — no Swift binding exists yet. The FFI story is `IDENTIFIER_TYPES_TOML`: bindings and non-Rust consumers parse or pass through the raw artifact, and cross-repo CI diffs the bytes directly.
+
+#### `CommonTag` is `#[non_exhaustive]` as of 0.2.0 (#65)
+
+Downstream crates matching on `CommonTag` must add a `_ =>` wildcard arm (a compile error otherwise — `#[non_exhaustive]` has no effect on in-crate matches, so `common_tags.rs`'s own mapping methods and `tag_io.rs::write_common_tag_to_lofty()` stay exhaustive and total). This landed alongside the workspace `0.1.0 → 0.2.0` bump — the attribute itself is the one breaking change; every variant added *after* it is non-breaking for downstream consumers. Serde behaviour is unaffected: `CommonTag` still (de)serializes as the variant-name string, so an older consumer reading a newer producer's payload can still fail on an unrecognised variant name — cross-version payload tolerance remains the consumer's job.
+
+**12 new variants** (#65), with their container mappings:
+
+| Variant | iTunes/MP4 atom | Vorbis comment | ID3v2 frame |
+|---|---|---|---|
+| `MusicBrainzReleaseGroupId` | `MusicBrainz Release Group Id` | `MUSICBRAINZ_RELEASEGROUPID` | `TXXX:MusicBrainz Release Group Id` |
+| `MusicBrainzWorkId` | `MusicBrainz Work Id` | `MUSICBRAINZ_WORKID` | `TXXX:MusicBrainz Work Id` |
+| `Iswc` | `ISWC` | `ISWC` | `TXXX:ISWC` (lofty has no dedicated ISWC key) |
+| `Subtitle` | `SUBTITLE` | `SUBTITLE` | `TIT3` |
+| `Language` | `LANGUAGE` | `LANGUAGE` | `TLAN` |
+| `Lyricist` | `LYRICIST` | `LYRICIST` | `TEXT` |
+| `Conductor` | `CONDUCTOR` | `CONDUCTOR` | `TPE3` |
+| `Remixer` | `REMIXER` | `REMIXER` | `TPE4` |
+| `Arranger` | `ARRANGER` | `ARRANGER` | `TIPL:arranger` (no MP4 ilst mapping in lofty 0.22 — MP4 writes drop silently) |
+| `Producer` | `PRODUCER` | `PRODUCER` | `TIPL:producer` |
+| `Engineer` | `ENGINEER` | `ENGINEER` | `TIPL:engineer` |
+| `Mixer` | `MIXER` | `MIXER` | `TIPL:mix` |
+
+`Performer` and `Translator` were deliberately **excluded**: `Performer` has no lofty 0.22 ID3v2 write mapping (ID3v2 models it as the multi-valued, instrument-qualified TMCL frame — a flat-string variant would silently no-op on MP3); `Translator` has no standard frame in any container and stays an iHymns-domain concept in its own mirror.
+
+```rust
+impl CommonTag {
+    /// The `identifier_types.toml` registry slug for identifier-carrying
+    /// variants; `None` for descriptive tags. Total match — no wildcard —
+    /// so a new variant must decide, at compile time, whether it's an
+    /// external identifier.
+    pub fn identifier_slug(&self) -> Option<&'static str>;
+}
+```
+
+**Growth-path policy**: new external identifier types go through the `identifier_types` registry + `meedya-providers::extra_keys` + the `external_ids`/`metadata` maps — **not** a new `CommonTag` variant. A `CommonTag` variant is reserved for tags with a genuine per-container frame mapping (ID3v2/Vorbis/MP4 ilst) — like the 3 additions in §3 of the #65 build spec. `CatalogNumber.identifier_slug()` deliberately returns `None`: label catalogue codes are not a global identifier scheme.
 
 #### Surface 2: `mp4ameta`-backed (M4A, sandbox-safe)
 
@@ -677,7 +770,9 @@ Source fields (Artist/Title/Comment/Grouping/Label) are **read-only**; the origi
 | **Foundation stable + MIK reader** | `meedya-tags-extended` | Core types (`ExtendedTags`, `MusicalKey`, `CuePoint`) and the Mixed In Key reader (`read_mik`, `normalise_to_standards`, `MikAnalysis`) are stable. Other proprietary reader modules (`serato`, `rekordbox`, `traktor`, `virtualdj`) are not yet implemented — when added, they will populate the existing `ExtendedTags` shape, not change it. |
 | **Experimental** | (none currently) | — |
 
-All crates share workspace `version = "0.1.0"`. Pre-1.0, minor-version bumps may include breaking changes; please pin to a git revision or tag in downstream apps until 1.0.
+As of **0.2.0** (#65), `CommonTag` is `#[non_exhaustive]` — downstream exhaustive matches over it stop compiling (the one deliberate breaking change this bump carries) and every variant added from here on is non-breaking. `identifier_types` is a new additive module; its types (`IdentifierScope`/`IdentifierStatus`/`IdentifierValidation`) are also `#[non_exhaustive]` from day one.
+
+All crates share workspace `version = "0.2.0"` (bumped from `0.1.0` by #65). Pre-1.0, minor-version bumps may include breaking changes; please pin to a git revision or tag in downstream apps until 1.0.
 
 ---
 

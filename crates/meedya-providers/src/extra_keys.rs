@@ -16,6 +16,12 @@
 // Ported from MeedyaManager `mm-providers` under issue #136 /
 // MeedyaSuite-core#12 (the bare upstream names drop the `META_` prefix the
 // MM constants used).
+//
+// Identifier-shaped keys (ISWC, EIDR) are also canonical slugs in the
+// cross-repo `meedya_metadata::identifier_types` registry (#65) — the
+// `identifier_extra_keys_match_registry_slugs` test below is the in-repo
+// mechanism that keeps them from drifting apart (e.g. the `mm_iswc` vs
+// `iswc` class of bug MeedyaManager hit).
 
 /// Album artist (when different from the track artist). Stored as `Value::String`.
 pub const ALBUM_ARTIST: &str = "album_artist";
@@ -40,3 +46,20 @@ pub const BPM: &str = "bpm";
 
 /// Provider-specific item identifier. Stored as `Value::String`.
 pub const PROVIDER_ID: &str = "provider_id";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The identifier-shaped extra_keys constants ARE registry slugs (#65).
+    /// This is the in-repo mechanism (not a comment) preventing the
+    /// `mm_iswc`-vs-`iswc` class of key drift MeedyaManager hit.
+    #[test]
+    fn identifier_extra_keys_match_registry_slugs() {
+        for key in [ISWC, EIDR] {
+            let t = meedya_metadata::identifier_type(key)
+                .unwrap_or_else(|| panic!("extra_keys::{key:?} is not a registry slug"));
+            assert_eq!(t.status, meedya_metadata::IdentifierStatus::Active);
+        }
+    }
+}

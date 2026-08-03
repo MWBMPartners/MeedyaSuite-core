@@ -9,6 +9,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aho-corasick"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -984,7 +993,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "meedya-codecs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -998,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "meedya-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "meedya-codecs",
  "meedya-db",
@@ -1012,7 +1021,7 @@ dependencies = [
 
 [[package]]
 name = "meedya-db"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "meedya-codecs",
@@ -1025,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "meedya-fingerprint"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "log",
@@ -1040,7 +1049,7 @@ dependencies = [
 
 [[package]]
 name = "meedya-library-import"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
  "percent-encoding",
@@ -1050,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "meedya-lyrics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "lofty 0.22.4",
@@ -1065,22 +1074,24 @@ dependencies = [
 
 [[package]]
 name = "meedya-metadata"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lofty 0.22.4",
  "log",
  "meedya-codecs",
  "meedya-fingerprint",
  "mp4ameta",
+ "regex",
  "serde",
  "serde_json",
+ "strum",
  "thiserror 2.0.18",
  "toml",
 ]
 
 [[package]]
 name = "meedya-providers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "fuzzy-matcher",
@@ -1088,6 +1099,7 @@ dependencies = [
  "jsonwebtoken",
  "keyring",
  "meedya-codecs",
+ "meedya-metadata",
  "oauth2",
  "reqwest",
  "serde",
@@ -1100,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "meedya-tags-extended"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "lofty 0.21.1",
@@ -1632,6 +1644,35 @@ checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags 2.11.1",
 ]
+
+[[package]]
+name = "regex"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-automata"
+version = "0.4.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-syntax"
+version = "0.8.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reqwest"

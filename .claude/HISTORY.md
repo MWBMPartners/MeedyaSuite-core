@@ -228,3 +228,60 @@ Each issue has its own commit; see commit messages for full per-issue API detail
 ### Standing task compliance
 
 `docs/API.md` workspace overview table updated with new module lists + test counts. CLAUDE.md standing task says "in the same commit as the code change" — bundled into the end-of-batch docs commit here (matches the precedent set by the 2026-05-18 batch).
+
+---
+
+## 2026-08-03 — #65 identifier-types registry + CommonTag growth path (branch `claude/issue-65-identifier-registry`)
+
+Executed against a fully decision-bearing, file:line-grounded build spec (`meedya-65-plan.md`) — no re-deciding, only execute + adapt-and-note where the live tree disagreed with a spec assumption.
+
+### `identifier_types` — new cross-repo registry (`meedya-metadata`)
+
+- New compiled-in artifact `crates/meedya-metadata/identifier_types.toml` (`include_str!` + `LazyLock`, mirrors the existing `registry.rs`/`tags.toml` idiom). DATA, not an enum: scope → slug → validation shape for external/catalogue identifier types (ISRC, ISWC, ISNI, IPI, GRid, ICPN, UPC, BOWI, EIDR, MusicBrainz recording/release/release-group/work/artist IDs, AcoustID, plus 4 reserved slugs: DPID, HFA, IPN, Label Code). 15 active + 4 reserved, seeded per the issue's Luminate-model taxonomy.
+- New module `crates/meedya-metadata/src/identifier_types.rs`: `IdentifierType`/`IdentifierScope`/`IdentifierStatus`/`IdentifierValidation` (all `#[non_exhaustive]`), `identifier_types()`/`identifier_type()`/`active_identifier_slugs()`, `IdentifierType::matches_format()` (regex or free-form, canonical-compact-form only — check digits are advisory data, not verified in v1). 8 unit tests.
+- Wired into `lib.rs` (`pub mod` + re-exports + doc-block line) and `meedya-core`'s prelude (`+ IdentifierType`).
+- Consumers by design: MeedyaManager/MeedyaDL via `identifier_types()`; the planned Swift/WASM bindings + cross-repo CI diffs via the raw `IDENTIFIER_TYPES_TOML` byte artifact; iHymns mirrors the artifact in its own repo and appends its own domain-only extensions (`ccli`, `hymnary-tune`, ...) — those never flow upstream into this repo.
+
+### `CommonTag` — `#[non_exhaustive]` + 12 new variants + `identifier_slug()`
+
+- `#[non_exhaustive]` + `#[derive(... EnumIter)]` added to `CommonTag` (`common_tags.rs`). In-crate mapping methods stay exhaustive/total (no wildcards); downstream matches now require `_ =>`. This is the one deliberate breaking change carried by the workspace version bump.
+- 12 new variants: `MusicBrainzReleaseGroupId`, `MusicBrainzWorkId`, `Iswc` (typed reach for identifiers with genuine per-container frame mappings), plus core-info/contributor-role gaps `Subtitle`, `Language`, `Lyricist`, `Conductor`, `Remixer`, `Arranger`, `Producer`, `Engineer`, `Mixer` — all three mapping methods (`itunes_atom_name`/`vorbis_comment_name`/`id3v2_frame`) extended with verified lofty-0.22.4 frame names; the total match forced every arm.
+- New `CommonTag::identifier_slug()` — total match, no wildcard — bridges identifier-carrying variants to their `identifier_types.toml` slug; `CatalogNumber` deliberately resolves to `None` (label catalogue codes aren't a global identifier scheme).
+- **Excluded on purpose**: `Performer` (lofty 0.22 has no ID3v2 write mapping for `ItemKey::Performer` — a variant would silently no-op on MP3) and `Translator` (no standard frame in any container; stays an iHymns-domain concept in its own mirror).
+- `tag_io.rs`: 12 write arms, the read-path `key_mappings` extended with the 11 ItemKey-backed pairs, the freeform block renamed `rg_mappings` → `freeform_mappings` and given the ISWC pairing, and `write_common_tag_mapping` rewritten to iterate `CommonTag::iter()` (via `strum::IntoEnumIterator`) instead of a hand-picked subset — a future variant is exercised automatically. **Write arms use `insert_unchecked` for the 5 keys lofty's `Tag::insert()` silently drops** — see the correctness-fix subsection below.
+- 4 new `common_tags.rs` unit tests + the EnumIter-ised `tag_io.rs` test, **plus 4 tag-I/O save/reload round-trip tests** (`contributor_roles_survive_id3v2_save_reload`, `iswc_survives_id3v2_save_reload`, `mapped_roles_survive_id3v2_save_reload`, `iswc_and_roles_survive_vorbis_save_reload`) added with the correctness fix below.
+
+### The guard (mutation-tested, tree-derived, per project standard)
+
+- New integration-test crate file `crates/meedya-metadata/tests/identifier_registry_guard.rs`: 5 tests. `EXPECTED_ACTIVE_SLUGS`/`EXPECTED_RESERVED_SLUGS` are the deliberate declaration side; the other side of every comparison is always derived (parsed from the artifact, or `CommonTag::iter()` via EnumIter) — never a second hand-copy. Includes a tree-derived tripwire (`common_tag_is_marked_non_exhaustive`, reads the actual source) so the attribute can't be silently dropped later. **That tripwire was rewritten from a blunt `contains("#[non_exhaustive]\npub enum CommonTag")` adjacency check to a decorator-block walk** — the old form went RED on the correct, semantically-identical edit of merely reordering `#[non_exhaustive]` relative to `#[derive(...)]` or slipping a doc-comment between the two (rule #34: a guard that fails on correct code gets weakened or deleted). The new walk still goes RED if the attribute is removed or detached; both directions mutation-proven (removal → RED; reorder+interleaved-comment → GREEN).
+- New `meedya-providers` test `extra_keys::tests::identifier_extra_keys_match_registry_slugs` (+ dev-dep on `meedya-metadata`) — pins the two existing identifier-shaped `extra_keys` consts (`ISWC`, `EIDR`) to the registry, the in-repo mechanism preventing the `mm_iswc`-vs-`iswc` class of drift MeedyaManager hit.
+- **Mutation-proven** per the project's guard discipline (a guard whose first green was never challenged is presumed wrong): (a) appending an active `zz-mutation-probe` slug to the TOML → `active_slug_set_matches_expected` red; (b) flipping `isrc` to `reserved` → both `active_slug_set_matches_expected` AND `common_tag_identifier_variants_are_registered_and_active` red; (c) renaming `extra_keys::ISWC` to `"mm_iswc"` → `identifier_extra_keys_match_registry_slugs` red. All three restored via cp-restore of a pre-mutation backup (never `git checkout`, to avoid touching other uncommitted spec work), full suite re-verified green after each restore.
+
+### Adversarial-review correctness fix — silent data loss in `tag_io.rs` write arms
+
+A parallel adversarial correctness lens (then independently re-verified against the pinned lofty 0.22.4 source) found that several write arms **silently dropped their value at save time**: `write_tags` returned `Ok(())` but `read_tags` afterwards returned `None`. Root cause is `lofty::tag::Tag::insert()`, which gates every insert through `TagItem::re_map(tag_type)` → `ItemKey::map_key(tag_type, allow_unknown=false)`:
+
+- **Every `ItemKey::Unknown` is rejected unconditionally, on every container** (`re_map` always passes `allow_unknown=false`). So `Iswc` (`Unknown("ISWC")`) — and, pre-existing and unchanged by the batch, `AcoustId`, `ReplayGainReferenceLoudness`, and the MP4 atom-passthrough — never entered the tag at all.
+- **ID3v2 has no `ID3V2_MAP` entry for the four TIPL roles** `Arranger`/`Producer`/`Engineer`/`MixEngineer` (verified in lofty's `src/tag/item.rs`). lofty synthesises them into the `TIPL` frame at save time in `impl From<Tag> for Id3v2Tag` (`src/id3/v2/tag.rs`, `TIPL_MAPPINGS`) — but only for items **already inside** the `Tag`, which `insert()` refuses to admit. Vorbis/APE were fine (those maps list the roles); ID3v2/MP3 — the primary format — dropped them.
+
+Fix: those 8 arms now call `tag.insert_unchecked(...)`, which lofty's own doc-comment says is the correct call "if dealing with `ItemKey::Unknown`". `Lyricist`/`Conductor`/`Remixer` and MB-group/work/`Subtitle`/`Language` legitimately keep `insert()` (they have direct frame mappings). Proven end-to-end by the 4 new round-trip tests, which exercise the real `Tag → Id3v2Tag → Tag` (and Vorbis) merge/split conversion in-memory; **mutation-proven** — reverting the `Producer` arm turns `contributor_roles_survive_id3v2_save_reload` RED, reverting the `Iswc` arm turns both ISWC tests RED. The correctness lens's misleading original comment on the `Arranger` arm ("only MP4 dropped") was corrected to explain the ID3v2 TIPL path.
+
+### Measured test-count correction
+
+The workspace's documented test counts had been stale for a while: README/API.md/CONTEXT.md said 466, `.claude/CLAUDE.md` said 211/248 — the actual pre-#65 measured count (this session, HEAD `75e081f`) was **511 passed, 1 ignored** (default features) / 601 (`--all-features`). Post-#65: **533 passed, 1 ignored** (default) / **623 passed, 1 ignored** (`--all-features`) — the build spec's arithmetic gave 529/619 (metadata 90→107 = +4 common_tags +8 identifier_types +5 guard; providers 27→28 default / 112→113 all-features), and the +4 on top (→ 533/623, metadata 90→111) are the tag-I/O save/reload round-trip tests added with the silent-data-loss fix above. All of README.md, docs/API.md, `.claude/CONTEXT.md`, `.claude/CLAUDE.md` corrected to the measured numbers in this session; the pre-existing 466/211/248 staleness itself is flagged as a "for consideration" follow-up (a doc-count CI check).
+
+### Version bump
+
+Root `Cargo.toml` `version = "0.1.0"` → `"0.2.0"` (all 9 crates inherit via `[workspace.package]`) — the `#[non_exhaustive]` transition is the one deliberate breaking change this bump carries; `Cargo.lock` refreshed (`regex` newly entered the lock graph; all internal crate versions bumped).
+
+### Full §8 verification (all green)
+
+`cargo build --workspace` (Cargo.lock refresh) → `cargo build --workspace --all-features --locked` → `cargo test --workspace --locked` (533 passed, 1 ignored) → `cargo test --workspace --all-features --locked` (623 passed, 1 ignored) → `cargo fmt --all -- --check` (clean) → `cargo clippy -p meedya-metadata -p meedya-providers --all-targets --all-features -- -D warnings` (clean) → the 3 registry mutation proofs above + the 2 correctness-fix mutation proofs + the 2-direction non_exhaustive-guard proof → `cargo doc` renders. The batch was adversarially verified by 3 parallel lenses (correctness / guards / conventions); the correctness lens found the silent-data-loss defect and the guards lens found the blunt non_exhaustive check — both fixed here and independently re-verified against lofty 0.22.4 source before commit.
+
+### One spec deviation
+
+The build spec's §6.1 guard import line included `IdentifierValidation`, but none of the 5 guard tests as written construct or match on it, and `cargo clippy -D warnings` (a required §8 step) fails on the unused import. Dropped the unused import rather than adding a dead reference just to satisfy a verbatim-import instruction that conflicts with a separately-mandated `-D warnings` clippy pass — noted here per the task's "adapt + note if a spec line is wrong vs the live tree" instruction. No other deviations from the spec.
+
+### Deferred follow-ups (issues to file per standing task — see spec §9)
+
+MeedyaManager adoption (consume `identifier_types()`, fix the live `mm_iswc`/`iswc` drift, add downstream `_ =>` arms + a registry-coverage guard); iHymns mirror guard (mirror the artifact + its own extension list + a mutation-tested diff, in the iHymns repo — not touched from here); Swift bindings pass-through of `IDENTIFIER_TYPES_TOML` when `bindings/swift` lands; a check-digit engine for the advisory `check` algorithms (gs1/iswc-mod10/iso7064-mod11-2/iso7064-mod37-36); a CI doc-count-drift check (the 466/211/248 staleness this session corrected).

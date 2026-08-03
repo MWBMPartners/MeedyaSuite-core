@@ -22,10 +22,12 @@
 //   binaural, downmix) and the `CodecKind` enum.
 // - `playback_bounds` — User-supplied soft playback start/stop atoms,
 //   honored by MeedyaSuite tools only.
+// - identifier_types — cross-repo identifier-type registry (identifier_types.toml, #65).
 
 pub mod codec_tags;
 pub mod common_tags;
 mod error;
+pub mod identifier_types;
 pub mod json_path;
 pub mod playback_bounds;
 pub mod registry;
@@ -36,6 +38,10 @@ pub mod writer;
 
 pub use common_tags::{CommonTag, STANDARD_NAMESPACES};
 pub use error::MetadataError;
+pub use identifier_types::{
+    active_identifier_slugs, identifier_type, identifier_types, IdentifierScope, IdentifierStatus,
+    IdentifierType, IdentifierValidation, IDENTIFIER_TYPES_TOML,
+};
 pub use json_path::{extract_json_value, value_to_string};
 pub use tag_io::{
     read_tags, write_acoustid_tags, write_registry_tags, write_replaygain_tags, write_tags, TagMap,

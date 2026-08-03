@@ -56,7 +56,7 @@ pub mod prelude {
     //! Convenient imports for common types.
 
     #[cfg(feature = "metadata")]
-    pub use meedya_metadata::{CommonTag, MetadataError, TagRegistry};
+    pub use meedya_metadata::{CommonTag, IdentifierType, MetadataError, TagRegistry};
 
     #[cfg(feature = "codecs")]
     pub use meedya_codecs::{
