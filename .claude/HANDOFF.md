@@ -1,0 +1,291 @@
+# MeedyaSuite-core — Session Handoff
+
+> **Purpose**: pick up exactly where the last session left off, without re-deriving anything.
+> **Read order at session start**: [CLAUDE.md](CLAUDE.md) → this file → [CONTEXT.md](CONTEXT.md).
+> **Update rule**: amend this file *as work lands*, not at the end. If a session is interrupted, this file is the only thing that survives.
+
+**Last updated**: 2026-09-01
+**Active branch**: `feature/work-in-progress`
+**Eventual PR target**: `main` (owner-confirmed 2026-09-01)
+
+---
+
+## 1. Ground truth (measured, not asserted)
+
+Numbers here were **measured by running cargo**, not copied from docs. Docs across the repo
+have historically disagreed (248 / 466 / 653 / 664 all appear somewhere and are all wrong).
+
+| Fact | Value | How verified |
+|---|---|---|
+| Tests on `main` | **601 passing, 0 failing** | `cargo test --workspace --all-features --locked` |
+| Tests on `feature/work-in-progress` | **683 passing, 0 failing** | same command |
+| `cargo fmt --all -- --check` | clean on both | run directly |
+| `cargo clippy -p meedya-providers --all-targets --all-features` | clean | run directly |
+| Workspace crates | 9 | `ls crates` |
+| Web/HTTP-server/OpenAPI surface | **none** | no axum/actix/warp/rocket/utoipa anywhere; `bindings/` is 2 README stubs |
+
+### Toolchain note (important)
+
+**Rust was not installed on this machine** at session start. Installed via rustup:
+`~/.cargo/bin`, stable **1.98.0** (same version MeedyaDL pins). `cargo` is **not on the
+default PATH** — every command needs:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+CI only triggers on `pull_request`/`push` to `main`, so **a WIP branch gets no CI at all**.
+Local verification is the only gate until the PR is opened.
+
+---
+
+## 2. Branch consolidation — COMPLETE
+
+### What was done
+
+Four WIP branches were audited by **full file content** (not commit messages) and
+consolidated into a single branch, `feature/work-in-progress`, based on `main`.
+
+| Former branch | Disposition | Evidence |
+|---|---|---|
+| `claude/branch-audit-musicbrainz-migration-l5h8zh` | merged | ancestor of WIP branch |
+| `claude/issue-65-identifier-registry` | merged (was already contained in the above) | ancestor |
+| `fix/musicbrainz-lucene-hardening` | merged as **semantic union** | ancestor |
+| `feat/60-syllable-schema-and-classifier` | **not merged — nothing to merge** | see below |
+
+All four remote branches were **deleted**. Archive tags were pushed first so no commit
+became unreachable:
+
+```
+archive/branch-audit-musicbrainz-migration  -> dd3dff5
+archive/issue-65-identifier-registry        -> fd2a7c5
+archive/musicbrainz-lucene-hardening        -> bc13f21
+archive/feat-60-syllable-schema             -> 21a20b3
+```
+
+Recover any of them with `git checkout -b <name> archive/<tag>`.
+
+### The critical finding — why a plain merge would have lost work
+
+The two MusicBrainz branches were **divergent siblings, not superset/subset**. Each had
+dropped features the other introduced. Taking either side wholesale would have silently
+regressed real functionality.
+
+**Only on `fix/musicbrainz-lucene-hardening`** (would have been lost by taking the audit branch):
+- 30s reqwest timeout on the MusicBrainz / ISRC / ISWC clients
+- `ProviderResult.musicbrainz_id` population
+- Genre extraction from MB `genres`/`tags`, highest-vote first (refs #73)
+- `album` → `release:"…"` and `year` → `date:NNNN` query-narrowing clauses
+
+**Only on `claude/branch-audit-…`** (would have been lost by taking the fix branch):
+- `strip_trailing_bracket_groups()` recall helper
+- ISRC normalisation + 12-char validation
+- Explicit error when no searchable field is present
+- `validate_isrc` ASCII-only fix — a **real panic** on non-ASCII alphanumeric input
+- Solr-10 forward-compat response-shape tests
+- The entire #65 identifier-types registry
+
+All 21 at-risk features were verified present after the merge by explicit grep audit.
+`main` was the weakest baseline of all three (naive `title.replace('"', "")`, no timeout,
+no `lucene.rs`).
+
+### `lucene.rs` — API unified
+
+The branches exposed **incompatible public APIs** for the same module:
+`lucene_escape`/`lucene_phrase_clause` vs `escape_lucene`/`quote_phrase`. Neither had
+shipped in a release (the module doesn't exist on `main`), so they were unified on one
+correct API. The distinction now reflects **actual Lucene semantics**, which both branches
+had conflated:
+
+| Helper | Escapes | Use for |
+|---|---|---|
+| `escape_lucene(v)` | all 19 Lucene specials | **bare / unquoted** terms |
+| `quote_phrase(v)` | only `\` and `"` | **inside a quoted phrase** |
+| `phrase_clause(f, v)` | delegates to `quote_phrase` | a whole `field:"value"` clause |
+
+Inside a quoted phrase Lucene treats `( ) : + - ?` as literal text — escaping them there
+would make the backslashes part of the searched string. Outside a phrase they are
+operators and must be escaped. The MusicBrainz docs' own `AC/DC` example escapes the
+slash for exactly this reason.
+
+Exported from `meedya-providers`: `pub use lucene::{escape_lucene, phrase_clause, quote_phrase};`
+
+### `feat/60` — fully accounted for, nothing lost
+
+Its feature work (#60) landed via PR #62; its agent configs via PR #67. Its only *additive*
+unique content was `.claude/settings.local.json` — machine-local Claude Code permission
+grants containing absolute `/Users/...` paths, which must never be committed. That file is
+now in `.gitignore`. The branch also carried a **deletion** of `.github/workflows/lint.yml`,
+deliberately **not** taken: that workflow is the actionlint CI added later by PR #64, and
+the branch simply predates it.
+
+### `alpha` / `beta` — NOT touched
+
+Both are **ancestors of `main`** (75 commits behind, zero unique commits) — effectively
+stale release pointers. They were outside the audit scope and have been left alone.
+
+> **Open recommendation for the owner**: fast-forward `alpha` and `beta` to `main`, or
+> delete them, so they stop reading as live branches. Not done — needs an explicit call.
+
+---
+
+## 3. Decisions taken by the owner this session
+
+| Question | Decision |
+|---|---|
+| PR target for the consolidated branch | **`main`** |
+| Scope of MusicBrainz code changes | **This repo only** — no code changes in MeedyaDL |
+| GitHub issues for the MeedyaDL→core MusicBrainz migration | **Log in BOTH repos** (revised mid-session; supersedes the earlier "core only, no MeedyaDL issues") |
+| OpenAPI / Swagger UI | **Skip** — no web surface exists in this workspace |
+| PR strategy | **One branch, one eventual PR.** No PR stacking. |
+
+---
+
+## 4. MusicBrainz Solr 10 migration (2026-11-30)
+
+Source: <https://blog.metabrainz.org/2026/08/31/search-upgrades-nov-30-2026/>
+
+### Ticket inventory
+
+**Breaking**: SEARCH-444 (relation-list in area/URL JSON), SEARCH-642 (drop `id` for
+cdstub/tag), SEARCH-666 (release `quality`: names replace numeric IDs), SEARCH-752
+(relationships lose the redundant `target` property), SEARCH-764 (Solr 9 → 10).
+
+**New/changed**: SEARCH-680 (genre annotations in annotation search), SEARCH-681 (new
+"Genre" search target type), SEARCH-751 + SEARCH-753 (`target-type` added to relationships
+in event/work/area/URL JSON).
+
+**Non-breaking**: SEARCH-452 (index all URL relationships), SEARCH-646 (exact-match
+priority for tag search), SEARCH-677 (disambiguation for event places / work recordings).
+
+### Our exposure (verified by reading code, not inferred)
+
+- `crates/meedya-providers/src/providers/iswc.rs` **does parse `relations`** (`MbRelation`)
+  → in the SEARCH-752/751/753 blast radius. It reads `type` and the entity-specific
+  `artist` object and **never reads `target`**, so it is already forward-compatible. A
+  forward-compat test for the new relation shape is present.
+- `musicbrainz.rs` / `isrc.rs` use the **search** endpoint, which does not return
+  relationships → not exposed to SEARCH-752.
+- We do **not** read release `quality` (SEARCH-666) or cdstub/tag `id` (SEARCH-642).
+- Forward-compat response-shape tests exist for `musicbrainz.rs` and `isrc.rs`, asserting
+  that Solr-10-shaped noise (`target-type`, string `quality`, `release-group`, `genres`)
+  parses identically.
+
+### Deliberately unresolved: ISWC query form
+
+ISRC and ISWC are handled **differently on purpose**:
+
+- **ISRC** is normalised (separators stripped, uppercased) — MusicBrainz documents and
+  indexes ISRCs unpunctuated (`isrc:GBAHT1600302`).
+- **ISWC** keeps its punctuation, phrase-quoted. MusicBrainz displays ISWCs in the
+  punctuated ISO form (`T-034.524.680-1`) and **does not document** which form the `iswc`
+  search field indexes. Stripping separators would be an unverified behaviour change that
+  could silently reduce recall.
+
+This is recorded in-code and needs a **live-service check** to settle. Tracked alongside
+the post-cutover validation in issue #69.
+
+---
+
+## 5. Incidental findings (real, verified, not yet fixed)
+
+These were found while reading the code and are **not** covered by the consolidation:
+
+1. **`rate_limiter.rs` is dead code.** `crates/meedya-providers/src/rate_limiter.rs` exists
+   and configures `("musicbrainz", 50)`, but **no provider calls it**. MusicBrainz's ToS is
+   ~1 req/sec; core currently issues unthrottled requests. (Verified: grep for
+   `RateLimiter|acquire` across `src/providers/` returns nothing.)
+
+2. **10+ providers have no HTTP timeout.** These use bare `Client::new()`:
+   `tmdb`, `spotify`, `deezer`, `omdb`, `apple_music`, `itunes_store`, `apple_tv`,
+   `apple_podcasts`, `thetvdb`, `eidr`. Issue #15 covers only AcoustID — the gap is
+   workspace-wide. (`musicbrainz`, `isrc`, `iswc` now have 30s timeouts via this merge.)
+
+3. **`firstreleasedate` exists as a MusicBrainz recording search field** — "the release
+   date of the earliest release including this recording". Directly relevant to issue #74
+   (earliest-dated release selection); we currently use `date`.
+
+4. **Pre-existing build warning**: unused import `MEEDYA_NAMESPACE` at
+   `crates/meedya-tags-extended/src/mik.rs:43`.
+
+---
+
+## 6. MeedyaDL ↔ core MusicBrainz consolidation (owner-requested, issues in both repos)
+
+**Intent**: the MusicBrainz *lookup mechanism* becomes central in MeedyaSuite-core so every
+Meedya app shares one implementation. App-specific workflow stays in the app.
+
+**Core cannot absorb MeedyaDL today.** Verified capability gap:
+
+| MeedyaDL needs | Core status |
+|---|---|
+| `/recording?query=isrc:…` search | present (only overlap) |
+| `/recording/{id}?inc=url-rels+recording-rels` entity lookup | **absent** — `lookup()` not overridden, returns `NotSupported` |
+| Relationship parsing → external/video URLs | **absent** in `musicbrainz.rs` |
+| URL search (`url:"…"` exact + `url:*tail` wildcard) | **absent** |
+| Platform URL classification | **absent** |
+| Rate limiting | present but **not wired** (see §5.1) |
+
+MeedyaDL has made **no** Solr-10 changes (no such commits) and builds queries by raw
+interpolation at `musicbrainz_service.rs:124`, `:533`, `:578`. It *does* already read
+`target-type` at `:809`, so its relation parsing is forward-compatible.
+
+**Recommended sequence** (do not skip step 2):
+1. ✅ Consolidate + harden core's MB *search* path — done this session.
+2. Grow core: `lookup()` with `inc=` includes, URL search, a `target-type`-first relation
+   model that tolerates the legacy shape, wire the rate limiter. **No MeedyaDL change.**
+3. Oct–Nov, pre-cutover: MeedyaDL swaps `musicbrainz_service.rs` *internals* to delegate to
+   core, keeping its public fn signatures as a thin adapter.
+4. Post-2026-11-30: validate against live Solr 10 (issue #69).
+
+**Must NOT move into core** (app-specific, violates CLAUDE.md principle #4):
+`rewrite_apple_music_storefront`, activity-log emission, progress staging.
+
+---
+
+## 7. Status board
+
+| Task | State |
+|---|---|
+| Branch audit + consolidation | ✅ Complete — merged, pushed, old branches deleted, archive tags pushed |
+| `feat/60` accounted for | ✅ Complete — gitignore commit |
+| MusicBrainz Solr-10 hardening (search path) | ✅ Landed via consolidation |
+| MusicBrainz — remaining work | ⏳ Deep analysis running; see §4 and §5 |
+| GitHub issue sweep (open + closed, verified vs code) | ⏳ Analysis running |
+| Documentation sweep | ⏳ Analysis running |
+| New-work proposals | ⏳ Analysis running |
+| Claude memory / CONTEXT / MEMORY updates | ⏳ Pending |
+| MeedyaDL + core migration issues (both repos) | ⏳ Pending |
+| OpenAPI / Swagger | ⛔ N/A by owner decision — no web surface |
+
+---
+
+## 8. Commits on `feature/work-in-progress` (beyond `main`)
+
+```
+c84a003 chore(git): ignore .claude/settings.local.json
+5dc94ce merge: consolidate fix/musicbrainz-lucene-hardening (semantic union)
+d15102c merge: consolidate claude/branch-audit-musicbrainz-migration into work-in-progress
+dd3dff5 docs(context): fix stale --all-features test count (653 -> 664) in build snippet
+ee53944 feat(meedya-providers): strip trailing (…)/[…] before MusicBrainz phrase query
+8836967 fix(meedya-providers): prevent validate_isrc panic on non-ASCII alphanumeric input
+bc13f21 feat(providers): populate ProviderResult.genre from MusicBrainz results
+2d847b0 feat(providers): add request timeouts, populate musicbrainz_id, album/year in MB query
+a7354d3 fix(providers): Lucene-escape & phrase-quote MusicBrainz search queries
+97ba626 feat(meedya-providers): harden MusicBrainz search queries for the Solr 9->10 upgrade
+f72e79a fix(meedya-metadata): complete #65 — reserve GRid/ICPN, per-scheme normalisation
+fd2a7c5 feat(metadata): identifier-types registry + CommonTag expansion (#65)
+```
+
+---
+
+## 9. If you are resuming cold
+
+```bash
+cd "/Users/lance.manasse/Projects/Coding & Development/MWBM Partners Ltd/GitHub/MeedyaSuite/MeedyaSuite-core"
+export PATH="$HOME/.cargo/bin:$PATH"
+git checkout feature/work-in-progress && git pull
+cargo test --workspace --all-features --locked   # expect 683 passing, 0 failing
+```
+
+Then read §7 for what is outstanding.
