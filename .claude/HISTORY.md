@@ -518,3 +518,70 @@ splitting — and a post-`Default` field assignment.
 
 Final measured state: **556** default-feature / **689** `--all-features`, 0 failing; fmt
 clean; clippy clean and enforcing. Closes #93.
+
+---
+
+## 2026-09-02 — Five selected fixes (#78, #79, #80, #81, #94)
+
+Branch: `feature/work-in-progress`. One commit per issue; all five issues closed.
+
+Measured after: **573** default-features / **718** `--all-features`, 0 failing.
+fmt clean; clippy clean under the now-enforcing CI invocation.
+
+### The issue bodies were the spec — and three of them were wrong
+
+Worth recording, because it is the second time on this branch that acting on a stated
+premise rather than reading the code would have produced the wrong fix:
+
+- **#79** claimed "insert-then-unwrap panics". Half right. Untagged MP4/Ogg/WavPack do
+  panic; untagged **FLAC/APE/MPC do not** — lofty reports Id3v2 as *read-only* supported for
+  those, so the insert succeeds and the write dies later at `save` instead. The issue also
+  anticipated a new error variant; none was needed, because `primary_tag_type()` is a total
+  function of the file type whose result is always both insert- and save-supported, so the
+  fallible path disappears rather than being handled.
+- **#81** cited `meedya-codecs`' ffprobe/mediainfo as the correct counter-pattern to copy.
+  **They were broken the same way.** `tokio::time::timeout` around `Command::output()` does
+  not kill the child; without `kill_on_drop` both leaked a live process on every timeout.
+  Fixed there too.
+- **#80** implied every keyed provider leaked. Only **three** did — TMDb, OMDb and AcoustID,
+  all of which put the credential in the query string. Spotify, TheTVDB and EIDR use header
+  auth, meedya-db uses `X-API-Key`, LRCLIB has no credential; reqwest does not print headers.
+- **#78** was accurate. A workspace-wide sweep found **zero** further instances of the
+  byte-slice bug class. One near-miss to remember: `meedya-metadata/src/writer.rs:142` is
+  safe *only* because it uses `to_ascii_lowercase` — the byte-length-preserving variant.
+  `to_lowercase` there would reintroduce the bug.
+
+### #94 — two design points that look like mistakes but are not
+
+1. **Limiters are keyed by host budget, not provider name.** `musicbrainz.org` is shared by
+   musicbrainz+isrc+iswc; `itunes.apple.com` by apple_music+apple_tv+itunes_store+
+   apple_podcasts. The obvious per-provider-name design would have handed the four Apple
+   providers 4× Apple's per-IP allowance while reading as correct. Pinned by tests.
+2. **MusicBrainz uses `per_second(1)`, not `per_minute(60)`.** governor's per-minute quota
+   permits an immediate 60-request burst — exactly what MusicBrainz's published rule forbids,
+   and it answers bursts with 503s. `per_minute_burst_capacity_equals_rpm` exists purely to
+   document that trap.
+
+Defaults live in a process-global `OnceLock` table so limiters are shared **across provider
+instances**; a per-instance limiter is useless when batch apps construct a provider per task.
+Throttled by default and blocking rather than erroring, so callers get correct behaviour
+without writing retry loops.
+
+`RateLimiterRegistry` now delegates to that same table instead of holding a parallel array —
+two tables would drift, and an app using both would silently have doubled its MusicBrainz
+budget.
+
+### Behavioural changes downstream apps will notice
+
+- All provider searches are now **paced by default**. MusicBrainz-family batches serialise to
+  ~1 req/sec against a shared budget; the four iTunes providers share ~20 req/min.
+- Provider error strings lose their query component (host and path remain).
+- `write_tags` on untagged MP4/Ogg/WavPack now succeeds instead of panicking.
+- A 1–3 digit "year" now yields `None` rather than a fabricated value.
+- A wedged ffmpeg now errors after 10 minutes and the child is SIGKILLed.
+- `FingerprintError::FfmpegTimeout` is a new variant — breaks downstream exhaustive matches.
+
+### Deferred
+
+**#95** filed: governor's default clock does not work on `wasm32`, which only matters now
+that the limiter is load-bearing. Blocks the planned WASM binding (#29).

@@ -112,3 +112,60 @@ them away:
 
 **Fetch note**: `tickets.metabrainz.org` HTML is behind Anubis anti-bot protection. Use the
 JIRA REST API instead: `https://tickets.metabrainz.org/rest/api/2/issue/SEARCH-<n>`.
+
+## Rate limiting is keyed by host budget, not provider name
+
+`meedya-providers`' default limiters are shared per **upstream host budget**, not per
+provider id:
+
+- `musicbrainz.org` — musicbrainz + isrc + iswc share one `per_second(1)` limiter
+- `itunes.apple.com` — apple_music + apple_tv + itunes_store + apple_podcasts share one
+  20 RPM limiter
+
+The obvious per-provider-name design would give the four Apple providers **4× Apple's per-IP
+allowance** while looking correct. Pinned by tests
+(`itunes_backed_providers_share_one_host_budget`).
+
+Two more things here that look wrong and are not:
+
+- **`per_second(1)`, not `per_minute(60)`, for MusicBrainz.** governor's per-minute quota
+  permits an immediate 60-request *burst* — precisely what MusicBrainz's published "one
+  request per second on average" forbids, and it answers bursts with 503s.
+- **Defaults live in a process-global `OnceLock` table**, so limiters are shared across
+  provider *instances*. A per-instance limiter is useless: batch apps construct a provider
+  per task, so N instances would mean N independent budgets.
+
+Providers are **throttled by default** and block (`wait_until_ready`) rather than erroring,
+so callers get correct behaviour without writing retry loops. `check()` is public for
+fail-fast callers; `with_rate_limiter` injects or shares one.
+
+## Error strings never contain credentials
+
+Every `reqwest` error captured in `meedya-providers` and `meedya-fingerprint` has its
+**query string stripped** before being stringified. reqwest's `Display` appends the full URL,
+and TMDb (`api_key`), OMDb (`apikey`) and AcoustID (`client`) put the credential there.
+Host and path are kept — they are the useful part when diagnosing a batch failure.
+
+Applied to *every* provider, not only those three, so a provider added later with
+query-string auth is safe by default. Canary tests in both crates assert a known secret
+cannot appear. Providers using header auth (Spotify, TheTVDB, EIDR) were never exposed —
+reqwest does not print headers.
+
+## lofty: never hardcode a fallback tag type
+
+`insert_tag` **silently does nothing** when the container does not support the tag type, so
+`insert_tag(...)` followed by `tag_mut(...).unwrap()` panics. Always derive the fallback from
+`primary_tag_type()`, which is a total function of the *file type* (`Mp4 -> Mp4Ilst`,
+`Flac|Opus|Vorbis|Speex -> VorbisComments`, `Aac|Aiff|Mpeg|Wav -> Id3v2`,
+`Ape|Mpc|WavPack -> Ape`) and whose result is always both insert- and save-supported.
+
+Also: `supports_tag_type(Id3v2)` is **too permissive** as a guard — lofty reports Id3v2 as
+read-only supported for FLAC/APE/MPC, so those pass the check and then fail at `save`. Use
+`primary_tag_type() != Id3v2` when you need *writable* Id3v2.
+
+## tokio: `timeout` alone does not kill a child process
+
+`tokio::time::timeout` around `Command::output()` unblocks the caller but leaves the child
+**running**. `.kill_on_drop(true)` is required for the dropped future to SIGKILL it. Every
+subprocess call in this workspace (ReplayGain's ffmpeg, codecs' ffprobe and mediainfo) sets
+both. Note `kill_on_drop` is a hard SIGKILL — no cleanup runs.
