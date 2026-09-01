@@ -22,9 +22,16 @@
 #     agreement with a mutation-tested guard, not a comment.
 #
 # Field reference: see docs/API.md § meedya-metadata → Identifier-types
-# registry. `validation` matches the CANONICAL COMPACT form (normalise
-# first: uppercase, strip '-', '.', spaces). `check` names the check-digit
-# algorithm as advisory data; v1 ships syntax validation only.
+# registry. `validation` matches the CANONICAL COMPACT form, but the
+# normalisation to reach that form is PER-SCHEME, not one blanket rule:
+#   - isrc, iswc, isni, ipi, grid, upc, icpn, label-code: uppercase, strip
+#     '-', '.', spaces.
+#   - musicbrainz-* and acoustid: LOWERCASE hyphenated UUID (the regex
+#     patterns require lowercase hex + hyphens — do not uppercase or
+#     strip hyphens).
+#   - eidr: retains its `10.5240/` DOI prefix dot; strip spaces only.
+# `check` names the check-digit algorithm as advisory data; v1 ships
+# syntax validation only.
 # `status = "reserved"` = slug claimed at zero cost, no storage home yet.
 #
 # Taxonomy: standard music/media-industry IDs + the Luminate entity model
@@ -141,7 +148,7 @@ slug = "grid"
 display_name = "GRid"
 standard = "IFPI GRid (MI3P)"
 scope = "release"
-status = "active"
+status = "reserved"
 validation = { kind = "regex", pattern = '^A1[A-Z0-9]{5}[A-Z0-9]{10}[A-Z0-9]$' }
 check = "iso7064-mod37-36"
 example = "A12425GABC1234002M"
@@ -163,7 +170,7 @@ slug = "icpn"
 display_name = "ICPN"
 standard = "DDEX ICPN (GS1 GTIN family)"
 scope = "product"
-status = "active"
+status = "reserved"
 validation = { kind = "regex", pattern = '^[0-9]{8,14}$' }
 check = "gs1"
 example = "0602445790524"

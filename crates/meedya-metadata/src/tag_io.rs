@@ -168,6 +168,7 @@ pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
             CommonTag::ReplayGainReferenceLoudness,
         ),
         ("ISWC", CommonTag::Iswc),
+        ("Acoustid Id", CommonTag::AcoustId),
     ];
 
     for (field_name, common_tag) in freeform_mappings {
@@ -756,6 +757,25 @@ mod tests {
             .as_deref(),
             Some("T-345246800-1"),
             "ISWC dropped — write arm must use insert_unchecked (TXXX)"
+        );
+    }
+
+    #[test]
+    fn acoustid_survives_id3v2_save_reload() {
+        // AcoustID is a freeform Unknown("Acoustid Id") key; insert() rejects
+        // all Unknown keys, so only insert_unchecked lands it (serialises as
+        // TXXX:Acoustid Id). This also proves the exact literal key used on
+        // write matches read_tags' freeform-mapping table, so a written
+        // AcoustID is recoverable rather than silently one-way lost (#65).
+        assert_eq!(
+            id3v2_roundtrip(
+                CommonTag::AcoustId,
+                "eb31d1c3-950e-468b-9e36-e46fa75b1291",
+                &ItemKey::Unknown("Acoustid Id".into())
+            )
+            .as_deref(),
+            Some("eb31d1c3-950e-468b-9e36-e46fa75b1291"),
+            "AcoustID dropped — write arm must use insert_unchecked (TXXX)"
         );
     }
 

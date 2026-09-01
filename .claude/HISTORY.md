@@ -285,3 +285,37 @@ The build spec's §6.1 guard import line included `IdentifierValidation`, but no
 ### Deferred follow-ups (issues to file per standing task — see spec §9)
 
 MeedyaManager adoption (consume `identifier_types()`, fix the live `mm_iswc`/`iswc` drift, add downstream `_ =>` arms + a registry-coverage guard); iHymns mirror guard (mirror the artifact + its own extension list + a mutation-tested diff, in the iHymns repo — not touched from here); Swift bindings pass-through of `IDENTIFIER_TYPES_TOML` when `bindings/swift` lands; a check-digit engine for the advisory `check` algorithms (gs1/iswc-mod10/iso7064-mod11-2/iso7064-mod37-36); a CI doc-count-drift check (the 466/211/248 staleness this session corrected).
+
+---
+
+## 2026-09-01 — #65 GIRFT completion pass (branch `claude/branch-audit-musicbrainz-migration-l5h8zh`)
+
+Targeted completion fixes on top of the substantively-complete identifier-types registry batch (commit `fd2a7c5`). Scope was deliberately narrow: `meedya-metadata` plus `docs/API.md` / `.claude/CONTEXT.md` / `README.md` / this file — `meedya-providers/src/providers/musicbrainz.rs`, `isrc.rs`, `iswc.rs`, and a planned `lucene.rs` are reserved for a separate task and were not touched.
+
+### FIX 1 — GRid and ICPN reserved, per issue #65's explicit letter
+
+Issue #65 lists GRid/ICPN/DPID/Label-Code/IPN/HFA as "reserve at zero cost, no storage home yet" — but `grid` and `icpn` had drifted to `status = "active"` in `identifier_types.toml` despite neither having a `CommonTag` variant or an `extra_keys` const. Flipped both to `reserved`. Updated `tests/identifier_registry_guard.rs`'s `EXPECTED_ACTIVE_SLUGS`/`EXPECTED_RESERVED_SLUGS` (13 active / 6 reserved, alphabetically sorted) and `identifier_types.rs`'s `active_and_reserved_partition` test (13/6, total still 19). `docs/API.md`'s seed-set line updated to match.
+
+### FIX 2 — per-scheme normalisation guidance
+
+The blanket "uppercase, strip `-`/`.`/spaces" normalisation note in `identifier_types.toml`'s header and `docs/API.md`'s `validation` field row was correct for ISRC/ISWC/ISNI/IPI/GRid/UPC/ICPN/Label-Code but wrong for `musicbrainz-*`/`acoustid` (canonical form is **lowercase** hyphenated UUID — the regex patterns require lowercase hex) and `eidr` (keeps its `10.5240/` DOI-prefix dot). Reworded both places to scope the rule per-scheme instead of claiming one blanket rule. (`identifier_types.rs`'s own doc comments on `IdentifierValidation::Regex` and `matches_format` carry the same blanket wording and were left as-is — out of this fix's explicitly-scoped "both places" — flagged below as a residual follow-up.)
+
+### FIX 3 — `docs/API.md` `write_tags` signature drift
+
+Doc showed `write_tags(path: &Path, tags: &TagMap) -> Result<()>`; the real signature (`tag_io.rs`) is `write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<()>` — `TagMap` (`HashMap<CommonTag, Vec<String>>`) is `read_tags`'s return type, not `write_tags`'s parameter type. Corrected.
+
+### FIX 4 — AcoustID read-back (applied, not deferred)
+
+`write_acoustid_tags` writes `CommonTag::AcoustId` under `ItemKey::Unknown("Acoustid Id")` via `insert_unchecked`, but `read_tags`'s freeform-mapping table had no entry for that literal key — a written AcoustID could never be read back (the same silent one-way-loss bug class #65 set out to kill, just missed for this one field). Fix was a single line: added `("Acoustid Id", CommonTag::AcoustId)` to the freeform_mappings table, matching the write-side literal exactly. Added `acoustid_survives_id3v2_save_reload`, modelled directly on `iswc_survives_id3v2_save_reload` (same `id3v2_roundtrip` helper, same shape) — proves the value survives a real `Tag → Id3v2Tag → Tag` save/reload cycle under the exact key both write and read sides now agree on. Small and localized as anticipated; the guardrail to revert-and-defer was not triggered.
+
+### FIX 5 — doc test-count reconciliation
+
+FIX 4 added one test to `meedya-metadata`: measured `cargo test -p meedya-metadata --all-features --locked` = 107 (lib) + 5 (`identifier_registry_guard`) + 0 (doctests) = **112** (was 111, matching `docs/API.md`'s pre-existing figure exactly — 106 lib + 5 guard). Full-workspace `--all-features` measured at **624** (was 623 — the +1 lands entirely in metadata). Updated: `docs/API.md` (per-crate row 111→112, workspace total 533→534 / 623→624 with `--all-features`, "Last refreshed" date), `.claude/CONTEXT.md` (per-crate row 107→112 — corrected from a stale figure that matched neither the lib-only nor lib+guard count — bolded total 533→534/623→624, table sum now reconciles exactly against the bolded total, "Last updated" date), `README.md` (workspace total 533→534/623→624 only, per instructed scope — its per-crate table was left as-is, carrying the same already-documented "+4 tag-I/O round-trip tests not reflected per-crate" gap CONTEXT.md's footnote already flags).
+
+### Verification (all green)
+
+`cargo fmt --all -- --check` — clean (one post-edit formatting fixup needed on the reserved-slugs const, resolved). `cargo test -p meedya-metadata --all-features --locked` — 107 + 5 + 0 = 112 passed, 0 failed. `cargo test -p meedya-providers --all-features --locked` — 113 passed, 0 failed, including the registry-coherence guard `extra_keys::tests::identifier_extra_keys_match_registry_slugs`. `cargo clippy -p meedya-metadata -p meedya-providers --all-targets --all-features -- -D warnings` — clean, no warnings. Full-workspace `cargo test --workspace --all-features --locked` also run for the doc-count reconciliation: 624 passed, 1 ignored.
+
+### Residual follow-ups noted (not actioned this pass — outside its explicit scope)
+
+`identifier_types.rs`'s `IdentifierValidation::Regex` and `matches_format` doc comments still carry the old blanket uppercase/strip normalisation wording FIX 2 corrected in the TOML header and `docs/API.md` — worth a follow-up pass for full consistency within the crate. `README.md`'s per-crate table still shows stale individual counts (`meedya-metadata` 107, `meedya-providers` 28, etc.) that don't sum to its own bolded total — a pre-existing gap (also present in `CONTEXT.md` before this pass, per that file's own footnote) that a full per-crate audit across every crate would need to close; this pass only touched what FIX 5 explicitly scoped.

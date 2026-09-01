@@ -46,8 +46,6 @@ const EXPECTED_ACTIVE_SLUGS: &[&str] = &[
     "acoustid",
     "bowi",
     "eidr",
-    "grid",
-    "icpn",
     "ipi",
     "isni",
     "isrc",
@@ -61,7 +59,7 @@ const EXPECTED_ACTIVE_SLUGS: &[&str] = &[
 ];
 
 /// Reserved slugs — claimed shapes with no storage surface yet.
-const EXPECTED_RESERVED_SLUGS: &[&str] = &["dpid", "hfa", "ipn", "label-code"];
+const EXPECTED_RESERVED_SLUGS: &[&str] = &["dpid", "grid", "hfa", "icpn", "ipn", "label-code"];
 
 /// Catches: a slug added/removed from the TOML, a slug renamed, or a
 /// `status` flip in either direction (active<->reserved) that this

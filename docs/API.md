@@ -6,7 +6,7 @@
 >
 > **This is not a Swagger/OpenAPI spec.** `MeedyaSuite-core` is a Rust library workspace, not a web service. There are no HTTP endpoints. If you need an HTTP-shaped contract, build one in your downstream app on top of these crates.
 >
-> **Last refreshed**: 2026-08-03 (post issue #65 identifier-types registry + CommonTag #[non_exhaustive] + core-info variants). See the [maintenance section](#maintenance) for how this stays in sync with the code.
+> **Last refreshed**: 2026-09-01 (post issue #65 completion pass: GRid/ICPN reserved, per-scheme normalisation guidance, `write_tags` signature fix, AcoustID read-back). See the [maintenance section](#maintenance) for how this stays in sync with the code.
 
 ---
 
@@ -42,11 +42,11 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-fingerprint` | `acoustid`, `replaygain` | 6 | Stable |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
 | `meedya-lyrics` | `embed`, `lrc`, `lyrics`, `provider`, `sidecar` | 128 | Stable (plain + synced via SYLT for ID3v2) |
-| `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `writer` | 111 | Stable (two co-existing surfaces + identifier-types registry) |
+| `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `writer` | 112 | Stable (two co-existing surfaces + identifier-types registry) |
 | `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 28 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `io`, `mik`, `model`, `standard` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 533 tests** (623 with --all-features, the CI configuration). All passing on the feature branch (post #65 identifier-types registry batch — 511 → 533 measured; the +4 over the batch's 529 are tag-I/O save/reload round-trip tests added with the #65 silent-data-loss fix). Previous totals in this file were stale: it long read 466, but the measured pre-#65 count was actually 511 — the count-drift itself is tracked as a follow-up (§9 of the #65 build spec, "for consideration").
+**Total: 534 tests** (624 with --all-features, the CI configuration). All passing (post #65 identifier-types registry batch — 511 → 533 measured; the +4 over the batch's 529 are tag-I/O save/reload round-trip tests added with the #65 silent-data-loss fix — plus +1 from the 2026-09-01 #65 completion pass' AcoustID read-back regression test, 533 → 534). Previous totals in this file were stale: it long read 466, but the measured pre-#65 count was actually 511 — the count-drift itself is tracked as a follow-up (§9 of the #65 build spec, "for consideration").
 
 ---
 
@@ -345,7 +345,7 @@ For MP3 / M4A / FLAC / WAV / AIFF / OGG and downstream-app general use.
 - **`identifier_types`** — Cross-repo identifier-type registry (#65). DATA, not an enum: see the dedicated subsection below.
 - **`tag_io`** — Lofty-driven file I/O:
   - `read_tags(path: &Path) -> Result<TagMap>`
-  - `write_tags(path: &Path, tags: &TagMap) -> Result<()>`
+  - `write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<()>`
   - `write_registry_tags(path, json: &Value, registry: &TagRegistry) -> Result<()>`
   - `write_acoustid_tags(path, result: &AcoustIdResult) -> Result<()>`
   - `write_replaygain_tags(path, result: &ReplayGainResult) -> Result<()>`
@@ -367,12 +367,12 @@ Per-entry schema (`[[identifier]]` in the TOML):
 | `standard` | string | no | Issuing standard ("ISO 3901:2019"). |
 | `scope` | string | yes | Luminate entity: `artist` \| `song` \| `recording` \| `work` \| `release-group` \| `release` \| `product` \| `party` \| `audiovisual-work`. |
 | `status` | string | yes | `active` (consumers may store/exchange under this slug now) \| `reserved` (slug + shape claimed at zero cost; no storage surface yet). |
-| `validation` | inline table | yes | `{ kind = "regex", pattern = '<anchored regex>' }` or `{ kind = "free" }`. Validates the **canonical compact form** (normalise first: uppercase; strip `-`, `.`, spaces). |
+| `validation` | inline table | yes | `{ kind = "regex", pattern = '<anchored regex>' }` or `{ kind = "free" }`. Validates the **canonical compact form** — normalisation to reach that form is **per-scheme**, not a blanket rule: uppercase + strip `-`/`.`/spaces for `isrc`/`iswc`/`isni`/`ipi`/`grid`/`upc`/`icpn`/`label-code`; `musicbrainz-*` and `acoustid` stay **lowercase** hyphenated UUIDs (the regex patterns require lowercase hex + hyphens); `eidr` keeps its `10.5240/` DOI-prefix dot. |
 | `check` | string | no | Advisory check-digit algorithm name (`gs1`, `iswc-mod10`, `iso7064-mod11-2`, `iso7064-mod37-36`) — **data only, not executed in v1**. |
 | `example` | string | required when `validation.kind = "regex"` | A syntactically valid sample; guard-tested to match its own pattern. |
 | `notes` | string | no | Cross-references / caveats. |
 
-**Seed set**: 15 active — `acoustid, bowi, eidr, grid, icpn, ipi, isni, isrc, iswc, musicbrainz-artist, musicbrainz-recording, musicbrainz-release, musicbrainz-release-group, musicbrainz-work, upc` — and 4 reserved — `dpid, hfa, ipn, label-code`.
+**Seed set**: 13 active — `acoustid, bowi, eidr, ipi, isni, isrc, iswc, musicbrainz-artist, musicbrainz-recording, musicbrainz-release, musicbrainz-release-group, musicbrainz-work, upc` — and 6 reserved — `dpid, grid, hfa, icpn, ipn, label-code` (GRid and ICPN reserved per #65: no storage surface yet — no `CommonTag` variant, no `extra_keys` const).
 
 ```rust
 pub const IDENTIFIER_TYPES_TOML: &str = /* compiled-in artifact, byte-for-byte */;

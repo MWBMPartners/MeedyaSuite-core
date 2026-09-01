@@ -1,7 +1,7 @@
 # MeedyaSuite-core — Project Context
 
 > Snapshot maintained for Claude Code sessions. Reflects the actual state of `main`, not aspirational state.
-> Last updated: 2026-08-03 (post issue #65 identifier-types registry + CommonTag #[non_exhaustive] + core-info variants, on branch `claude/issue-65-identifier-registry`).
+> Last updated: 2026-09-01 (post issue #65 completion pass — GRid/ICPN reserved, per-scheme normalisation guidance, AcoustID read-back fix, on branch `claude/branch-audit-musicbrainz-migration-l5h8zh`).
 
 ## What this repo is
 
@@ -20,7 +20,7 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | Crate | Purpose | Status | Tests |
 |---|---|---|---|
 | [meedya-codecs](../crates/meedya-codecs/) | Audio/video/subtitle codecs, container formats, HDR, spatial audio, classification, FFprobe + MediaInfo integration | **Implemented** | 47 |
-| [meedya-metadata](../crates/meedya-metadata/) | Two coexisting tag I/O surfaces: `lofty`-backed (multi-format) and `mp4ameta`-backed (sandbox-safe). Tag registry, JSON path extraction, codec ID tags, playback bounds, cross-repo `identifier_types` registry (#65). | **Implemented** | 107 |
+| [meedya-metadata](../crates/meedya-metadata/) | Two coexisting tag I/O surfaces: `lofty`-backed (multi-format) and `mp4ameta`-backed (sandbox-safe). Tag registry, JSON path extraction, codec ID tags, playback bounds, cross-repo `identifier_types` registry (#65). | **Implemented** | 112 |
 | [meedya-tags-extended](../crates/meedya-tags-extended/) | Multi-format DJ metadata (lofty). `ExtendedTags`/`MusicalKey`/`CuePoint`/`LoopPoint`/`BeatGrid`. Standard BPM+key+comment + Mixed In Key reader (`mik`). Other proprietary readers pending. | **Implemented (foundation + MIK)** | 180 |
 | [meedya-library-import](../crates/meedya-library-import/) | External library ingestion: iTunes XML, CUE sheets. Emits normalized `LibraryEntry` records. | **Implemented** | 30 |
 | [meedya-lyrics](../crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O, plain-text and SYLT tag-embed. | **Implemented** | 128 |
@@ -29,7 +29,7 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 3 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 533 tests on `main` (623 with `--all-features`, the CI configuration) — post #65 identifier-types registry batch, 511 → 533 measured (the +4 over the batch's 529 are tag-I/O save/reload round-trip tests added with the #65 silent-data-loss fix).** Workspace builds clean. (The 466 figure this file long carried was stale — the measured pre-#65 count was 511; the count-drift itself is tracked as a follow-up, "for consideration".)
+**Total: 534 tests on `main` (624 with `--all-features`, the CI configuration) — post #65 identifier-types registry batch, 511 → 533 measured (the +4 over the batch's 529 are tag-I/O save/reload round-trip tests added with the #65 silent-data-loss fix), plus +1 from the 2026-09-01 #65 completion pass' AcoustID read-back regression test (533 → 534).** Workspace builds clean. (The 466 figure this file long carried was stale — the measured pre-#65 count was 511; the count-drift itself is tracked as a follow-up, "for consideration".)
 
 > **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 

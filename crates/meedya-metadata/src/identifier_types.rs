@@ -75,8 +75,11 @@ pub enum IdentifierStatus {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum IdentifierValidation {
-    /// Anchored regex over the canonical compact form (normalise first:
-    /// uppercase, strip '-', '.', spaces).
+    /// Anchored regex over the canonical compact form. Normalisation to
+    /// reach that form is PER-SCHEME (see `identifier_types.toml` header):
+    /// uppercase + strip separators for ISRC/ISWC/ISNI/IPI/GRid/UPC/ICPN/
+    /// Label-Code, but MusicBrainz/AcoustID UUIDs stay lowercase-hyphenated
+    /// and EIDR keeps its `10.5240/` DOI prefix — no blanket rule.
     Regex { pattern: String },
     /// No public format specification — any non-empty string.
     Free,
@@ -112,9 +115,11 @@ impl IdentifierType {
     /// Whether `value` matches this identifier's canonical compact syntax.
     ///
     /// ELI5: does this string look like a valid ID of this type?
-    /// Why: callers normalise first (uppercase, strip '-', '.', spaces) —
-    /// this function does not normalise for them, matching iHymns'
-    /// normaliser convention so both repos validate the same shape.
+    /// Why: callers normalise first to the per-scheme canonical compact form
+    /// (see the `identifier_types.toml` header — the rule differs by scheme;
+    /// it is NOT a blanket uppercase/strip) — this function does not normalise
+    /// for them, matching iHymns' normaliser convention so both repos validate
+    /// the same shape.
     /// `Free` accepts any non-empty value. Check digits are NOT verified.
     pub fn matches_format(&self, value: &str) -> bool {
         match &self.validation {
@@ -259,8 +264,8 @@ mod tests {
             .iter()
             .filter(|t| t.status == IdentifierStatus::Reserved)
             .count();
-        assert_eq!(active, 15);
-        assert_eq!(reserved, 4);
+        assert_eq!(active, 13);
+        assert_eq!(reserved, 6);
         assert_eq!(identifier_types().len(), 19);
     }
 
