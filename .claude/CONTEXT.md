@@ -114,7 +114,7 @@ Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `p
 
 ```bash
 cargo build --workspace          # all 9 crates
-cargo test  --workspace          # 546 tests (653 with --all-features)
+cargo test  --workspace          # 546 tests (664 with --all-features)
 cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```
