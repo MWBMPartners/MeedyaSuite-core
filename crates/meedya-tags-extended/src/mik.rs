@@ -40,7 +40,7 @@
 
 use lofty::tag::{ItemKey, Tag};
 
-use crate::meedya_atom::{write_meedya_atom, MEEDYA_NAMESPACE};
+use crate::meedya_atom::write_meedya_atom;
 use crate::model::MusicalKey;
 use crate::standard;
 
@@ -369,8 +369,10 @@ struct ParsedTokens {
 }
 
 fn classify_tokens(tokens: &[&str]) -> ParsedTokens {
-    let mut out = ParsedTokens::default();
-    out.classified = vec![false; tokens.len()];
+    let mut out = ParsedTokens {
+        classified: vec![false; tokens.len()],
+        ..Default::default()
+    };
 
     for (i, token) in tokens.iter().enumerate() {
         let t = token.trim();
@@ -487,10 +489,12 @@ fn split_at_separator(s: &str) -> Option<(&str, &str)> {
     s.split_once(" - ")
 }
 
-/// Split into `(rest, suffix)` at the last `" - "`.
-fn split_at_last_separator(s: &str) -> Option<(&str, &str)> {
-    s.rsplit_once(" - ")
-}
+// NOTE: there is deliberately no `split_at_last_separator` counterpart to
+// `split_at_separator`. Suffix detection does NOT split on the last
+// `" - "` — it greedily consumes MIK-classifiable tokens from the end of
+// the field (see the `MikPosition::Suffix` arm in `scan_field`), which
+// correctly handles suffixes that contain no separator at all. A
+// string-splitting helper for this existed once and was dead code.
 
 // ============================================================
 // MIK Audit Trail Formatter
@@ -522,7 +526,10 @@ fn format_audit_trail(sources: &[MikSourceLocation]) -> String {
 
 #[cfg(test)]
 mod tests {
+    // Only the tests need the raw namespace string; production code
+    // goes through `write_meedya_atom`.
     use super::*;
+    use crate::meedya_atom::MEEDYA_NAMESPACE;
     use crate::model::{KeyMode, Note};
     use lofty::tag::TagType;
 

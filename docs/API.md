@@ -41,18 +41,18 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-db` | `client`, `export`, `models` | 3 | Foundation stable; specific endpoints may evolve |
 | `meedya-fingerprint` | `acoustid`, `replaygain` | 6 | Stable |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
-| `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 128 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
+| `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 129 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
 | `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `writer` | 112 | Stable (two co-existing surfaces + identifier-types registry) |
 | `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 49 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `ai_content`, `conflict_policy`, `genre_hierarchy`, `io`, `mik`, `model`, `play_history`, `quick_tag`, `sidecar_json`, `standard`, `stems` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 555 tests** with default features, **688** with `--all-features` (the CI configuration). All passing, 0 failing.
+**Total: 556 tests** with default features, **689** with `--all-features` (the CI configuration). All passing, 0 failing.
 
 > These are **measured** figures — `cargo test --workspace [--all-features]` run against `feature/work-in-progress` on 2026-09-01 — not carried forward from a previous edit. For reference, `main` measures 601 with `--all-features`.
 >
 > Earlier revisions of this file accumulated a long narrative of incremental count deltas (466 → 511 → 533 → 546 → 664 …) which had drifted from reality. That narration has been removed: the only trustworthy number is one you just measured. Guarding these counts automatically in CI is tracked in issue #71.
 
-Per-crate, `--all-features` (measured): `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 3 · `meedya-fingerprint` 11 · `meedya-library-import` 30 · `meedya-lyrics` 128 · `meedya-metadata` 112 · `meedya-providers` 177 · `meedya-tags-extended` 180.
+Per-crate, `--all-features` (measured): `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 3 · `meedya-fingerprint` 11 · `meedya-library-import` 30 · `meedya-lyrics` 129 · `meedya-metadata` 112 · `meedya-providers` 177 · `meedya-tags-extended` 180.
 
 ---
 

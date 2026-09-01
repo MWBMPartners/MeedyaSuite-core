@@ -182,11 +182,6 @@ pub fn classify_ttml_granularity(ttml: &str) -> TtmlGranularity {
     // (whitespace-only text node — word boundary).
     reader.config_mut().trim_text(false);
 
-    // Attribute signal — what the document advertises on `<tt>`.
-    // None = no itunes:timing attribute present.
-    // Some(true) = itunes:timing="None" (explicitly line-level).
-    let mut explicit_line_only: bool = false;
-
     // Structural signals.
     let mut has_timed_span: bool = false;
     let mut has_gap_joined_pair: bool = false;
@@ -220,18 +215,28 @@ pub fn classify_ttml_granularity(ttml: &str) -> TtmlGranularity {
                 let qualified_name = e.name();
                 let name = local_name(qualified_name.as_ref());
                 if name == b"tt" {
-                    if let Some(value) = find_itunes_timing_value(e) {
-                        if value.eq_ignore_ascii_case("None") {
-                            explicit_line_only = true;
-                        }
-                        // We deliberately do NOT use the "Word" value
-                        // as a direct signal — Apple emits "Word" on
-                        // BOTH word-level and syllable-level files
-                        // (the syllable file at .examplefiles/.../
-                        // Closer_PrettyPrint.ttml is the canonical
-                        // example), so the attribute can't be trusted
-                        // to disambiguate. Structural-check decides.
-                    }
+                    // The `itunes:timing` attribute is READ but never used
+                    // as a signal, in either direction — structure alone
+                    // decides. Two reasons, and they are symmetrical:
+                    //
+                    // - "Word" can't promote: Apple emits it on BOTH
+                    //   word-level and syllable-level files (the syllable
+                    //   file at .examplefiles/.../Closer_PrettyPrint.ttml
+                    //   is the canonical example), so it cannot
+                    //   disambiguate the two.
+                    // - "None" can't demote: a document carrying real
+                    //   `<span begin>` children IS word-timed whatever its
+                    //   header claims, and honouring the header would
+                    //   discard timing data we can see.
+                    //
+                    // A previous revision tracked "None" in an
+                    // `explicit_line_only` flag that could not affect the
+                    // outcome (both of its branches returned `Line`).
+                    // Removed rather than made load-bearing, since making
+                    // it load-bearing would be the demotion described
+                    // above. `explicit_timing_none_with_timed_spans_is_word`
+                    // locks the precedence in.
+                    let _ = find_itunes_timing_value(e);
                 } else if name == b"p" {
                     // Entering a <p>. Push a fresh pair-state and
                     // increment the depth counter.
@@ -415,8 +420,6 @@ pub fn classify_ttml_granularity(ttml: &str) -> TtmlGranularity {
 
     if has_timed_span {
         TtmlGranularity::Word
-    } else if explicit_line_only {
-        TtmlGranularity::Line
     } else {
         TtmlGranularity::Line
     }
@@ -537,6 +540,24 @@ mod tests {
             <p begin="00:00:04.000" end="00:00:06.500">I was wondering</p>
         </div></body></tt>"#;
         assert_eq!(classify_ttml_granularity(ttml), TtmlGranularity::Line);
+    }
+
+    /// Precedence guard: structure beats the `itunes:timing` header.
+    ///
+    /// A document that advertises `itunes:timing="None"` but actually
+    /// carries per-word `<span begin>` children IS word-timed — honouring
+    /// the header here would silently discard timing data we can see.
+    /// The previous revision tracked this case in an `explicit_line_only`
+    /// flag that could never affect the result; this test pins the
+    /// behaviour so a future "fix" of that flag can't quietly demote
+    /// word-level files to line-level.
+    #[test]
+    fn explicit_timing_none_with_timed_spans_is_word() {
+        let ttml = r#"<tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal"
+            itunes:timing="None"><body><div>
+            <p begin="0.0"><span begin="0.0">Hello</span> <span begin="0.5">world</span></p>
+        </div></body></tt>"#;
+        assert_eq!(classify_ttml_granularity(ttml), TtmlGranularity::Word);
     }
 
     #[test]

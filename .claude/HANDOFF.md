@@ -18,9 +18,9 @@ have historically disagreed (248 / 466 / 653 / 664 all appear somewhere and are 
 | Fact | Value | How verified |
 |---|---|---|
 | Tests on `main` | **601 passing, 0 failing** | `cargo test --workspace --all-features --locked` |
-| Tests on `feature/work-in-progress` | **555 default-feature / 688 `--all-features`, 0 failing** | same command |
+| Tests on `feature/work-in-progress` | **556 default-feature / 689 `--all-features`, 0 failing** | same command |
 | `cargo fmt --all -- --check` | clean on both | run directly |
-| `cargo clippy --workspace --all-targets --all-features` | 4 unique warnings, all **pre-existing** | run directly |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | **clean** (was 4 warnings; fixed, and CI now enforces) | run directly |
 | `cargo build --workspace --all-features --locked` | 0 errors | run directly |
 | Workspace crates | 9 | `ls crates` |
 | Web/HTTP-server/OpenAPI surface | **none** | no axum/actix/warp/rocket/utoipa anywhere; `bindings/` is 2 README stubs |
@@ -314,7 +314,7 @@ fd2a7c5 feat(metadata): identifier-types registry + CommonTag expansion (#65)
 cd "/Users/lance.manasse/Projects/Coding & Development/MWBM Partners Ltd/GitHub/MeedyaSuite/MeedyaSuite-core"
 export PATH="$HOME/.cargo/bin:$PATH"
 git checkout feature/work-in-progress && git pull
-cargo test --workspace --all-features --locked   # expect 688 passing, 0 failing
+cargo test --workspace --all-features --locked   # expect 689 passing, 0 failing
 ```
 
 Then read §7 for what is outstanding.

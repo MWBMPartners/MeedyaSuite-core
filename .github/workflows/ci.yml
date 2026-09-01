@@ -38,13 +38,16 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --workspace --all-features --locked
 
-      # Clippy is informational for now: the existing tree has pre-existing
-      # warnings (notably in meedya-codecs/src/container.rs) that are
-      # unrelated to in-flight work. Promote to `-D warnings` once those
-      # are cleaned up.
-      - name: cargo clippy (informational)
-        continue-on-error: true
-        run: cargo clippy --workspace --all-targets --all-features -- -W clippy::all
+      # Enforcing as of 2026-09-01. The tree is clippy-clean workspace-wide
+      # with --all-targets --all-features, so the "promote once those are
+      # cleaned up" note this step used to carry has been actioned:
+      # the four remaining warnings (an unreachable identical-branch arm in
+      # lyricsfile_ttml_classify, plus an unused import, a dead helper and a
+      # post-Default field assignment in mik.rs) were fixed rather than
+      # suppressed. Keep it enforcing — an informational red step trains
+      # people to ignore CI.
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   frontend:
     name: Frontend (ubuntu-latest)
