@@ -5,6 +5,8 @@
 // Ported from MeedyaManager crates/mm-providers/src/identifiers/mod.rs
 // under MeedyaSuite-core#12 / MeedyaManager#136.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
@@ -73,6 +75,9 @@ impl IsrcProvider {
             } else {
                 user_agent.clone()
             })
+            // Without an explicit timeout reqwest waits indefinitely; a
+            // stalled MusicBrainz connection would hang the caller's task.
+            .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest ClientBuilder failed — TLS initialisation error");
         Self {
@@ -147,6 +152,7 @@ impl IsrcProvider {
                 result.isrc = rec.isrcs.and_then(|v| v.into_iter().next());
 
                 if let Some(id) = rec.id {
+                    result.musicbrainz_id = Some(id.clone());
                     result
                         .metadata
                         .insert(PROVIDER_ID.into(), Value::String(id));
@@ -219,6 +225,10 @@ impl MetadataProvider for IsrcProvider {
             .get(&url)
             .header("Accept", "application/json")
             .query(&[
+                // `normalise_isrc` has already reduced this to ASCII
+                // alphanumerics only, so it contains no Lucene special
+                // characters and needs neither escaping nor phrase-quoting
+                // — it is a single, safe token by construction.
                 ("query", &format!("isrc:{normalised}")),
                 ("limit", &limit),
                 ("fmt", &"json".to_owned()),
@@ -320,6 +330,7 @@ mod tests {
         assert_eq!(results[0].title.as_deref(), Some("Comfortably Numb"));
         assert_eq!(results[0].isrc.as_deref(), Some("GBAYE7900498"));
         assert_eq!(results[0].artist.as_deref(), Some("Pink Floyd"));
+        assert_eq!(results[0].musicbrainz_id.as_deref(), Some("mb-rec-1"));
     }
 
     /// Forward-compat fixture: same valid shape plus Solr 10 announcement

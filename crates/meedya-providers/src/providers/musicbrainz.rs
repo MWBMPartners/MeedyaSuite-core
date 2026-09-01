@@ -5,6 +5,8 @@
 // Ported from MeedyaManager crates/mm-providers/src/music/mod.rs
 // under MeedyaSuite-core#12 / MeedyaManager#136.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
@@ -12,7 +14,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::extra_keys::{DURATION_SECS, PROVIDER_ID};
-use crate::lucene::quote_phrase;
+use crate::lucene::phrase_clause;
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
@@ -112,6 +114,10 @@ impl MusicBrainzProvider {
             } else {
                 user_agent.clone()
             })
+            // Without an explicit timeout reqwest waits indefinitely; a
+            // stalled MusicBrainz connection would hang the caller's task
+            // forever. Mirrors the timeout on the ISRC/ISWC providers.
+            .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest ClientBuilder failed — TLS initialisation error");
         Self {
@@ -138,8 +144,11 @@ impl MusicBrainzProvider {
     /// trailing bracket/parenthetical group is stripped from title and
     /// artist (see [`strip_trailing_bracket_groups`]) before they are
     /// combined as `recording:"..." AND artistname:"..."` (either alone if
-    /// only one is present). A query with none of title, artist, or ISRC is
-    /// rejected — MusicBrainz has nothing to search on.
+    /// only one is present). `album` and `year`, when present, further
+    /// narrow the search via the MusicBrainz recording-search `release` and
+    /// `date` fields. A query with none of title, artist, or ISRC is
+    /// rejected — MusicBrainz has nothing to search on (an `album`/`year`
+    /// pair alone is far too broad to be useful).
     fn build_lucene_query(query: &SearchQuery) -> Result<String, ProviderError> {
         if let Some(isrc) = &query.isrc {
             let normalised: String = isrc
@@ -159,20 +168,41 @@ impl MusicBrainzProvider {
         if let Some(title) = &query.title {
             let t = strip_trailing_bracket_groups(title);
             if !t.is_empty() {
-                parts.push(format!("recording:{}", quote_phrase(t)));
+                parts.push(phrase_clause("recording", t));
             }
         }
         if let Some(artist) = &query.artist {
             let a = strip_trailing_bracket_groups(artist);
             if !a.is_empty() {
-                parts.push(format!("artistname:{}", quote_phrase(a)));
+                parts.push(phrase_clause("artistname", a));
             }
         }
 
+        // A title or artist is required; album/year only ever narrow an
+        // already-anchored query, so they are appended after the emptiness
+        // check below rather than counting towards it.
         if parts.is_empty() {
             return Err(ProviderError::NotSupported(
                 "musicbrainz: search requires a title, artist, or ISRC".into(),
             ));
+        }
+
+        if let Some(album) = &query.album {
+            // MusicBrainz's recording-search `release` field matches the
+            // title of a release the recording appears on.
+            let a = strip_trailing_bracket_groups(album);
+            if !a.is_empty() {
+                parts.push(phrase_clause("release", a));
+            }
+        }
+        if let Some(year) = &query.year {
+            // Constrains via the MB recording-search `date` field (the
+            // release date of any release including this recording). This is
+            // an exact-year match, not a range — a recording whose only
+            // indexed release date falls outside `year` (a reissue vs. the
+            // original year) will not match. `date` is a numeric/date field,
+            // so the year is emitted bare rather than phrase-quoted.
+            parts.push(format!("date:{year}"));
         }
 
         Ok(parts.join(" AND "))
@@ -198,6 +228,38 @@ impl MusicBrainzProvider {
             isrcs: Option<Vec<String>>,
             length: Option<u64>,
             score: Option<u32>,
+            /// User-submitted genres, each with a vote `count`. Absent on
+            /// older/uncategorised recordings.
+            genres: Option<Vec<MbTag>>,
+            /// Free-form folksonomy tags, each with a vote `count`. Used as
+            /// a fallback genre source when `genres` is absent or empty.
+            tags: Option<Vec<MbTag>>,
+        }
+
+        /// A MusicBrainz genre or tag entry: a name with a community vote
+        /// count. Both fields are optional — MusicBrainz returns tags with
+        /// no recorded votes as `count: 0` or omits `count` entirely.
+        #[derive(Deserialize)]
+        struct MbTag {
+            name: Option<String>,
+            count: Option<u32>,
+        }
+
+        /// Pick the `name` of the highest-`count` entry in a genre/tag list.
+        /// A missing `count` ranks as `0`. When multiple entries tie for the
+        /// highest count, the first one encountered is kept.
+        fn top_tag(tags: &[MbTag]) -> Option<String> {
+            let mut best: Option<(&str, u32)> = None;
+            for tag in tags {
+                let Some(name) = tag.name.as_deref() else {
+                    continue;
+                };
+                let count = tag.count.unwrap_or(0);
+                if best.is_none_or(|(_, best_count)| count > best_count) {
+                    best = Some((name, count));
+                }
+            }
+            best.map(|(name, _)| name.to_owned())
         }
 
         #[derive(Deserialize)]
@@ -245,6 +307,24 @@ impl MusicBrainzProvider {
                 // MusicBrainz score is 0–100; normalise to [0.0, 1.0]
                 let score = f64::from(rec.score.unwrap_or(0)) / 100.0;
 
+                // Prefer the highest-vote genre; fall back to the
+                // highest-vote folksonomy tag when no genre is present.
+                // Both are optional community data, so either (or both)
+                // may be absent or empty. SEARCH-680/681 add genre as a
+                // first-class search target but do not change this
+                // recording-response shape.
+                let genre = rec
+                    .genres
+                    .as_deref()
+                    .filter(|g| !g.is_empty())
+                    .and_then(top_tag)
+                    .or_else(|| {
+                        rec.tags
+                            .as_deref()
+                            .filter(|t| !t.is_empty())
+                            .and_then(top_tag)
+                    });
+
                 let mut result = ProviderResult::new(provider_name);
                 result.title = rec.title;
                 result.artist = artist;
@@ -252,8 +332,10 @@ impl MusicBrainzProvider {
                 result.year = year;
                 result.isrc = rec.isrcs.and_then(|v| v.into_iter().next());
                 result.score = score;
+                result.genre = genre;
 
                 if let Some(id) = rec.id {
+                    result.musicbrainz_id = Some(id.clone());
                     result
                         .metadata
                         .insert(PROVIDER_ID.into(), Value::String(id));
@@ -379,6 +461,7 @@ mod tests {
         assert_eq!(results[0].year, Some(1979));
         assert_eq!(results[0].isrc.as_deref(), Some("GBAYE7900498"));
         assert!((results[0].score - 1.0).abs() < 1e-9);
+        assert_eq!(results[0].musicbrainz_id.as_deref(), Some("abc123"));
     }
 
     #[test]
@@ -617,6 +700,150 @@ mod tests {
         assert_eq!(
             MusicBrainzProvider::build_lucene_query(&q).unwrap(),
             r#"recording:"Comfortably Numb" AND artistname:"Pink Floyd""#
+        );
+    }
+
+    // ---- genre extraction (MusicBrainz `genres` / `tags` arrays) ----
+
+    #[test]
+    fn mb_parse_recordings_genre_picks_highest_count_genre() {
+        let json = r#"{
+            "recordings": [{
+                "id": "abc123",
+                "genres": [
+                    {"name": "psychedelic rock", "count": 4},
+                    {"name": "progressive rock", "count": 12},
+                    {"name": "art rock", "count": 7}
+                ],
+                "tags": [
+                    {"name": "classic rock", "count": 99}
+                ]
+            }]
+        }"#;
+        let results = MusicBrainzProvider::parse_recordings("musicbrainz", json).unwrap();
+        // Genres take priority over tags even when a tag has a higher count.
+        assert_eq!(results[0].genre.as_deref(), Some("progressive rock"));
+    }
+
+    #[test]
+    fn mb_parse_recordings_genre_falls_back_to_highest_count_tag() {
+        let json = r#"{
+            "recordings": [{
+                "id": "abc123",
+                "genres": [],
+                "tags": [
+                    {"name": "guitar solo", "count": 2},
+                    {"name": "classic rock", "count": 9}
+                ]
+            }]
+        }"#;
+        let results = MusicBrainzProvider::parse_recordings("musicbrainz", json).unwrap();
+        assert_eq!(results[0].genre.as_deref(), Some("classic rock"));
+    }
+
+    #[test]
+    fn mb_parse_recordings_genre_none_when_absent() {
+        let json = r#"{"recordings": [{"id": "abc123"}]}"#;
+        let results = MusicBrainzProvider::parse_recordings("musicbrainz", json).unwrap();
+        assert_eq!(results[0].genre, None);
+    }
+
+    #[test]
+    fn mb_parse_recordings_genre_missing_count_ranks_as_zero() {
+        let json = r#"{
+            "recordings": [{
+                "id": "abc123",
+                "genres": [
+                    {"name": "no count"},
+                    {"name": "has count", "count": 1}
+                ]
+            }]
+        }"#;
+        let results = MusicBrainzProvider::parse_recordings("musicbrainz", json).unwrap();
+        assert_eq!(results[0].genre.as_deref(), Some("has count"));
+    }
+
+    // ---- album / year narrowing clauses ----
+
+    #[test]
+    fn build_lucene_query_title_artist_album_and_year() {
+        let query = SearchQuery {
+            title: Some("Bohemian Rhapsody".into()),
+            artist: Some("Queen".into()),
+            album: Some("A Night at the Opera".into()),
+            year: Some(1975),
+            ..Default::default()
+        };
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&query).unwrap(),
+            r#"recording:"Bohemian Rhapsody" AND artistname:"Queen" AND release:"A Night at the Opera" AND date:1975"#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_title_and_album_only() {
+        let query = SearchQuery {
+            title: Some("Comfortably Numb".into()),
+            album: Some("The Wall".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&query).unwrap(),
+            r#"recording:"Comfortably Numb" AND release:"The Wall""#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_title_and_year_only() {
+        let query = SearchQuery {
+            title: Some("Comfortably Numb".into()),
+            year: Some(1979),
+            ..Default::default()
+        };
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&query).unwrap(),
+            r#"recording:"Comfortably Numb" AND date:1979"#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_album_or_year_alone_is_still_rejected() {
+        // album/year only NARROW an anchored query — on their own they are
+        // far too broad, so the "needs title, artist or ISRC" rule wins.
+        let query = SearchQuery {
+            album: Some("The Wall".into()),
+            year: Some(1979),
+            ..Default::default()
+        };
+        assert!(MusicBrainzProvider::build_lucene_query(&query).is_err());
+    }
+
+    #[test]
+    fn build_lucene_query_album_bracket_group_is_stripped_too() {
+        let query = SearchQuery {
+            title: Some("Comfortably Numb".into()),
+            album: Some("The Wall (Remastered)".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&query).unwrap(),
+            r#"recording:"Comfortably Numb" AND release:"The Wall""#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_isrc_ignores_album_and_year() {
+        // ISRC is an exact identifier — narrowing clauses would only risk
+        // excluding the correct recording.
+        let query = SearchQuery {
+            isrc: Some("GBAYE0601498".into()),
+            album: Some("The Wall".into()),
+            year: Some(1979),
+            ..Default::default()
+        };
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&query).unwrap(),
+            "isrc:GBAYE0601498"
         );
     }
 }

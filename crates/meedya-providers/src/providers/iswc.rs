@@ -5,6 +5,8 @@
 // Ported from MeedyaManager crates/mm-providers/src/identifiers/mod.rs
 // under MeedyaSuite-core#12 / MeedyaManager#136.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
@@ -12,7 +14,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::extra_keys::{ISWC, PROVIDER_ID};
-use crate::lucene::quote_phrase;
+use crate::lucene::phrase_clause;
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
@@ -24,11 +26,27 @@ fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
     ProviderError::Other(format!("parse error: {context}: {e}"))
 }
 
-/// Build the Lucene query string for an ISWC works lookup, quoting the
-/// (uppercased) value so it cannot be misparsed as Lucene syntax under
-/// Solr's stricter query parser.
+/// Build the Lucene query string for an ISWC works lookup, phrase-quoting
+/// the (uppercased) value so its hyphens and dots cannot be misparsed as
+/// Lucene syntax under Solr's stricter query parser.
+///
+/// # Why the punctuation is preserved rather than stripped
+///
+/// ISRC and ISWC are deliberately handled differently here. MusicBrainz
+/// documents and indexes ISRCs in their unpunctuated form (`isrc:GBAHT1600302`),
+/// so [`super::isrc::normalise_isrc`] strips separators before querying.
+/// ISWCs are displayed by MusicBrainz in the punctuated ISO form
+/// (`T-034.524.680-1`), and MusicBrainz does **not** document which form the
+/// `iswc` search field indexes.
+///
+/// Rather than guess, this preserves the caller's separators and relies on
+/// phrase-quoting to keep them syntactically inert. Stripping them would be
+/// an unverified behaviour change that could silently reduce recall.
+///
+/// Resolving this definitively needs a live-service check — tracked as a
+/// follow-up alongside the post-2026-11-30 Solr 10 validation (issue #69).
 fn build_iswc_query(iswc: &str) -> String {
-    format!("iswc:{}", quote_phrase(&iswc.to_uppercase()))
+    phrase_clause("iswc", &iswc.to_uppercase())
 }
 
 /// Validate ISWC format: `T-123456789-C` (T + 9 digits + check digit).
@@ -69,6 +87,9 @@ impl IswcProvider {
             } else {
                 user_agent.clone()
             })
+            // Without an explicit timeout reqwest waits indefinitely; a
+            // stalled MusicBrainz connection would hang the caller's task.
+            .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest ClientBuilder failed — TLS initialisation error");
         Self {

@@ -42,7 +42,7 @@ pub mod providers;
 pub use cover_art::{best_cover_art, has_cover_art, CoverArtSize};
 pub use credentials::{CredentialSource, CredentialStore, ResolvedCredential};
 pub use error::CredentialError;
-pub use lucene::{escape_lucene, quote_phrase};
+pub use lucene::{escape_lucene, phrase_clause, quote_phrase};
 pub use match_scoring::{MatchScorer, ScoringWeights};
 pub use rate_limiter::{ProviderRateLimiter, RateLimiterRegistry};
 pub use traits::{is_retryable, MetadataProvider, ProviderCapabilities, ProviderError};
