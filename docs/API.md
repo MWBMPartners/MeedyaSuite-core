@@ -191,7 +191,8 @@ Audio fingerprinting and loudness analysis. Returns analysis results — callers
 pub use acoustid::{AcoustIdClient, AcoustIdResult};
 pub use error::FingerprintError;
 pub use replaygain::{
-    AlbumGainResult, ReplayGainAnalyzer, ReplayGainResult, DEFAULT_REFERENCE_LEVEL
+    AlbumGainResult, ReplayGainAnalyzer, ReplayGainResult,
+    DEFAULT_REFERENCE_LEVEL, DEFAULT_ANALYSIS_TIMEOUT
 };
 ```
 
@@ -202,6 +203,34 @@ AcoustID API client with built-in rate limiting (3 requests/second per the Acous
 #### `ReplayGainAnalyzer`
 
 EBU R128 loudness measurement. Computes track gain + peak; aggregates multiple tracks into `AlbumGainResult` for album-mode normalisation. Reference level defaults to `DEFAULT_REFERENCE_LEVEL` (-18 LUFS).
+
+```rust
+pub const DEFAULT_ANALYSIS_TIMEOUT: Duration; // 600s
+impl ReplayGainAnalyzer {
+    pub fn with_reference_level(self, level: f64) -> Self;
+    pub fn with_timeout(self, timeout: Duration) -> Self;
+}
+```
+
+**Subprocess timeout.** `analyze_track` shells out to FFmpeg, and that call is bounded by
+`DEFAULT_ANALYSIS_TIMEOUT` (10 minutes), overridable with `with_timeout`. On expiry the
+child is **SIGKILLed** (`kill_on_drop`) rather than left running, and the call returns
+`FingerprintError::FfmpegTimeout { seconds }`.
+
+The default is deliberately far longer than the 30s used by `meedya-codecs`' `ffprobe` /
+`mediainfo` wrappers: `ebur128` decodes the *entire* file, so a two-hour DJ mix on a slow
+volume can legitimately take minutes, whereas `ffprobe` only reads headers. Tune it with
+`with_timeout` if your media profile differs — library code cannot know it.
+
+`FingerprintError::FfmpegTimeout` is distinct from `FfmpegError` precisely so callers can
+retry a timeout with a longer limit, which is sensible, without also retrying a genuine
+FFmpeg failure, which is not.
+
+> `FingerprintError` is a non-exhaustive-in-practice error enum; adding `FfmpegTimeout` will
+> break a downstream `match` that enumerates every variant without a `_` arm.
+
+**Non-UTF-8 paths** are supported — the file path is passed to FFmpeg as an `OsStr`, so
+media under a path that is not valid UTF-8 analyses normally.
 
 ---
 

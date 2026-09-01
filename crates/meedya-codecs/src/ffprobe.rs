@@ -56,6 +56,10 @@ pub async fn detect_audio_info(ffprobe_path: &Path, file_path: &Path) -> Option<
                 "a:0",
             ])
             .arg(file_path)
+            // Dropping the `.output()` future when the timeout above fires
+            // does NOT kill the child by itself — only `kill_on_drop` does.
+            // Without this, a timed-out ffprobe call leaked a running process.
+            .kill_on_drop(true)
             .output(),
     )
     .await

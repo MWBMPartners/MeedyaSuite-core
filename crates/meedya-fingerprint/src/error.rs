@@ -30,6 +30,9 @@ pub enum FingerprintError {
     #[error("FFmpeg analysis failed: {0}")]
     FfmpegError(String),
 
+    #[error("FFmpeg analysis timed out after {seconds}s")]
+    FfmpegTimeout { seconds: u64 },
+
     #[error("loudness parse error: {0}")]
     LoudnessParseError(String),
 

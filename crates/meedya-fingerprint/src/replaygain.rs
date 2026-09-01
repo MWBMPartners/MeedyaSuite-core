@@ -11,6 +11,7 @@
 
 use std::path::Path;
 use std::process::Stdio;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -19,6 +20,19 @@ use crate::error::FingerprintError;
 
 /// Default ReplayGain reference level in LUFS (EBU R128 standard).
 pub const DEFAULT_REFERENCE_LEVEL: f64 = -18.0;
+
+/// Default timeout for a single FFmpeg loudness analysis pass.
+///
+/// This is intentionally much longer than the 30s timeout used by the
+/// probe-style helpers in `meedya-codecs` (ffprobe/mediainfo). Those just
+/// read container metadata; this decodes the ENTIRE audio file through the
+/// `ebur128` filter to measure loudness, which is inherently proportional
+/// to track length and decode speed. A long DJ mix analyzed on a slow
+/// external volume can legitimately take several minutes — 30s would
+/// produce false-positive timeouts on perfectly healthy runs. Ten minutes
+/// still bounds a genuine hang (stuck process, corrupt file that makes
+/// FFmpeg spin) to a well-defined worst case.
+pub const DEFAULT_ANALYSIS_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Result of a ReplayGain loudness analysis for a single track.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +93,7 @@ impl AlbumGainResult {
 pub struct ReplayGainAnalyzer {
     ffmpeg_path: String,
     reference_level: f64,
+    timeout: Duration,
 }
 
 impl ReplayGainAnalyzer {
@@ -87,6 +102,7 @@ impl ReplayGainAnalyzer {
         Self {
             ffmpeg_path: ffmpeg_path.into(),
             reference_level: DEFAULT_REFERENCE_LEVEL,
+            timeout: DEFAULT_ANALYSIS_TIMEOUT,
         }
     }
 
@@ -96,34 +112,47 @@ impl ReplayGainAnalyzer {
         self
     }
 
+    /// Set a custom analysis timeout (default: [`DEFAULT_ANALYSIS_TIMEOUT`], 10 minutes).
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
     /// Analyze a single audio file for loudness.
+    ///
+    /// The FFmpeg subprocess is bounded by `self.timeout` (10 minutes by
+    /// default — see [`DEFAULT_ANALYSIS_TIMEOUT`]). On timeout the child is
+    /// killed (`kill_on_drop(true)`) rather than left running, and this
+    /// returns `FingerprintError::FfmpegTimeout`.
     pub async fn analyze_track(
         &self,
         file_path: &Path,
     ) -> Result<ReplayGainResult, FingerprintError> {
-        let output = Command::new(&self.ffmpeg_path)
-            .args([
-                "-i",
-                file_path
-                    .to_str()
-                    .ok_or_else(|| FingerprintError::FfmpegError("Invalid file path".into()))?,
-                "-af",
-                "ebur128=peak=true",
-                "-f",
-                "null",
-                "-",
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    FingerprintError::FfmpegNotFound(self.ffmpeg_path.clone())
-                } else {
-                    FingerprintError::FfmpegError(e.to_string())
-                }
-            })?;
+        let output = tokio::time::timeout(
+            self.timeout,
+            Command::new(&self.ffmpeg_path)
+                .arg("-i")
+                .arg(file_path)
+                .args(["-af", "ebur128=peak=true", "-f", "null", "-"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                // Dropping the `.output()` future on timeout does NOT kill the
+                // child by itself — only `kill_on_drop` does that. Without this,
+                // a timed-out analysis leaves a still-running FFmpeg behind.
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_elapsed| FingerprintError::FfmpegTimeout {
+            seconds: self.timeout.as_secs(),
+        })?
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                FingerprintError::FfmpegNotFound(self.ffmpeg_path.clone())
+            } else {
+                FingerprintError::FfmpegError(e.to_string())
+            }
+        })?;
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         parse_ebur128_output(&stderr, self.reference_level)
@@ -301,5 +330,83 @@ mod tests {
     fn test_empty_album_returns_none() {
         let analyzer = ReplayGainAnalyzer::new("ffmpeg");
         assert!(analyzer.compute_album_gain(&[]).is_none());
+    }
+
+    #[test]
+    fn test_with_timeout_overrides_default() {
+        let analyzer = ReplayGainAnalyzer::new("ffmpeg");
+        assert_eq!(analyzer.timeout, DEFAULT_ANALYSIS_TIMEOUT);
+
+        let analyzer = analyzer.with_timeout(Duration::from_secs(5));
+        assert_eq!(analyzer.timeout, Duration::from_secs(5));
+    }
+
+    // Points `ffmpeg_path` at a shell script that sleeps far longer than the
+    // configured timeout, so a passing run proves the timeout — not the
+    // script finishing — is what ends `analyze_track`. `kill_on_drop(true)`
+    // means the sleeping child is killed the moment the timeout elapses, so
+    // this resolves in well under a second rather than waiting out the sleep.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_timeout_is_deterministic_and_fast() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let script_path =
+            std::env::temp_dir().join(format!("meedya_rg_test_sleep_{}.sh", std::process::id()));
+        fs::write(&script_path, "#!/bin/sh\nsleep 5\n").expect("write sleep script");
+        let mut perms = fs::metadata(&script_path)
+            .expect("stat sleep script")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms).expect("chmod sleep script");
+
+        let analyzer = ReplayGainAnalyzer::new(script_path.to_string_lossy().into_owned())
+            .with_timeout(Duration::from_millis(200));
+
+        let start = std::time::Instant::now();
+        let result = analyzer
+            .analyze_track(Path::new("/tmp/meedya-rg-test-input.wav"))
+            .await;
+        let elapsed = start.elapsed();
+
+        let _ = fs::remove_file(&script_path);
+
+        assert!(
+            matches!(result, Err(FingerprintError::FfmpegTimeout { .. })),
+            "expected FfmpegTimeout, got {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "timeout should short-circuit the sleep, took {elapsed:?}"
+        );
+    }
+
+    // Non-UTF-8 paths must reach `Command` as an `OsStr`/`Path`, not be
+    // rejected up front by a `to_str()` check. The chosen ffmpeg binary
+    // doesn't exist, so the call still fails — the assertion is only that it
+    // does NOT fail with the old "Invalid file path" error.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_non_utf8_path_is_not_rejected_up_front() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let bad_name = OsStr::from_bytes(&[b't', b'r', 0xFF, 0xFE, b'.', b'w', b'a', b'v']);
+        let path = std::env::temp_dir().join(bad_name);
+
+        let analyzer = ReplayGainAnalyzer::new("meedya-fingerprint-test-nonexistent-ffmpeg")
+            .with_timeout(Duration::from_millis(500));
+
+        let result = analyzer.analyze_track(&path).await;
+
+        if let Err(FingerprintError::FfmpegError(msg)) = &result {
+            assert!(
+                !msg.contains("Invalid file path"),
+                "non-UTF-8 path should not trigger the removed path-validation error, got: {msg}"
+            );
+        }
+        // Any other outcome (e.g. FfmpegNotFound, since the binary above
+        // doesn't exist) is fine — this test only guards the removed check.
     }
 }

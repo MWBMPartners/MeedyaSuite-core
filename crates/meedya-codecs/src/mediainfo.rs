@@ -60,6 +60,10 @@ pub async fn detect_codec(mediainfo_path: &Path, file_path: &Path) -> Option<Med
         Command::new(mediainfo_path)
             .arg("--Output=JSON")
             .arg(file_path)
+            // Dropping the `.output()` future when the timeout above fires
+            // does NOT kill the child by itself — only `kill_on_drop` does.
+            // Without this, a timed-out mediainfo call leaked a running process.
+            .kill_on_drop(true)
             .output(),
     )
     .await
