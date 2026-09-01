@@ -26,37 +26,78 @@ fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
     ProviderError::Other(format!("parse error: {context}: {e}"))
 }
 
-/// Build the Lucene query string for an ISWC works lookup, phrase-quoting
-/// the (uppercased) value so its hyphens and dots cannot be misparsed as
-/// Lucene syntax under Solr's stricter query parser.
+/// Normalise an ISWC to its compact, separator-free, uppercase form
+/// (`T` + 10 digits), e.g. `t-034.524.680-1` -> `T0345246801`.
 ///
-/// # Why the punctuation is preserved rather than stripped
+/// This is the canonical internal representation; it is **not** the form
+/// MusicBrainz indexes — see [`format_iswc_dotted`].
+pub fn normalise_iswc(iswc: &str) -> String {
+    iswc.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// Render an ISWC in MusicBrainz's stored display form,
+/// `T-DDD.DDD.DDD-C`, e.g. `T0345246801` -> `T-034.524.680-1`.
 ///
-/// ISRC and ISWC are deliberately handled differently here. MusicBrainz
-/// documents and indexes ISRCs in their unpunctuated form (`isrc:GBAHT1600302`),
-/// so [`super::isrc::normalise_isrc`] strips separators before querying.
-/// ISWCs are displayed by MusicBrainz in the punctuated ISO form
-/// (`T-034.524.680-1`), and MusicBrainz does **not** document which form the
-/// `iswc` search field indexes.
+/// Returns `None` when `iswc` does not normalise to a well-formed ISWC
+/// (`T` followed by exactly 10 digits), so callers can fall back rather
+/// than emitting a malformed query.
+fn format_iswc_dotted(iswc: &str) -> Option<String> {
+    let n = normalise_iswc(iswc);
+    let digits = n.strip_prefix('T')?;
+    if digits.len() != 10 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!(
+        "T-{}.{}.{}-{}",
+        &digits[0..3],
+        &digits[3..6],
+        &digits[6..9],
+        &digits[9..10]
+    ))
+}
+
+/// Build the Lucene query string for an ISWC works lookup.
 ///
-/// Rather than guess, this preserves the caller's separators and relies on
-/// phrase-quoting to keep them syntactically inert. Stripping them would be
-/// an unverified behaviour change that could silently reduce recall.
+/// # Why the dotted display form
 ///
-/// Resolving this definitively needs a live-service check — tracked as a
-/// follow-up alongside the post-2026-11-30 Solr 10 validation (issue #69).
+/// ISRC and ISWC are deliberately handled differently, because MusicBrainz
+/// indexes them differently. This is **live-verified** against
+/// `musicbrainz.org/ws/2/`, not inferred from documentation (MusicBrainz
+/// does not document the indexed form for either field):
+///
+/// | Field | Query form            | Live result |
+/// |-------|-----------------------|-------------|
+/// | ISRC  | `isrc:GBAYE0601498`   | matches     |
+/// | ISRC  | `isrc:GB-AYE-06-01498`| 0 results   |
+/// | ISWC  | `iswc:"T-304.031.869-8"` | matches  |
+/// | ISWC  | `iswc:T3040318698`    | 0 results   |
+/// | ISWC  | `iswc:"T-304031869-8"`| parse error |
+///
+/// So ISRCs are queried compact and ISWCs are queried in the punctuated
+/// display form MusicBrainz stores. Emitting the compact form here — or
+/// passing the caller's separators through unchanged — silently returns
+/// zero results.
+///
+/// The value is phrase-quoted so its `-` and `.` cannot be parsed as Lucene
+/// operators. If the input is too malformed to reformat, it falls back to
+/// phrase-quoting the uppercased input rather than emitting nothing.
+///
+/// Re-verify after the 2026-11-30 Solr 10 reindex (issue #69): no ticket
+/// announces an analyzer change for identifier fields, but the stored-form
+/// query is the safest bet either way and this is the one behaviour that
+/// cannot be confirmed until the new stack is live.
 fn build_iswc_query(iswc: &str) -> String {
-    phrase_clause("iswc", &iswc.to_uppercase())
+    let value = format_iswc_dotted(iswc).unwrap_or_else(|| iswc.to_uppercase());
+    phrase_clause("iswc", &value)
 }
 
 /// Validate ISWC format: `T-123456789-C` (T + 9 digits + check digit).
 /// Accepts the format with or without hyphens.
 pub fn validate_iswc(iswc: &str) -> bool {
-    let normalised: String = iswc
-        .to_uppercase()
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .collect();
+    let normalised = normalise_iswc(iswc);
     // Must be exactly 11 chars: T + 9 digits + 1 check digit
     normalised.len() == 11
         && normalised.starts_with('T')
@@ -340,8 +381,62 @@ mod tests {
     }
 
     #[test]
-    fn build_iswc_query_hyphenated_input_is_quoted_and_uppercased() {
-        assert_eq!(build_iswc_query("T-034524680-1"), r#"iswc:"T-034524680-1""#);
+    fn normalise_iswc_strips_separators_and_uppercases() {
+        assert_eq!(normalise_iswc("t-034.524.680-1"), "T0345246801");
+        assert_eq!(normalise_iswc("T-034524680-1"), "T0345246801");
+        assert_eq!(normalise_iswc("T0345246801"), "T0345246801");
+    }
+
+    #[test]
+    fn format_iswc_dotted_from_every_accepted_input_form() {
+        // Idempotent across compact, hyphen-only and already-dotted input.
+        for input in [
+            "T0345246801",
+            "T-034524680-1",
+            "T-034.524.680-1",
+            "t0345246801",
+        ] {
+            assert_eq!(
+                format_iswc_dotted(input).as_deref(),
+                Some("T-034.524.680-1"),
+                "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_iswc_dotted_rejects_malformed_input() {
+        assert_eq!(format_iswc_dotted("X0345246801"), None); // wrong prefix
+        assert_eq!(format_iswc_dotted("T034524680"), None); // 9 digits
+        assert_eq!(format_iswc_dotted("T03452468012"), None); // 11 digits
+        assert_eq!(format_iswc_dotted("TABCDEFGHIJ"), None); // non-digits
+        assert_eq!(format_iswc_dotted(""), None);
+    }
+
+    #[test]
+    fn build_iswc_query_falls_back_to_quoted_uppercase_when_unformattable() {
+        // Malformed input still produces syntactically valid Lucene rather
+        // than nothing; validate_iswc gates this in practice.
+        assert_eq!(build_iswc_query("not-an-iswc"), r#"iswc:"NOT-AN-ISWC""#);
+    }
+
+    #[test]
+    fn build_iswc_query_is_idempotent_across_input_forms() {
+        let expected = r#"iswc:"T-034.524.680-1""#;
+        for input in ["T0345246801", "T-034524680-1", "T-034.524.680-1"] {
+            assert_eq!(build_iswc_query(input), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn build_iswc_query_emits_the_dotted_display_form() {
+        // Live-verified: MusicBrainz indexes ISWCs in the dotted display
+        // form. Compact and hyphen-only forms return 0 results / a parse
+        // error respectively.
+        assert_eq!(
+            build_iswc_query("T-034524680-1"),
+            r#"iswc:"T-034.524.680-1""#
+        );
     }
 
     #[test]

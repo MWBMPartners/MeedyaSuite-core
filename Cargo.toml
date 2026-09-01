@@ -15,6 +15,11 @@ members = [
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
+# MSRV. `Option::is_none_or` (used by meedya-providers' MusicBrainz genre
+# picker) was stabilised in Rust 1.82, so downstream apps consuming this
+# workspace need at least that toolchain. Declared explicitly rather than
+# left implicit, since a silent MSRV is a silent integration break.
+rust-version = "1.82"
 authors = ["MeedyaSuite"]
 license = "MIT"
 repository = "https://github.com/MWBMPartners/MeedyaSuite-core"
