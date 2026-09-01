@@ -21,6 +21,7 @@ meedya-codecs = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+meedya-metadata = { workspace = true }
 
 [features]
 default = []

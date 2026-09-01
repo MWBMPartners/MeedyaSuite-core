@@ -12,6 +12,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::extra_keys::{ISWC, PROVIDER_ID};
+use crate::lucene::quote_phrase;
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
@@ -21,6 +22,13 @@ fn net_err(e: reqwest::Error) -> ProviderError {
 
 fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
     ProviderError::Other(format!("parse error: {context}: {e}"))
+}
+
+/// Build the Lucene query string for an ISWC works lookup, quoting the
+/// (uppercased) value so it cannot be misparsed as Lucene syntax under
+/// Solr's stricter query parser.
+fn build_iswc_query(iswc: &str) -> String {
+    format!("iswc:{}", quote_phrase(&iswc.to_uppercase()))
 }
 
 /// Validate ISWC format: `T-123456789-C` (T + 9 digits + check digit).
@@ -180,7 +188,7 @@ impl MetadataProvider for IswcProvider {
             .get(&url)
             .header("Accept", "application/json")
             .query(&[
-                ("query", &format!("iswc:{iswc}")),
+                ("query", &build_iswc_query(iswc)),
                 ("limit", &limit),
                 ("fmt", &"json".to_owned()),
             ])
@@ -261,6 +269,58 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("T0345246801")
         );
+    }
+
+    /// Forward-compat fixture: the NEW relation shape MusicBrainz uses
+    /// going forward (`target-type` present, no `target` key). Our
+    /// `MbRelation` struct never reads `target`, so this must extract the
+    /// composer/title identically to the legacy shape below.
+    #[test]
+    fn iswc_provider_parse_works_new_relation_shape() {
+        let json = r#"{
+            "works": [{
+                "id": "mb-work-1",
+                "title": "Bohemian Rhapsody",
+                "iswcs": ["T0345246801"],
+                "relations": [{
+                    "type": "composer",
+                    "target-type": "artist",
+                    "artist": {"name": "Freddie Mercury"}
+                }]
+            }]
+        }"#;
+        let results = IswcProvider::parse_works("iswc", json).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title.as_deref(), Some("Bohemian Rhapsody"));
+        assert_eq!(results[0].artist.as_deref(), Some("Freddie Mercury"));
+    }
+
+    /// Forward-compat fixture: the LEGACY relation shape (`target` present,
+    /// no `target-type`) — proving we never depended on `target` either,
+    /// before or after the announced Solr 10 relationship-shape changes.
+    #[test]
+    fn iswc_provider_parse_works_legacy_relation_shape() {
+        let json = r#"{
+            "works": [{
+                "id": "mb-work-1",
+                "title": "Bohemian Rhapsody",
+                "iswcs": ["T0345246801"],
+                "relations": [{
+                    "type": "composer",
+                    "target": "artist-mbid-1234",
+                    "artist": {"name": "Freddie Mercury"}
+                }]
+            }]
+        }"#;
+        let results = IswcProvider::parse_works("iswc", json).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title.as_deref(), Some("Bohemian Rhapsody"));
+        assert_eq!(results[0].artist.as_deref(), Some("Freddie Mercury"));
+    }
+
+    #[test]
+    fn build_iswc_query_hyphenated_input_is_quoted_and_uppercased() {
+        assert_eq!(build_iswc_query("T-034524680-1"), r#"iswc:"T-034524680-1""#);
     }
 
     #[test]

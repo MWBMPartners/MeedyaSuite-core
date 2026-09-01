@@ -127,6 +127,26 @@ pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
             ItemKey::MusicBrainzReleaseId,
             CommonTag::MusicBrainzReleaseId,
         ),
+        (
+            ItemKey::MusicBrainzReleaseGroupId,
+            CommonTag::MusicBrainzReleaseGroupId,
+        ),
+        (ItemKey::MusicBrainzWorkId, CommonTag::MusicBrainzWorkId),
+        (ItemKey::TrackSubtitle, CommonTag::Subtitle),
+        (ItemKey::Language, CommonTag::Language),
+        // NOTE (#65): lofty's ID3v2 key map lists "TEXT" => Writer BEFORE
+        // "TEXT" => Lyricist (lofty 0.22.4, verified), so an MP3 TEXT frame
+        // may surface via ItemKey::Writer instead of ItemKey::Lyricist and
+        // be missed by this pairing — a known upstream quirk, accepted.
+        // Deliberately NOT mapping Writer -> Lyricist here: Vorbis WRITER
+        // is a distinct field and mapping it in would mis-read that tag.
+        (ItemKey::Lyricist, CommonTag::Lyricist),
+        (ItemKey::Conductor, CommonTag::Conductor),
+        (ItemKey::Remixer, CommonTag::Remixer),
+        (ItemKey::Arranger, CommonTag::Arranger),
+        (ItemKey::Producer, CommonTag::Producer),
+        (ItemKey::Engineer, CommonTag::Engineer),
+        (ItemKey::MixEngineer, CommonTag::Mixer),
     ];
 
     for (key, common_tag) in key_mappings {
@@ -137,8 +157,8 @@ pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
         }
     }
 
-    // Extract ReplayGain tags (stored as custom/freeform fields)
-    let rg_mappings: &[(&str, CommonTag)] = &[
+    // Extract ReplayGain tags + other freeform-only fields (custom/freeform)
+    let freeform_mappings: &[(&str, CommonTag)] = &[
         ("REPLAYGAIN_TRACK_GAIN", CommonTag::ReplayGainTrackGain),
         ("REPLAYGAIN_TRACK_PEAK", CommonTag::ReplayGainTrackPeak),
         ("REPLAYGAIN_ALBUM_GAIN", CommonTag::ReplayGainAlbumGain),
@@ -147,9 +167,11 @@ pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
             "REPLAYGAIN_REFERENCE_LOUDNESS",
             CommonTag::ReplayGainReferenceLoudness,
         ),
+        ("ISWC", CommonTag::Iswc),
+        ("Acoustid Id", CommonTag::AcoustId),
     ];
 
-    for (field_name, common_tag) in rg_mappings {
+    for (field_name, common_tag) in freeform_mappings {
         // Try as a custom text item (works for Vorbis, ID3v2 TXXX, MP4 freeform)
         let key = ItemKey::Unknown(field_name.to_string());
         for item in tag.get_items(&key) {
@@ -288,7 +310,8 @@ pub fn write_registry_tags(
         for atom in &def.atoms {
             // Write as a custom/freeform item with the full namespace
             let key = ItemKey::Unknown(format!("{}:{}", atom.namespace, atom.name));
-            tag.insert(TagItem::new(key, ItemValue::Text(string_val.clone())));
+            // #65 — insert_unchecked: lofty's insert() rejects ItemKey::Unknown (re_map allow_unknown=false), silently dropping freeform atoms; insert_unchecked is lofty's documented API for Unknown keys.
+            tag.insert_unchecked(TagItem::new(key, ItemValue::Text(string_val.clone())));
         }
         count += 1;
     }
@@ -412,7 +435,8 @@ fn write_common_tag_to_lofty(tag: &mut Tag, common_tag: CommonTag, value: &str) 
 
         // Custom/freeform fields — use Unknown key with standard field names
         CommonTag::AcoustId => {
-            tag.insert(TagItem::new(
+            // insert_unchecked — lofty Tag::insert() drops ItemKey::Unknown (pre-existing latent bug fixed with #65).
+            tag.insert_unchecked(TagItem::new(
                 ItemKey::Unknown("Acoustid Id".into()),
                 ItemValue::Text(value.into()),
             ));
@@ -442,7 +466,8 @@ fn write_common_tag_to_lofty(tag: &mut Tag, common_tag: CommonTag, value: &str) 
             ));
         }
         CommonTag::ReplayGainReferenceLoudness => {
-            tag.insert(TagItem::new(
+            // insert_unchecked — Unknown key, see AcoustId (pre-existing, fixed with #65).
+            tag.insert_unchecked(TagItem::new(
                 ItemKey::Unknown("REPLAYGAIN_REFERENCE_LOUDNESS".into()),
                 ItemValue::Text(value.into()),
             ));
@@ -462,6 +487,103 @@ fn write_common_tag_to_lofty(tag: &mut Tag, common_tag: CommonTag, value: &str) 
         CommonTag::OriginalDate => {
             tag.insert(TagItem::new(
                 ItemKey::OriginalReleaseDate,
+                ItemValue::Text(value.into()),
+            ));
+        }
+
+        // --- Work / release-group identifiers (#65) ---
+        CommonTag::MusicBrainzReleaseGroupId => {
+            tag.insert(TagItem::new(
+                ItemKey::MusicBrainzReleaseGroupId,
+                ItemValue::Text(value.into()),
+            ));
+        }
+        CommonTag::MusicBrainzWorkId => {
+            tag.insert(TagItem::new(
+                ItemKey::MusicBrainzWorkId,
+                ItemValue::Text(value.into()),
+            ));
+        }
+        CommonTag::Iswc => {
+            // lofty has no dedicated ISWC ItemKey (verified lofty 0.22.4), so
+            // this is a freeform Unknown key. It MUST use insert_unchecked:
+            // Tag::insert() runs re_map(allow_unknown=false) which rejects
+            // EVERY ItemKey::Unknown, silently dropping the value before it
+            // even enters the Tag (lofty's own doc: insert_unchecked "is only
+            // necessary if dealing with ItemKey::Unknown"). Serialises as
+            // TXXX:ISWC (ID3v2) / ISWC (Vorbis). #65.
+            tag.insert_unchecked(TagItem::new(
+                ItemKey::Unknown("ISWC".into()),
+                ItemValue::Text(value.into()),
+            ));
+        }
+
+        // --- Core info (#65) ---
+        CommonTag::Subtitle => {
+            tag.insert(TagItem::new(
+                ItemKey::TrackSubtitle,
+                ItemValue::Text(value.into()),
+            ));
+        }
+        CommonTag::Language => {
+            tag.insert(TagItem::new(
+                ItemKey::Language,
+                ItemValue::Text(value.into()),
+            ));
+        }
+
+        // --- Contributor roles beyond Composer (#65) ---
+        CommonTag::Lyricist => {
+            tag.insert(TagItem::new(
+                ItemKey::Lyricist,
+                ItemValue::Text(value.into()),
+            ));
+        }
+        CommonTag::Conductor => {
+            tag.insert(TagItem::new(
+                ItemKey::Conductor,
+                ItemValue::Text(value.into()),
+            ));
+        }
+        CommonTag::Remixer => {
+            tag.insert(TagItem::new(
+                ItemKey::Remixer,
+                ItemValue::Text(value.into()),
+            ));
+        }
+        CommonTag::Arranger => {
+            // Role keys (Arranger/Producer/Engineer/Mixer) MUST use
+            // insert_unchecked: lofty's ID3V2_MAP has no direct entry for them,
+            // so Tag::insert() re_map fails and drops the item before it enters
+            // the Tag. insert_unchecked pushes ItemKey::Arranger in; on ID3v2
+            // save, `impl From<Tag> for Id3v2Tag` -> merge_tag's TIPL block
+            // take_strings(ItemKey::Arranger) synthesises TIPL:arranger
+            // (verified lofty 0.22.4 id3/v2/tag.rs). Vorbis writes ARRANGER.
+            // MP4 ilst has NO arranger mapping, so M4A still drops it. #65
+            // round-trip test: contributor_roles_id3v2_roundtrip.
+            tag.insert_unchecked(TagItem::new(
+                ItemKey::Arranger,
+                ItemValue::Text(value.into()),
+            ));
+        }
+        CommonTag::Producer => {
+            // insert_unchecked — TIPL role, see the Arranger arm (#65).
+            tag.insert_unchecked(TagItem::new(
+                ItemKey::Producer,
+                ItemValue::Text(value.into()),
+            ));
+        }
+        CommonTag::Engineer => {
+            // insert_unchecked — TIPL role, see the Arranger arm (#65).
+            tag.insert_unchecked(TagItem::new(
+                ItemKey::Engineer,
+                ItemValue::Text(value.into()),
+            ));
+        }
+        CommonTag::Mixer => {
+            // insert_unchecked — TIPL role, see the Arranger arm (#65).
+            tag.insert_unchecked(TagItem::new(
+                ItemKey::MixEngineer,
                 ItemValue::Text(value.into()),
             ));
         }
@@ -524,19 +646,187 @@ mod tests {
 
     #[test]
     fn write_common_tag_mapping() {
-        // Verify that all CommonTag variants have a write implementation
-        // (compile-time check — the match in write_common_tag_to_lofty is exhaustive)
+        // Verify that all CommonTag variants have a write implementation.
+        // Derived from the tree via strum::EnumIter (#65) rather than a
+        // hand-typed subset — a new variant added to the enum is exercised
+        // here automatically, with no test edit required.
+        use strum::IntoEnumIterator;
+
         let tag_type = TagType::Id3v2;
         let mut tag = Tag::new(tag_type);
 
-        // Should not panic for any variant
-        write_common_tag_to_lofty(&mut tag, CommonTag::Title, "Test");
-        write_common_tag_to_lofty(&mut tag, CommonTag::ReplayGainTrackGain, "-3.80 dB");
-        write_common_tag_to_lofty(&mut tag, CommonTag::AcoustId, "abc-123");
-        write_common_tag_to_lofty(&mut tag, CommonTag::Isrc, "USUG12204767");
-        write_common_tag_to_lofty(&mut tag, CommonTag::MusicBrainzRecordingId, "mb-001");
+        // Should not panic for any variant. "1" parses fine for the
+        // numeric arms (Year/TrackNumber/DiscNumber).
+        for variant in CommonTag::iter() {
+            write_common_tag_to_lofty(&mut tag, variant, "1");
+        }
 
-        // Verify values were set
+        // Keep the original title assertion by writing Title last.
+        write_common_tag_to_lofty(&mut tag, CommonTag::Title, "Test");
         assert_eq!(tag.title().as_deref(), Some("Test"));
+    }
+
+    // ------------------------------------------------------------------
+    // Behavioural save/reload round-trip (#65)
+    //
+    // ELI5: prove the new tags actually survive being written and read back —
+    // not just that the write code runs without panicking.
+    //
+    // Why: `write_common_tag_mapping` above only checks no arm panics; it never
+    // asserts a value PERSISTS. lofty's `Tag::insert()` SILENTLY DROPS (a)
+    // every `ItemKey::Unknown` (its `re_map` runs with allow_unknown=false) and
+    // (b) role keys with no `ID3V2_MAP` entry — Arranger/Producer/Engineer/
+    // MixEngineer, which lofty instead synthesises into the ID3v2 `TIPL` frame
+    // at save time inside `impl From<Tag> for Id3v2Tag`. So a write arm using
+    // `insert()` for one of those keys would compile, run, pass the panic-only
+    // test, and lose the data at the first save. These tests exercise the REAL
+    // conversion (`Tag -> Id3v2Tag -> Tag` merge/split, and the Vorbis
+    // equivalent) so reverting any of the 8 `insert_unchecked` arms in
+    // `write_common_tag_to_lofty` back to `insert()` turns the matching
+    // assertion RED — the mechanism the correctness review asked for.
+    //
+    // Refs: lofty 0.22.4 src/tag/mod.rs::{insert,insert_unchecked},
+    // src/id3/v2/util/mappings.rs (TIPL_MAPPINGS), src/id3/v2/tag.rs
+    // (TIPL merge ~line 1481 / split ~line 1077). #65.
+    // ------------------------------------------------------------------
+
+    /// Write one `CommonTag`, round-trip it through a full ID3v2 save (`merge`)
+    /// then reload (`split`), and return the value recovered under
+    /// `recover_key` (`None` if lofty dropped it). No audio fixture needed —
+    /// the conversion is pure in-memory.
+    fn id3v2_roundtrip(variant: CommonTag, value: &str, recover_key: &ItemKey) -> Option<String> {
+        use lofty::id3::v2::Id3v2Tag;
+        let mut tag = Tag::new(TagType::Id3v2);
+        write_common_tag_to_lofty(&mut tag, variant, value);
+        // `Id3v2Tag::from` runs the save-side merge (TIPL synthesis etc.);
+        // `Tag::from` runs the reload-side split back into ItemKeys.
+        let id3 = Id3v2Tag::from(tag);
+        let back = Tag::from(id3);
+        back.get_string(recover_key).map(str::to_string)
+    }
+
+    /// Vorbis equivalent of `id3v2_roundtrip`. All new role keys DO have a
+    /// direct `VORBIS_MAP` entry, so `insert()` would work here — but the
+    /// Unknown-key tags (ISWC) still require `insert_unchecked` on Vorbis too.
+    fn vorbis_roundtrip(variant: CommonTag, value: &str, recover_key: &ItemKey) -> Option<String> {
+        use lofty::ogg::VorbisComments;
+        let mut tag = Tag::new(TagType::VorbisComments);
+        write_common_tag_to_lofty(&mut tag, variant, value);
+        let vc = VorbisComments::from(tag);
+        let back = Tag::from(vc);
+        back.get_string(recover_key).map(str::to_string)
+    }
+
+    #[test]
+    fn contributor_roles_survive_id3v2_save_reload() {
+        // Arranger/Producer/Engineer/Mixer have NO direct ID3v2 frame; lofty
+        // synthesises them into TIPL only if the ItemKey is present in the Tag,
+        // which requires `insert_unchecked` (insert() drops them first).
+        assert_eq!(
+            id3v2_roundtrip(CommonTag::Arranger, "Ada Arr", &ItemKey::Arranger).as_deref(),
+            Some("Ada Arr"),
+            "Arranger dropped — write arm must use insert_unchecked (TIPL)"
+        );
+        assert_eq!(
+            id3v2_roundtrip(CommonTag::Producer, "Pat Prod", &ItemKey::Producer).as_deref(),
+            Some("Pat Prod"),
+            "Producer dropped — write arm must use insert_unchecked (TIPL)"
+        );
+        assert_eq!(
+            id3v2_roundtrip(CommonTag::Engineer, "Eve Eng", &ItemKey::Engineer).as_deref(),
+            Some("Eve Eng"),
+            "Engineer dropped — write arm must use insert_unchecked (TIPL)"
+        );
+        assert_eq!(
+            id3v2_roundtrip(CommonTag::Mixer, "Max Mix", &ItemKey::MixEngineer).as_deref(),
+            Some("Max Mix"),
+            "Mixer dropped — write arm must use insert_unchecked (TIPL)"
+        );
+    }
+
+    #[test]
+    fn iswc_survives_id3v2_save_reload() {
+        // ISWC is a freeform Unknown("ISWC") key; insert() rejects all Unknown
+        // keys, so only insert_unchecked lands it (serialises as TXXX:ISWC).
+        assert_eq!(
+            id3v2_roundtrip(
+                CommonTag::Iswc,
+                "T-345246800-1",
+                &ItemKey::Unknown("ISWC".into())
+            )
+            .as_deref(),
+            Some("T-345246800-1"),
+            "ISWC dropped — write arm must use insert_unchecked (TXXX)"
+        );
+    }
+
+    #[test]
+    fn acoustid_survives_id3v2_save_reload() {
+        // AcoustID is a freeform Unknown("Acoustid Id") key; insert() rejects
+        // all Unknown keys, so only insert_unchecked lands it (serialises as
+        // TXXX:Acoustid Id). This also proves the exact literal key used on
+        // write matches read_tags' freeform-mapping table, so a written
+        // AcoustID is recoverable rather than silently one-way lost (#65).
+        assert_eq!(
+            id3v2_roundtrip(
+                CommonTag::AcoustId,
+                "eb31d1c3-950e-468b-9e36-e46fa75b1291",
+                &ItemKey::Unknown("Acoustid Id".into())
+            )
+            .as_deref(),
+            Some("eb31d1c3-950e-468b-9e36-e46fa75b1291"),
+            "AcoustID dropped — write arm must use insert_unchecked (TXXX)"
+        );
+    }
+
+    #[test]
+    fn mapped_roles_survive_id3v2_save_reload() {
+        // Control group: Lyricist/Conductor/Remixer DO have direct ID3v2 frames
+        // (TEXT/TPE3/TPE4) and legitimately use insert(). Asserting they too
+        // round-trip proves the harness recovers real data (not green-because-
+        // the-conversion-eats-everything).
+        assert_eq!(
+            id3v2_roundtrip(CommonTag::Lyricist, "Lee Lyr", &ItemKey::Lyricist).as_deref(),
+            Some("Lee Lyr")
+        );
+        assert_eq!(
+            id3v2_roundtrip(CommonTag::Conductor, "Cy Con", &ItemKey::Conductor).as_deref(),
+            Some("Cy Con")
+        );
+        assert_eq!(
+            id3v2_roundtrip(CommonTag::Remixer, "Rex Rem", &ItemKey::Remixer).as_deref(),
+            Some("Rex Rem")
+        );
+    }
+
+    #[test]
+    fn iswc_and_roles_survive_vorbis_save_reload() {
+        assert_eq!(
+            vorbis_roundtrip(
+                CommonTag::Iswc,
+                "T-345246800-1",
+                &ItemKey::Unknown("ISWC".into())
+            )
+            .as_deref(),
+            Some("T-345246800-1"),
+            "ISWC dropped on Vorbis — write arm must use insert_unchecked"
+        );
+        // Roles have VORBIS_MAP entries, but insert_unchecked must still work.
+        assert_eq!(
+            vorbis_roundtrip(CommonTag::Arranger, "Ada", &ItemKey::Arranger).as_deref(),
+            Some("Ada")
+        );
+        assert_eq!(
+            vorbis_roundtrip(CommonTag::Producer, "Pat", &ItemKey::Producer).as_deref(),
+            Some("Pat")
+        );
+        assert_eq!(
+            vorbis_roundtrip(CommonTag::Engineer, "Eve", &ItemKey::Engineer).as_deref(),
+            Some("Eve")
+        );
+        assert_eq!(
+            vorbis_roundtrip(CommonTag::Mixer, "Max", &ItemKey::MixEngineer).as_deref(),
+            Some("Max")
+        );
     }
 }

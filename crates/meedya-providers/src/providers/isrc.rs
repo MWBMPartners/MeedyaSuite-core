@@ -26,12 +26,27 @@ fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
 /// Validate ISRC format: 2 country + 3 registrant + 2 year + 5 designation = 12 chars.
 /// Accepts hyphens as separators (e.g. `GB-AYE-06-01498`).
 pub fn validate_isrc(isrc: &str) -> bool {
-    let normalised: String = isrc.chars().filter(|c| c.is_alphanumeric()).collect();
+    // Filter to ASCII alphanumerics only: a real ISRC is always ASCII, and
+    // this guarantees `normalised` is one byte per char so the byte-index
+    // checks and slices below never straddle a UTF-8 boundary. Using the
+    // Unicode `is_alphanumeric` here would admit multi-byte chars (e.g. a
+    // 12-byte / <12-char string) and panic on `normalised[..2]`.
+    let normalised: String = isrc.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     normalised.len() == 12
         && normalised[..2].chars().all(|c| c.is_ascii_alphabetic())
         && normalised[2..5].chars().all(|c| c.is_ascii_alphanumeric())
         && normalised[5..7].chars().all(|c| c.is_ascii_digit())
         && normalised[7..12].chars().all(|c| c.is_ascii_digit())
+}
+
+/// Normalise an ISRC to its canonical, hyphen-free, uppercase 12-character
+/// form (e.g. `gb-aye-06-01498` -> `GBAYE0601498`). Callers should validate
+/// with [`validate_isrc`] first; this does not itself check length or shape.
+pub fn normalise_isrc(isrc: &str) -> String {
+    isrc.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
 }
 
 /// Looks up ISRC identifiers via MusicBrainz recording search.
@@ -189,9 +204,11 @@ impl MetadataProvider for IsrcProvider {
             )));
         }
 
+        let normalised = normalise_isrc(isrc);
+
         debug!(
             provider = "isrc",
-            isrc = isrc,
+            isrc = &normalised,
             "Sending ISRC lookup request"
         );
 
@@ -202,7 +219,7 @@ impl MetadataProvider for IsrcProvider {
             .get(&url)
             .header("Accept", "application/json")
             .query(&[
-                ("query", &format!("isrc:{isrc}")),
+                ("query", &format!("isrc:{normalised}")),
                 ("limit", &limit),
                 ("fmt", &"json".to_owned()),
             ])
@@ -254,6 +271,26 @@ mod tests {
     }
 
     #[test]
+    fn validate_isrc_non_ascii_alphanumeric_does_not_panic() {
+        // Regression: `is_alphanumeric` (Unicode) admitted multi-byte chars,
+        // then byte-slicing `normalised[..2]` panicked on a non-char-boundary.
+        // "あAYE060149" is 12 bytes / 10 chars and all-Unicode-alphanumeric.
+        assert!(!validate_isrc("あAYE060149"));
+        assert!(!validate_isrc("ⅦBAYE060149")); // Roman-numeral 'Ⅶ' is alphanumeric
+        assert!(!validate_isrc("１２AYE0601498")); // fullwidth digits
+    }
+
+    #[test]
+    fn normalise_isrc_strips_hyphens_and_uppercases() {
+        assert_eq!(normalise_isrc("gb-aye-06-01498"), "GBAYE0601498");
+    }
+
+    #[test]
+    fn normalise_isrc_already_normalised_is_unchanged() {
+        assert_eq!(normalise_isrc("GBAYE0601498"), "GBAYE0601498");
+    }
+
+    #[test]
     fn isrc_provider_name() {
         assert_eq!(IsrcProvider::new("App/1.0").id(), "isrc");
     }
@@ -276,6 +313,39 @@ mod tests {
                 "releases": [{"title": "The Wall", "date": "1979-11-30"}],
                 "isrcs": ["GBAYE7900498"],
                 "length": 382000
+            }]
+        }"#;
+        let results = IsrcProvider::parse_recordings("isrc", json).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title.as_deref(), Some("Comfortably Numb"));
+        assert_eq!(results[0].isrc.as_deref(), Some("GBAYE7900498"));
+        assert_eq!(results[0].artist.as_deref(), Some("Pink Floyd"));
+    }
+
+    /// Forward-compat fixture: same valid shape plus Solr 10 announcement
+    /// noise (relation `target-type`, release `quality`, `release-group`,
+    /// unknown `genres`) — our serde-derive structs ignore all of it.
+    #[test]
+    fn isrc_provider_parse_recordings_solr10_shape() {
+        let json = r#"{
+            "recordings": [{
+                "id": "mb-rec-1",
+                "title": "Comfortably Numb",
+                "artist-credit": [{"artist": {"name": "Pink Floyd"}}],
+                "releases": [{
+                    "title": "The Wall",
+                    "date": "1979-11-30",
+                    "quality": "normal",
+                    "release-group": {"id": "rg-1", "primary-type": "Album"}
+                }],
+                "isrcs": ["GBAYE7900498"],
+                "length": 382000,
+                "genres": [{"name": "progressive rock", "count": 12}],
+                "relations": [{
+                    "type": "performer",
+                    "target-type": "artist",
+                    "artist": {"id": "x", "name": "Y"}
+                }]
             }]
         }"#;
         let results = IsrcProvider::parse_recordings("isrc", json).unwrap();

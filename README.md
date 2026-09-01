@@ -13,16 +13,16 @@ Written in Rust. Distributable to all Meedya apps via:
 | Crate | Purpose | Status | Tests |
 |---|---|---|---|
 | [`meedya-codecs`](crates/meedya-codecs) | Audio/video/subtitle codecs, container formats, HDR, spatial audio, media classification, FFprobe + MediaInfo integration | Implemented | 47 |
-| [`meedya-metadata`](crates/meedya-metadata) | Two coexisting tag-I/O surfaces: lofty-backed multi-format (`CommonTag`, `tag_io`, `tag_registry`) and `mp4ameta`-backed sandbox-safe registry for the Apple Music tagging flow. Includes `playback_bounds` (soft start/stop atoms) and codec ID tags. | Implemented | 59 |
-| [`meedya-tags-extended`](crates/meedya-tags-extended) | Multi-format tag I/O foundation with DJ metadata support. `ExtendedTags` model, `MusicalKey` (Camelot/Open Key/traditional), `CuePoint`/`LoopPoint`/`BeatGrid`, standard BPM+key+comment read/write, **Mixed In Key reader** (`mik` module). Other proprietary readers (Serato/Rekordbox/Traktor/VDJ) pending fixture-based sessions. | Implemented | 61 |
+| [`meedya-metadata`](crates/meedya-metadata) | Two coexisting tag-I/O surfaces: lofty-backed multi-format (`CommonTag`, `tag_io`, `tag_registry`) and `mp4ameta`-backed sandbox-safe registry for the Apple Music tagging flow. Includes `playback_bounds` (soft start/stop atoms), codec ID tags, and the cross-repo `identifier_types` registry (scope→slug→validation vocabulary, #65). | Implemented | 107 |
+| [`meedya-tags-extended`](crates/meedya-tags-extended) | Multi-format tag I/O foundation with DJ metadata support. `ExtendedTags` model, `MusicalKey` (Camelot/Open Key/traditional), `CuePoint`/`LoopPoint`/`BeatGrid`, standard BPM+key+comment read/write, **Mixed In Key reader** (`mik` module). Other proprietary readers (Serato/Rekordbox/Traktor/VDJ) pending fixture-based sessions. | Implemented | 180 |
 | [`meedya-library-import`](crates/meedya-library-import) | Ingest playback bounds + metadata from external library DBs. `itunes_xml` parses Music.app exports; `cuesheet` is a full CUE parser at CD-frame precision. | Implemented | 30 |
-| [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar writes, plain-text + synchronised ID3v2 SYLT tag-embed. | Implemented | 15 |
-| [`meedya-providers`](crates/meedya-providers) | Metadata provider framework: traits, capabilities, registry, rate limiting, cover art helpers, match scoring. | Implemented | 27 |
+| [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar writes, plain-text + synchronised ID3v2 SYLT tag-embed. | Implemented | 128 |
+| [`meedya-providers`](crates/meedya-providers) | Metadata provider framework: traits, capabilities, registry, rate limiting, cover art helpers, match scoring, Lucene/Solr query escaping (`lucene`). | Implemented | 39 |
 | [`meedya-fingerprint`](crates/meedya-fingerprint) | AcoustID fingerprinting + ReplayGain/EBU R128 loudness analysis. | Implemented | 6 |
 | [`meedya-db`](crates/meedya-db) | MeedyaDB API client, shared media models (Track/Album/Artist), database export trait. | Implemented | 3 |
 | [`meedya-core`](crates/meedya-core) | Unified facade crate re-exporting the implemented crates behind feature flags. | Implemented | — |
 
-**Total: 466 tests passing**, workspace builds clean.
+**Total: 546 tests passing** (664 with `--all-features`, the CI configuration), workspace builds clean.
 
 ## Quick Start
 
@@ -30,7 +30,7 @@ Written in Rust. Distributable to all Meedya apps via:
 # Build all crates
 cargo build --workspace
 
-# Run the full test suite (466 tests)
+# Run the full test suite (546 tests)
 cargo test --workspace
 
 # Build a single crate
@@ -78,7 +78,9 @@ Two coexisting foundations by design — they serve different code paths:
 - **`mp4ameta`-backed** (in `meedya-metadata`) — App Store / sandbox safe, no subprocess spawning, drives the Apple Music JSON → atom flow. TOML-driven `tags.toml` registry adds tags with zero Rust changes.
 - **`lofty`-backed** (in `meedya-metadata::tag_io` and `meedya-tags-extended`) — multi-format (MP3/M4A/FLAC/WAV/AIFF/OGG/MKV) with automatic foreign-frame pass-through (preserves Serato/Rekordbox/Traktor blobs on save).
 
-Cross-format `CommonTag` enum maps the same logical tag across iTunes atoms, Vorbis Comments, and ID3v2 frames.
+Cross-format `CommonTag` enum maps the same logical tag across iTunes atoms, Vorbis Comments, and ID3v2 frames. Since #65, `CommonTag` is `#[non_exhaustive]` (new variants are non-breaking) and covers MB Release-Group/Work IDs, ISWC, and core-info/contributor-role fields (Subtitle, Language, Lyricist, Conductor, Remixer, Arranger, Producer, Engineer, Mixer).
+
+Cross-repo **identifier-types registry** (`identifier_types.toml`, #65) — the canonical scope→slug→validation vocabulary for external/catalogue identifiers (ISRC, ISWC, ISNI, MusicBrainz IDs, EIDR, etc.), consumed via `meedya_metadata::identifier_types()`. It's DATA, not an enum — downstream repos (MeedyaManager, iHymns) hold their own mutation-tested guard against their own mirror of the artifact.
 
 ### DJ metadata (`meedya-tags-extended`)
 
@@ -110,7 +112,9 @@ Cross-format `CommonTag` enum maps the same logical tag across iTunes atoms, Vor
 
 - Provider trait + capabilities system
 - Rate limiting (`governor`-backed), credential storage, cover art helpers, fuzzy-match scoring
-- Foundation for shared MusicBrainz / TMDB / TheTVDB / Discogs / FanArt.tv clients
+- In-repo `MetadataProvider` implementations, one per external service, each behind its own `provider-<name>` Cargo feature: MusicBrainz, Spotify, Apple Music, Deezer, TMDB, TheTVDB, OMDb, Apple TV, iTunes Store, Apple Podcasts, ISRC, EIDR, ISWC
+- `lucene` module — Lucene/Solr query escaping used by the MusicBrainz-backed providers (MusicBrainz, ISRC, ISWC), hardened for MusicBrainz's Solr 9→10 search upgrade (2026-11-30)
+- MusicBrainz free-text search strips a trailing parenthetical/bracket group from title/artist (e.g. "(2011 Remastered Version)", "[Live]") before phrase-quoting, to mitigate a recall miss against MusicBrainz's canonical (unsuffixed) titles — live-service validation tracked in issue #69
 
 ### Database integration (`meedya-db`)
 

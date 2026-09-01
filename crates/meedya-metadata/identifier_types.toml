@@ -1,0 +1,253 @@
+# Copyright (c) 2026 MeedyaSuite
+# Licensed under the MIT License. See LICENSE file in the project root.
+#
+# MeedyaSuite Identifier-Types Registry (#65)
+# ============================================
+#
+# The canonical, cross-repo vocabulary of external/catalogue identifier
+# types: scope -> slug -> validation shape. This artifact is DATA, not an
+# enum — adding an identifier type is an edit here plus a one-line update
+# to the expected-slug guard in tests/identifier_registry_guard.rs (the
+# guard exists precisely so this file and its consumers cannot drift
+# silently; see that file's header).
+#
+# Consumers:
+#   - MeedyaManager / MeedyaDL (Rust) — via meedya_metadata::identifier_types()
+#   - MeedyaConverter (Swift)         — via the planned bindings; the raw
+#     artifact is exported as meedya_metadata::IDENTIFIER_TYPES_TOML for
+#     byte-level pass-through / CI diffing
+#   - iHymns (PHP)                    — MIRRORS this file and appends its own
+#     domain-only extension list (ccli, hymnary-tune, ...). Domain IDs must
+#     NOT be added here; each repo declares its own extensions and holds
+#     agreement with a mutation-tested guard, not a comment.
+#
+# Field reference: see docs/API.md § meedya-metadata → Identifier-types
+# registry. `validation` matches the CANONICAL COMPACT form, but the
+# normalisation to reach that form is PER-SCHEME, not one blanket rule:
+#   - isrc, iswc, isni, ipi, grid, upc, icpn, label-code: uppercase, strip
+#     '-', '.', spaces.
+#   - musicbrainz-* and acoustid: LOWERCASE hyphenated UUID (the regex
+#     patterns require lowercase hex + hyphens — do not uppercase or
+#     strip hyphens).
+#   - eidr: retains its `10.5240/` DOI prefix dot; strip spaces only.
+# `check` names the check-digit algorithm as advisory data; v1 ships
+# syntax validation only.
+# `status = "reserved"` = slug claimed at zero cost, no storage home yet.
+#
+# Taxonomy: standard music/media-industry IDs + the Luminate entity model
+# (Artist / Song / Recording / Musical Work / Release Group / Release /
+# Product, plus Party for people/org registries and Audiovisual-Work for
+# EIDR).
+
+[registry]
+schema_version = 1
+
+# ------------------------------------------------------------
+# Recording-scope
+# ------------------------------------------------------------
+
+[[identifier]]
+slug = "isrc"
+display_name = "ISRC"
+standard = "ISO 3901:2019"
+scope = "recording"
+status = "active"
+validation = { kind = "regex", pattern = '^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$' }
+example = "USUG12204767"
+notes = "Country/registrant prefix + 2-digit year + 5-digit designation; compact form (no hyphens)."
+
+[[identifier]]
+slug = "musicbrainz-recording"
+display_name = "MusicBrainz Recording ID"
+standard = "MusicBrainz"
+scope = "recording"
+status = "active"
+validation = { kind = "regex", pattern = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' }
+example = "b1a9c0e9-d987-4042-ae91-78d6a3267d69"
+
+[[identifier]]
+slug = "acoustid"
+display_name = "AcoustID"
+standard = "AcoustID"
+scope = "recording"
+status = "active"
+validation = { kind = "regex", pattern = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' }
+example = "eb31d1c3-950e-468b-9e36-e46fa75b1291"
+
+# ------------------------------------------------------------
+# Work-scope (musical work / composition)
+# ------------------------------------------------------------
+
+[[identifier]]
+slug = "iswc"
+display_name = "ISWC"
+standard = "ISO 15707"
+scope = "work"
+status = "active"
+validation = { kind = "regex", pattern = '^T[0-9]{10}$' }
+check = "iswc-mod10"
+example = "T0712043421"
+notes = "Canonical compact form; display form is T-DDD.DDD.DDD-C."
+
+[[identifier]]
+slug = "musicbrainz-work"
+display_name = "MusicBrainz Work ID"
+standard = "MusicBrainz"
+scope = "work"
+status = "active"
+validation = { kind = "regex", pattern = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' }
+example = "7e0e3ea0-d674-3b25-8fea-00421b7c478c"
+
+[[identifier]]
+slug = "hfa"
+display_name = "HFA Song Code"
+standard = "Harry Fox Agency"
+scope = "work"
+status = "reserved"
+validation = { kind = "regex", pattern = '^[A-Z0-9]{6}$' }
+example = "H12345"
+notes = "US mechanical-licensing song code; reserved until a storage surface exists."
+
+# ------------------------------------------------------------
+# Song-scope (Luminate Song entity: groups recordings + the work)
+# ------------------------------------------------------------
+
+[[identifier]]
+slug = "bowi"
+display_name = "BOWI"
+standard = "Luminate Body of Work ID"
+scope = "song"
+status = "active"
+validation = { kind = "free" }
+notes = "Luminate's Song-entity identifier; public format not specified, so syntax is unconstrained."
+
+# ------------------------------------------------------------
+# Release-group / release / product scope
+# ------------------------------------------------------------
+
+[[identifier]]
+slug = "musicbrainz-release-group"
+display_name = "MusicBrainz Release Group ID"
+standard = "MusicBrainz"
+scope = "release-group"
+status = "active"
+validation = { kind = "regex", pattern = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' }
+example = "f44f4f73-a714-31a1-a4b8-bfcaaf311f50"
+
+[[identifier]]
+slug = "musicbrainz-release"
+display_name = "MusicBrainz Release ID"
+standard = "MusicBrainz"
+scope = "release"
+status = "active"
+validation = { kind = "regex", pattern = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' }
+example = "1e477f68-c407-4eae-ad01-518528cedc2c"
+
+[[identifier]]
+slug = "grid"
+display_name = "GRid"
+standard = "IFPI GRid (MI3P)"
+scope = "release"
+status = "reserved"
+validation = { kind = "regex", pattern = '^A1[A-Z0-9]{5}[A-Z0-9]{10}[A-Z0-9]$' }
+check = "iso7064-mod37-36"
+example = "A12425GABC1234002M"
+notes = "Scheme element 'A1' + 5-char issuer code + 10-char release number + check char; 18 chars compact."
+
+[[identifier]]
+slug = "upc"
+display_name = "UPC / EAN barcode"
+standard = "GS1 UPC-A / EAN-13"
+scope = "product"
+status = "active"
+validation = { kind = "regex", pattern = '^[0-9]{12,13}$' }
+check = "gs1"
+example = "602445790524"
+notes = "The deployed MeedyaSuite slug for product barcodes; see 'icpn' for the DDEX umbrella term."
+
+[[identifier]]
+slug = "icpn"
+display_name = "ICPN"
+standard = "DDEX ICPN (GS1 GTIN family)"
+scope = "product"
+status = "reserved"
+validation = { kind = "regex", pattern = '^[0-9]{8,14}$' }
+check = "gs1"
+example = "0602445790524"
+notes = "Umbrella for EAN-8/UPC-12/EAN-13/GTIN-14. Cross-reference: 'upc' is the deployed narrow slug; do not store the same value under both."
+
+# ------------------------------------------------------------
+# Artist / party scope
+# ------------------------------------------------------------
+
+[[identifier]]
+slug = "musicbrainz-artist"
+display_name = "MusicBrainz Artist ID"
+standard = "MusicBrainz"
+scope = "artist"
+status = "active"
+validation = { kind = "regex", pattern = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' }
+example = "20244d07-534f-4eff-b4d4-930878889970"
+
+[[identifier]]
+slug = "isni"
+display_name = "ISNI"
+standard = "ISO 27729"
+scope = "party"
+status = "active"
+validation = { kind = "regex", pattern = '^[0-9]{15}[0-9X]$' }
+check = "iso7064-mod11-2"
+example = "0000000121464380"
+notes = "16 chars compact; final character may be 'X'. Identifies public identities of parties (people and organisations)."
+
+[[identifier]]
+slug = "ipi"
+display_name = "IPI Name Number"
+standard = "CISAC IPI"
+scope = "party"
+status = "active"
+validation = { kind = "regex", pattern = '^[0-9]{11}$' }
+example = "00014107338"
+notes = "Zero-padded 11-digit interested-party name number."
+
+[[identifier]]
+slug = "dpid"
+display_name = "DDEX Party ID"
+standard = "DDEX DPID"
+scope = "party"
+status = "reserved"
+validation = { kind = "free" }
+notes = "Observed shape 'PADPIDA' + date + serial + check char (e.g. PADPIDA2013042401U); DDEX publishes no strict grammar, so left free."
+
+[[identifier]]
+slug = "label-code"
+display_name = "Label Code (LC)"
+standard = "GVL Label Code"
+scope = "party"
+status = "reserved"
+validation = { kind = "regex", pattern = '^LC[0-9]{4,6}$' }
+example = "LC00193"
+notes = "Canonical compact form; display form is 'LC-00193'."
+
+[[identifier]]
+slug = "ipn"
+display_name = "IPN"
+standard = "SCAPR International Performer Number"
+scope = "party"
+status = "reserved"
+validation = { kind = "free" }
+notes = "Numeric performer identifier; no public fixed length."
+
+# ------------------------------------------------------------
+# Audiovisual-work scope
+# ------------------------------------------------------------
+
+[[identifier]]
+slug = "eidr"
+display_name = "EIDR"
+standard = "EIDR (DOI prefix 10.5240)"
+scope = "audiovisual-work"
+status = "active"
+validation = { kind = "regex", pattern = '^10\.5240/[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-Z]$' }
+check = "iso7064-mod37-36"
+example = "10.5240/7791-8534-2C23-9030-8610-5"
