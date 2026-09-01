@@ -18,7 +18,7 @@ have historically disagreed (248 / 466 / 653 / 664 all appear somewhere and are 
 | Fact | Value | How verified |
 |---|---|---|
 | Tests on `main` | **601 passing, 0 failing** | `cargo test --workspace --all-features --locked` |
-| Tests on `feature/work-in-progress` | **683 passing, 0 failing** | same command |
+| Tests on `feature/work-in-progress` | **555 default-feature / 688 `--all-features`, 0 failing** | same command |
 | `cargo fmt --all -- --check` | clean on both | run directly |
 | `cargo clippy -p meedya-providers --all-targets --all-features` | clean | run directly |
 | Workspace crates | 9 | `ls crates` |
@@ -171,19 +171,42 @@ priority for tag search), SEARCH-677 (disambiguation for event places / work rec
   that Solr-10-shaped noise (`target-type`, string `quality`, `release-group`, `genres`)
   parses identically.
 
-### Deliberately unresolved: ISWC query form
+### RESOLVED: ISWC query form (was "deliberately unresolved")
 
-ISRC and ISWC are handled **differently on purpose**:
+Settled by **live probing** `musicbrainz.org/ws/2/` on 2026-09-01, since MusicBrainz
+documents the indexed form for neither identifier:
 
-- **ISRC** is normalised (separators stripped, uppercased) — MusicBrainz documents and
-  indexes ISRCs unpunctuated (`isrc:GBAHT1600302`).
-- **ISWC** keeps its punctuation, phrase-quoted. MusicBrainz displays ISWCs in the
-  punctuated ISO form (`T-034.524.680-1`) and **does not document** which form the `iswc`
-  search field indexes. Stripping separators would be an unverified behaviour change that
-  could silently reduce recall.
+| Field | Query form | Live result |
+|---|---|---|
+| ISRC | `isrc:GBAYE0601498` (compact) | **matches** |
+| ISRC | `isrc:GB-AYE-06-01498` (hyphenated) | 0 results |
+| ISWC | `iswc:"T-304.031.869-8"` (dotted display form) | **matches** |
+| ISWC | `iswc:T3040318698` (compact) | 0 results |
+| ISWC | `iswc:"T-304031869-8"` (hyphen-only) | **parse error** |
 
-This is recorded in-code and needs a **live-service check** to settle. Tracked alongside
-the post-cutover validation in issue #69.
+This caught a real bug: **both** prior branches were wrong about ISWC, and the
+consolidation had inherited the audit branch's hyphen-only form — a parse error in
+production. `format_iswc_dotted` now reformats to the stored display form; all three input
+forms converge on the working query, verified end-to-end live.
+
+ISRC and ISWC are therefore **deliberately asymmetric**, because MusicBrainz indexes them
+asymmetrically. Evidence is recorded in `docs/API.md`, `.claude/HISTORY.md`, and as a
+comment on issue #69 with the post-cutover re-check list.
+
+### Solr-10 ticket audit — only one ticket affects us
+
+**SEARCH-764** (Solr 9→10) affects us, and only indirectly: the risk is our own query
+construction under a stricter parser, not any response change. Verified **not** applicable:
+SEARCH-444, -642, -666, -752, -751, -753, -680, -681, -452, -646, -677 — we never call the
+area/url/cdstub/tag/annotation endpoints, never read relationship `target` or release
+`quality`, and no response struct uses `deny_unknown_fields`.
+
+Solr 10's upgrade notes document no query-parser changes visible to API clients, so **one
+conservative code path is valid on both sides of the cutover**. No runtime switching is
+needed — or possible: there is no version-negotiation header, parameter, or response field.
+
+> **Fetch note**: `tickets.metabrainz.org` HTML is behind Anubis anti-bot protection. The
+> JIRA REST API works: `https://tickets.metabrainz.org/rest/api/2/issue/SEARCH-<n>`.
 
 ---
 
@@ -250,12 +273,13 @@ interpolation at `musicbrainz_service.rs:124`, `:533`, `:578`. It *does* already
 | Branch audit + consolidation | ✅ Complete — merged, pushed, old branches deleted, archive tags pushed |
 | `feat/60` accounted for | ✅ Complete — gitignore commit |
 | MusicBrainz Solr-10 hardening (search path) | ✅ Landed via consolidation |
-| MusicBrainz — remaining work | ⏳ Deep analysis running; see §4 and §5 |
-| GitHub issue sweep (open + closed, verified vs code) | ⏳ Analysis running |
-| Documentation sweep | ⏳ Analysis running |
-| New-work proposals | ⏳ Analysis running |
-| Claude memory / CONTEXT / MEMORY updates | ⏳ Pending |
-| MeedyaDL + core migration issues (both repos) | ⏳ Pending |
+| MusicBrainz Solr-10 audit | ✅ Complete — only SEARCH-764 applies; ISWC form fixed |
+| MSRV declared (`rust-version = "1.82"`) | ✅ Complete — workspace + all 9 crates |
+| GitHub issue sweep (62 issues verified vs code) | ✅ Complete — 7 closed, 13 updated, 12 relabelled |
+| Documentation sweep | ✅ Complete — README, CLAUDE.md, CONTEXT.md, API.md, HISTORY.md |
+| MeedyaDL + core migration issues (both repos) | ✅ Complete — core #75, MeedyaDL #1119 |
+| New-work proposals | ⏳ Analysis running — will be presented for your decision |
+| Claude MEMORY.md update | ⏳ Pending |
 | OpenAPI / Swagger | ⛔ N/A by owner decision — no web surface |
 
 ---
@@ -263,6 +287,10 @@ interpolation at `musicbrainz_service.rs:124`, `:533`, `:578`. It *does* already
 ## 8. Commits on `feature/work-in-progress` (beyond `main`)
 
 ```
+b201de6 docs: sync all documentation to measured reality after consolidation
+05bc5b4 fix(meedya-providers): query ISWC in MusicBrainz's dotted display form
+7e3692c docs(api): document unified lucene API + measured test counts
+795ad77 docs(claude): add HANDOFF.md session-resumption document
 c84a003 chore(git): ignore .claude/settings.local.json
 5dc94ce merge: consolidate fix/musicbrainz-lucene-hardening (semantic union)
 d15102c merge: consolidate claude/branch-audit-musicbrainz-migration into work-in-progress
@@ -285,7 +313,7 @@ fd2a7c5 feat(metadata): identifier-types registry + CommonTag expansion (#65)
 cd "/Users/lance.manasse/Projects/Coding & Development/MWBM Partners Ltd/GitHub/MeedyaSuite/MeedyaSuite-core"
 export PATH="$HOME/.cargo/bin:$PATH"
 git checkout feature/work-in-progress && git pull
-cargo test --workspace --all-features --locked   # expect 683 passing, 0 failing
+cargo test --workspace --all-features --locked   # expect 688 passing, 0 failing
 ```
 
 Then read §7 for what is outstanding.

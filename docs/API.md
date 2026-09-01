@@ -41,10 +41,10 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-db` | `client`, `export`, `models` | 3 | Foundation stable; specific endpoints may evolve |
 | `meedya-fingerprint` | `acoustid`, `replaygain` | 6 | Stable |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
-| `meedya-lyrics` | `embed`, `lrc`, `lyrics`, `provider`, `sidecar` | 128 | Stable (plain + synced via SYLT for ID3v2) |
+| `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 128 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
 | `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `writer` | 112 | Stable (two co-existing surfaces + identifier-types registry) |
 | `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 49 | Stable foundation; specific provider implementations may evolve |
-| `meedya-tags-extended` | `io`, `mik`, `model`, `standard` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
+| `meedya-tags-extended` | `ai_content`, `conflict_policy`, `genre_hierarchy`, `io`, `mik`, `model`, `play_history`, `quick_tag`, `sidecar_json`, `standard`, `stems` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
 **Total: 555 tests** with default features, **688** with `--all-features` (the CI configuration). All passing, 0 failing.
 
@@ -323,6 +323,32 @@ pub fn write(lyrics: &Lyrics) -> String;
 ```
 
 ---
+
+#### Lyricsfile (canonical YAML lyrics model) + TTML
+
+The `.lyrics` YAML format (#34) is the canonical in-memory lyrics model, with TTML and LRC
+import/export around it. Missing from earlier revisions of this file despite being
+root-re-exported.
+
+```rust
+pub struct Lyricsfile;
+pub struct LyricsfileMetadata;
+pub struct LyricsfileLine;
+pub struct LyricsfileWord;
+pub struct LyricsfileSyllable;      // syllable-level timing (#60)
+pub const LYRICSFILE_VERSION;
+pub const INSTRUMENTAL_MARKER;
+
+pub enum TtmlGranularity;            // Line | Word | Syllable
+pub fn classify_ttml_granularity(..) -> TtmlGranularity;
+```
+
+Modules: `lyricsfile` (model + YAML I/O), `lyricsfile_ttml` (Apple Music TTML import,
+including `lyricOffset` extraction — see #61), `lyricsfile_lrc` (LRC bridge),
+`lyricsfile_export` (multi-format export), `lyricsfile_ttml_classify` (granularity
+classifier, consumed by MeedyaDL's enrichment Step 1b), `error` (`Error`, `Result`).
+
+See `docs/APPLE_MUSIC_TTML_SPEC.md` where present for the TTML dialect notes.
 
 ### `meedya-metadata`
 
@@ -631,11 +657,28 @@ Lofty preserves unrecognised frames automatically. Open → edit standard fields
 pub struct ExtendedTags {
     pub bpm: Option<f64>,
     pub key: Option<MusicalKey>,
-    pub energy: Option<u8>,
+    /// Source-scale-aware. NOT `Option<u8>` — see EnergyValue below.
+    pub energy: Option<EnergyValue>,
     pub cue_points: Vec<CuePoint>,
     pub loops: Vec<LoopPoint>,
     pub beat_grid: Option<BeatGrid>,
     pub comment: Option<String>,
+    pub ai_content: AiContentFlags,
+    pub stems: Option<StemMetadata>,
+    pub play_history: PlayHistory,
+}
+
+/// Energy carries its source scale so consumers can canonicalise correctly.
+/// `to_canonical()` returns `Option<u8>` on a 1-10 scale, and `None` for
+/// `Unknown` — we do not guess about scale.
+pub enum EnergyValue {
+    Mik(u8),          // canonical 1-10
+    Serato(f32),      // float, typically 1.0-10.0
+    Rekordbox(u8),    // 1-10
+    Beatport(u8),     // 1-10
+    Spotify(f32),     // continuous 0.0-1.0
+    Normalised(u8),   // already canonical 1-10
+    Unknown(f32),     // scale unknown; to_canonical() -> None
 }
 
 pub enum Source {
@@ -727,6 +770,64 @@ Source fields (Artist/Title/Comment/Grouping/Label) are **read-only**; the origi
 ---
 
 ## Common workflows
+
+#### Modules not covered above
+
+These are fully implemented and root-re-exported, and were missing from earlier revisions of
+this file. Signatures below are the crate-root re-exports.
+
+**`ai_content`** — AI-disclosure flags (#43).
+```rust
+pub struct AiContentFlags { /* is_ai, ai_used, ai_enhanced, detail */ }
+pub fn read_ai_content(..); pub fn write_ai_content(..); pub fn clear_ai_content(..);
+pub fn parse_bool_truthy(value: &str) -> Option<bool>;
+```
+
+**`stems`** — stem-collection metadata (#42).
+```rust
+pub struct StemMetadata; pub enum StemRole; pub enum StemSource;
+pub fn read_stems(..); pub fn write_stems(..); pub fn clear_stems(..);
+```
+
+**`play_history`** — play/skip counts with timestamps (#56).
+```rust
+pub struct PlayHistory;
+pub fn read_play_history(..); pub fn write_play_history(..); pub fn clear_play_history(..);
+pub fn record_play(..); pub fn record_skip(..);
+```
+
+**`genre_hierarchy`** — Beatport-style genre → subgenre → style (#46). Writes the leaf to the
+standard `Genre` field and the structured levels to `MeedyaMeta` (standards-first).
+```rust
+pub struct GenreHierarchy;
+pub fn read_genre_hierarchy(..); pub fn write_genre_hierarchy(..); pub fn clear_genre_hierarchy(..);
+```
+
+**`quick_tag`** — TOML-driven mood/energy/style buckets (#48).
+```rust
+pub struct QuickTagSchema; pub struct QuickTagCategory; pub struct QuickTagValues;
+pub enum QuickTagValidationError;
+pub fn read_quick_tags(..); pub fn write_quick_tags(..); pub fn clear_quick_tags(..);
+pub fn validate_quick_tags(..);   // re-export of quick_tag::validate
+```
+
+**`conflict_policy`** — declarative tag-conflict resolution with an audit trail (#54). The
+caller builds `Vec<Candidate<T>>` from source-specific readers and calls `resolve_conflict`;
+`Resolution<T>` carries the winner **and** the losers.
+```rust
+pub struct Candidate<T>; pub struct ConflictPolicy; pub enum Tiebreak;
+pub trait ResolvableField; pub enum ResolutionError;
+pub fn resolve_conflict(..);      // re-export of conflict_policy::resolve
+```
+
+**`sidecar_json`** — `.meedya.json` sidecar writer (#57). Schema version is strict: the
+reader rejects a newer `SCHEMA_VERSION` rather than silently misreading it.
+```rust
+pub struct MeedyaSidecar; pub enum SidecarFormat; pub enum SidecarError;
+pub fn read_sidecar(..); pub fn write_sidecar(..); pub fn write_sidecar_with_format(..);
+pub fn sidecar_path_for(..);
+pub const SIDECAR_SCHEMA_VERSION; pub const SIDECAR_SUFFIX;
+```
 
 ### Apple Music download + tag (MeedyaDL flow)
 
