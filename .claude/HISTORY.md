@@ -495,3 +495,26 @@ nothing unique); an owner decision on fast-forwarding or deleting them is still 
 Issue #75 (core absorbs the shared MusicBrainz lookup mechanism) and MeedyaDL#1119 (that
 app delegates to core) — sequenced so core grows the capability first, before the
 2026-11-30 cutover forces relationship-parsing changes in two repos instead of one.
+
+### Addendum — clippy cleared and made enforcing
+
+Four pre-existing clippy warnings were fixed rather than suppressed, and CI's clippy step
+was promoted from `continue-on-error: true` to `-D warnings` (the step's own comment had
+said to do this "once those are cleaned up").
+
+The interesting one was `lyricsfile_ttml_classify.rs`'s "identical blocks":
+`explicit_line_only`, set from `itunes:timing="None"`, could never affect the result because
+both of its branches returned `Line`. It was **removed rather than made load-bearing** —
+making it work would mean honouring the header over the structure, and a document carrying
+real `<span begin>` children is word-timed whatever its header claims. That is symmetrical
+with the already-documented reason the `"Word"` value isn't trusted (Apple emits it on both
+word- and syllable-level files). Both directions are now documented at the read site and
+pinned by `explicit_timing_none_with_timed_spans_is_word`.
+
+The other three (`mik.rs`): an import used only under `#[cfg(test)]`, a dead
+`split_at_last_separator` left over from a pre-token string-splitting approach — verified
+*not* a missed call site, since suffix detection consumes tokens from the end rather than
+splitting — and a post-`Default` field assignment.
+
+Final measured state: **556** default-feature / **689** `--all-features`, 0 failing; fmt
+clean; clippy clean and enforcing. Closes #93.

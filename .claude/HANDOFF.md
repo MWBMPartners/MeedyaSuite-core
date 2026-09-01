@@ -280,6 +280,7 @@ interpolation at `musicbrainz_service.rs:124`, `:533`, `:578`. It *does* already
 | Documentation sweep | ✅ Complete — README, CLAUDE.md, CONTEXT.md, API.md, HISTORY.md |
 | MeedyaDL + core migration issues (both repos) | ✅ Complete — core #75, MeedyaDL #1119 |
 | New-work proposals | ✅ Complete — 18 proposals, issues #78–#94 opened |
+| Clippy clean + enforcing in CI | ✅ Complete — 4 warnings fixed (not suppressed), #93 closed |
 | Claude MEMORY.md / CLAUDE.md / CONTEXT.md / HISTORY.md | ✅ Complete |
 | OpenAPI / Swagger | ⛔ N/A by owner decision — no web surface |
 
@@ -357,6 +358,7 @@ Ranked by value-for-effort. Nothing here has been implemented — these are prop
 
 1. **#78** — `d[..4.min(d.len())]` year extraction panics on multi-byte UTF-8 dates, in
    **11 provider parsers**. Same bug class as the `validate_isrc` panic already fixed. `S`
+   *(Note: #93 is already done — clippy is clean and enforcing.)*
 2. **#79** — insert-then-`unwrap()` panics when lofty silently refuses an unsupported tag
    type. Tagging a freshly-downloaded untagged M4A is a first-class MeedyaSuite flow. `S`
 3. **#80** — API keys leak into error text: `reqwest`'s `Display` appends the full URL
