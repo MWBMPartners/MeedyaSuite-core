@@ -18,7 +18,7 @@ have historically disagreed (248 / 466 / 653 / 664 all appear somewhere and are 
 | Fact | Value | How verified |
 |---|---|---|
 | Tests on `main` | **601 passing, 0 failing** | `cargo test --workspace --all-features --locked` |
-| Tests on `feature/work-in-progress` | **556 default-feature / 689 `--all-features`, 0 failing** | same command |
+| Tests on `feature/work-in-progress` | **573 default-feature / 718 `--all-features`, 0 failing** | same command |
 | `cargo fmt --all -- --check` | clean on both | run directly |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | **clean** (was 4 warnings; fixed, and CI now enforces) | run directly |
 | `cargo build --workspace --all-features --locked` | 0 errors | run directly |
@@ -315,7 +315,7 @@ fd2a7c5 feat(metadata): identifier-types registry + CommonTag expansion (#65)
 cd "/Users/lance.manasse/Projects/Coding & Development/MWBM Partners Ltd/GitHub/MeedyaSuite/MeedyaSuite-core"
 export PATH="$HOME/.cargo/bin:$PATH"
 git checkout feature/work-in-progress && git pull
-cargo test --workspace --all-features --locked   # expect 689 passing, 0 failing
+cargo test --workspace --all-features --locked   # expect 718 passing, 0 failing
 ```
 
 Then read §7 for what is outstanding.
@@ -352,63 +352,58 @@ as genuinely done.
 
 ---
 
-## 11. IN PROGRESS — five fixes (#78, #79, #80, #81, #94)
+## 11. COMPLETE — five fixes (#78, #79, #80, #81, #94)
 
-Owner selected these on 2026-09-01. **One commit per issue**, all on
-`feature/work-in-progress`. Status is updated in this table as each lands.
+Owner selected these on 2026-09-01; all five landed as separate commits on
+`feature/work-in-progress` and all five issues are closed.
 
-| Issue | Subject | Status | Commit |
-|---|---|---|---|
-| #78 | year byte-slice panic in 11 provider parsers | ✅ done, closed | `eb70ddd` |
-| #79 | insert-then-unwrap panic on unsupported tag type | ✅ done, closed | `bce3c6c` |
-| #81 | ReplayGain subprocess has no timeout | ✅ done, closed | `e3a1026` |
-| #80 | API keys leak via reqwest error Display | ⏳ in flight | — |
-| #94 | rate limiter wired to nothing | ⏳ in flight | — |
+| Issue | Subject | Commit |
+|---|---|---|
+| #78 | year byte-slice panic in 11 provider parsers | `eb70ddd` |
+| #79 | insert-then-unwrap panic on unsupported tag type | `bce3c6c` |
+| #81 | ReplayGain subprocess unbounded + orphaned child | `e3a1026` |
+| #80 | API keys leaked via reqwest error `Display` | `125011f` |
+| #94 | rate limiter wired to nothing | `1639e7a` |
 
-Measured after #78/#79/#81: **562** default-features / **704** `--all-features`, 0 failing.
-fmt clean, clippy clean under the enforcing CI invocation.
+Measured after all five: **573** default-features / **718** `--all-features`, 0 failing.
+fmt clean; clippy clean under the enforcing CI invocation.
 
 ### Corrections to the issue premises found during implementation
 
-These matter because the issue bodies are the spec, and three of them were wrong:
+Three of the five issue bodies were wrong in ways that changed the fix. Recorded here
+because the issue body is the spec:
 
 - **#79** — blast radius is wider and non-uniform. Untagged MP4/Ogg/WavPack **panic**;
   untagged FLAC/APE/MPC do **not** panic but write into a read-only Id3v2 tag and fail later
-  at save. Also: **no new error variant was needed**, contrary to the issue — using
+  at save. And **no new error variant was needed**, contrary to the issue — using
   `primary_tag_type()` removes the fallible path entirely.
 - **#81** — the issue cites `meedya-codecs`' ffprobe/mediainfo as the correct counter-pattern.
-  **They are also broken**: `tokio::time::timeout` around `Command::output()` does *not* kill
-  the child without `kill_on_drop`, so they leaked a runaway process on every timeout. Fixed
-  there too.
-- **#80** — only **3** capture points are actually vulnerable (tmdb, omdb, acoustid — all
-  query-param secrets). spotify/thetvdb/eidr use header auth and are *not* exposed by
-  reqwest's Display; meedya-db uses a header; LRCLIB has no secret.
-- **#78** — no corrections; all 11 sites verified exactly. A workspace-wide sweep found
-  **zero** further instances of the byte-slice bug class.
+  **They were also broken**: `tokio::time::timeout` around `Command::output()` does *not*
+  kill the child without `kill_on_drop`, so both leaked a runaway process on every timeout.
+  Fixed there too.
+- **#80** — only **3** capture points were actually vulnerable (tmdb, omdb, acoustid — all
+  query-param secrets). spotify/thetvdb/eidr use header auth and were never exposed;
+  meedya-db uses a header; LRCLIB has no secret.
+- **#78** — no corrections. A workspace-wide sweep found **zero** further instances of the
+  byte-slice bug class. Near-miss worth remembering: `meedya-metadata/src/writer.rs:142` is
+  safe *only* because it uses `to_ascii_lowercase` (byte-length-preserving); `to_lowercase`
+  there would reintroduce the bug.
 
-### Facts verified directly (do not re-derive)
+### Two non-obvious design points in #94 — do not "simplify" these away
 
-- **#78**: exactly **11** sites, all `crates/meedya-providers/src/providers/*.rs`, all the
-  expression `d[..4.min(d.len())].parse::<u32>()`. `4.min(len)` clamps *length* but not
-  char boundaries, so a date like `"20€25"` (byte 4 lands inside the 3-byte `€`) panics.
-- **#79**: lofty 0.22.4 `insert_tag` returns `None` and **does nothing** when
-  `!supports_tag_type` (`file/tagged_file.rs:388-399`). `primary_tag_type()` returns
-  `TagType` — **not** `Option` — and derives from the *file type*, so it is correct for
-  untagged files (`file/file_type.rs:51-64`: `Mp4 => Mp4Ilst`,
-  `Flac|Opus|Vorbis|Speex => VorbisComments`, `Aac|Aiff|Mpeg|Wav => Id3v2`). The fix is
-  therefore simply to use `primary_tag_type()` instead of `.unwrap_or(TagType::Id3v2)`.
-- **#80**: `reqwest::Error::without_url()` exists (`error.rs:88`); `Display` writes
-  `" for url ({url})"` at `error.rs:268`. **Constraint**: `meedya-fingerprint` is a leaf
-  crate and *cannot* import `meedya-providers`, so a single shared helper has no natural
-  home — see the design decision recorded with the implementation.
-- **#94**: `MetadataProvider::search` takes `&self`, so any limiter state must be behind
-  `Arc`. A limiter that is per-provider-instance is useless for batch work unless it can be
-  **shared across instances**.
+1. **Limiters are keyed by HOST BUDGET, not provider name.** `musicbrainz.org` is shared by
+   musicbrainz+isrc+iswc; `itunes.apple.com` by apple_music+apple_tv+itunes_store+
+   apple_podcasts. Per-provider-name limiters would give the four Apple providers 4× Apple's
+   per-IP allowance while looking correct. Pinned by tests.
+2. **MusicBrainz uses `per_second(1)`, not `per_minute(60)`.** governor's per-minute quota
+   permits an immediate 60-request burst — exactly what MusicBrainz forbids, and it answers
+   bursts with 503s. `per_minute_burst_capacity_equals_rpm` documents the trap.
 
-### Ordering constraint
+Defaults live in a process-global `OnceLock` table so limiters are shared **across provider
+instances** — a per-instance limiter is useless when batch apps construct providers per task.
 
-#78, #80 and #94 all touch `crates/meedya-providers/src/providers/*.rs`. They are done as
-separate commits but planned together so the same file is not edited three ways.
+Follow-up filed: **#95** — governor's default clock breaks `wasm32`, which now matters
+because the limiter is load-bearing. Blocks #29.
 
 ---
 

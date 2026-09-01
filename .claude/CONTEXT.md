@@ -20,20 +20,20 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | Crate | Purpose | Status | Tests |
 |---|---|---|---|
 | [meedya-codecs](../crates/meedya-codecs/) | Audio/video/subtitle codecs, container formats, HDR, spatial audio, classification, FFprobe + MediaInfo integration | **Implemented** | 47 |
-| [meedya-metadata](../crates/meedya-metadata/) | Two coexisting tag I/O surfaces: `lofty`-backed (multi-format) and `mp4ameta`-backed (sandbox-safe). Tag registry, JSON path extraction, codec ID tags, playback bounds, cross-repo `identifier_types` registry (#65). | **Implemented** | 112 |
+| [meedya-metadata](../crates/meedya-metadata/) | Two coexisting tag I/O surfaces: `lofty`-backed (multi-format) and `mp4ameta`-backed (sandbox-safe). Tag registry, JSON path extraction, codec ID tags, playback bounds, cross-repo `identifier_types` registry (#65). | **Implemented** | 114 |
 | [meedya-tags-extended](../crates/meedya-tags-extended/) | Multi-format DJ metadata (lofty). `ExtendedTags`/`MusicalKey`/`CuePoint`/`LoopPoint`/`BeatGrid`. Standard BPM+key+comment + Mixed In Key reader (`mik`). Other proprietary readers pending. | **Implemented (foundation + MIK)** | 180 |
 | [meedya-library-import](../crates/meedya-library-import/) | External library ingestion: iTunes XML, CUE sheets. Emits normalized `LibraryEntry` records. | **Implemented** | 30 |
-| [meedya-lyrics](../crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O, plain-text and SYLT tag-embed. | **Implemented** | 128 |
-| [meedya-providers](../crates/meedya-providers/) | Provider framework: traits, capabilities, rate limiting, credentials, cover art, fuzzy match scoring, Lucene/Solr query escaping (`lucene`). In-repo `MetadataProvider` impls (feature-gated): MusicBrainz, Spotify, Apple Music, Deezer, TMDB, TheTVDB, OMDb, Apple TV, iTunes Store, Apple Podcasts, ISRC, EIDR, ISWC. | **Implemented** | 49 (177 all-features) |
-| [meedya-fingerprint](../crates/meedya-fingerprint/) | AcoustID client + ReplayGain EBU R128 analyser. Pure-Rust Chromaprint (no fpcalc). | **Implemented** | 6 |
+| [meedya-lyrics](../crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O, plain-text and SYLT tag-embed. | **Implemented** | 130 |
+| [meedya-providers](../crates/meedya-providers/) | Provider framework: traits, capabilities, rate limiting, credentials, cover art, fuzzy match scoring, Lucene/Solr query escaping (`lucene`). In-repo `MetadataProvider` impls (feature-gated): MusicBrainz, Spotify, Apple Music, Deezer, TMDB, TheTVDB, OMDb, Apple TV, iTunes Store, Apple Podcasts, ISRC, EIDR, ISWC. | **Implemented** | 59 (199 all-features) |
+| [meedya-fingerprint](../crates/meedya-fingerprint/) | AcoustID client + ReplayGain EBU R128 analyser (bounded FFmpeg subprocess). Pure-Rust Chromaprint (no fpcalc). | **Implemented** | 15 |
 | [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 3 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 556 tests with default features, 689 with `--all-features`** (the CI configuration) on `feature/work-in-progress`. All passing, 0 failing. `main` measures **601** with `--all-features`.
+**Total: 573 tests with default features, 718 with `--all-features`** (the CI configuration) on `feature/work-in-progress`. All passing, 0 failing. `main` measures **601** with `--all-features`.
 
 > **Measured, not carried forward.** From `cargo test --workspace [--all-features]` run on 2026-09-01. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
 
-Per-crate, `--all-features`: `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 3 · `meedya-fingerprint` 11 · `meedya-library-import` 30 · `meedya-lyrics` 129 · `meedya-metadata` 112 · `meedya-providers` 177 · `meedya-tags-extended` 180. `meedya-providers` measures 49 with default features (provider impls are feature-gated).
+Per-crate, `--all-features`: `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 3 · `meedya-fingerprint` 15 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 114 · `meedya-providers` 199 · `meedya-tags-extended` 180. `meedya-providers` measures 59 with default features (provider impls are feature-gated).
 
 > **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 
@@ -122,8 +122,8 @@ Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `p
 
 ```bash
 cargo build --workspace          # all 9 crates
-cargo test  --workspace          # 556 tests
-cargo test  --workspace --all-features   # 689 tests (the CI configuration)
+cargo test  --workspace          # 573 tests
+cargo test  --workspace --all-features   # 718 tests (the CI configuration)
 cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```
