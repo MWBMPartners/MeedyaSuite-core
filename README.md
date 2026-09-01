@@ -17,12 +17,12 @@ Written in Rust. Distributable to all Meedya apps via:
 | [`meedya-tags-extended`](crates/meedya-tags-extended) | Multi-format tag I/O foundation with DJ metadata support. `ExtendedTags` model, `MusicalKey` (Camelot/Open Key/traditional), `CuePoint`/`LoopPoint`/`BeatGrid`, standard BPM+key+comment read/write, **Mixed In Key reader** (`mik` module). Other proprietary readers (Serato/Rekordbox/Traktor/VDJ) pending fixture-based sessions. | Implemented | 180 |
 | [`meedya-library-import`](crates/meedya-library-import) | Ingest playback bounds + metadata from external library DBs. `itunes_xml` parses Music.app exports; `cuesheet` is a full CUE parser at CD-frame precision. | Implemented | 30 |
 | [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar writes, plain-text + synchronised ID3v2 SYLT tag-embed. | Implemented | 128 |
-| [`meedya-providers`](crates/meedya-providers) | Metadata provider framework: traits, capabilities, registry, rate limiting, cover art helpers, match scoring. | Implemented | 28 |
+| [`meedya-providers`](crates/meedya-providers) | Metadata provider framework: traits, capabilities, registry, rate limiting, cover art helpers, match scoring, Lucene/Solr query escaping (`lucene`). | Implemented | 39 |
 | [`meedya-fingerprint`](crates/meedya-fingerprint) | AcoustID fingerprinting + ReplayGain/EBU R128 loudness analysis. | Implemented | 6 |
 | [`meedya-db`](crates/meedya-db) | MeedyaDB API client, shared media models (Track/Album/Artist), database export trait. | Implemented | 3 |
 | [`meedya-core`](crates/meedya-core) | Unified facade crate re-exporting the implemented crates behind feature flags. | Implemented | — |
 
-**Total: 534 tests passing** (624 with `--all-features`, the CI configuration), workspace builds clean.
+**Total: 546 tests passing** (653 with `--all-features`, the CI configuration), workspace builds clean.
 
 ## Quick Start
 
@@ -30,7 +30,7 @@ Written in Rust. Distributable to all Meedya apps via:
 # Build all crates
 cargo build --workspace
 
-# Run the full test suite (534 tests)
+# Run the full test suite (546 tests)
 cargo test --workspace
 
 # Build a single crate
@@ -112,7 +112,8 @@ Cross-repo **identifier-types registry** (`identifier_types.toml`, #65) — the 
 
 - Provider trait + capabilities system
 - Rate limiting (`governor`-backed), credential storage, cover art helpers, fuzzy-match scoring
-- Foundation for shared MusicBrainz / TMDB / TheTVDB / Discogs / FanArt.tv clients
+- In-repo `MetadataProvider` implementations, one per external service, each behind its own `provider-<name>` Cargo feature: MusicBrainz, Spotify, Apple Music, Deezer, TMDB, TheTVDB, OMDb, Apple TV, iTunes Store, Apple Podcasts, ISRC, EIDR, ISWC
+- `lucene` module — Lucene/Solr query escaping used by the MusicBrainz-backed providers (MusicBrainz, ISRC, ISWC), hardened for MusicBrainz's Solr 9→10 search upgrade (2026-11-30)
 
 ### Database integration (`meedya-db`)
 

@@ -6,7 +6,7 @@
 >
 > **This is not a Swagger/OpenAPI spec.** `MeedyaSuite-core` is a Rust library workspace, not a web service. There are no HTTP endpoints. If you need an HTTP-shaped contract, build one in your downstream app on top of these crates.
 >
-> **Last refreshed**: 2026-09-01 (post issue #65 completion pass: GRid/ICPN reserved, per-scheme normalisation guidance, `write_tags` signature fix, AcoustID read-back). See the [maintenance section](#maintenance) for how this stays in sync with the code.
+> **Last refreshed**: 2026-09-01 (post issue #65 completion pass: GRid/ICPN reserved, per-scheme normalisation guidance, `write_tags` signature fix, AcoustID read-back; same-day, post MusicBrainz Solr 9→10 search-hardening pass — new `lucene` escaping module, `MusicBrainzProvider::build_lucene_query`, ISRC/ISWC query normalisation, forward-compat parse fixtures). See the [maintenance section](#maintenance) for how this stays in sync with the code.
 
 ---
 
@@ -43,10 +43,10 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
 | `meedya-lyrics` | `embed`, `lrc`, `lyrics`, `provider`, `sidecar` | 128 | Stable (plain + synced via SYLT for ID3v2) |
 | `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `writer` | 112 | Stable (two co-existing surfaces + identifier-types registry) |
-| `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 28 | Stable foundation; specific provider implementations may evolve |
+| `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 39 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `io`, `mik`, `model`, `standard` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 534 tests** (624 with --all-features, the CI configuration). All passing (post #65 identifier-types registry batch — 511 → 533 measured; the +4 over the batch's 529 are tag-I/O save/reload round-trip tests added with the #65 silent-data-loss fix — plus +1 from the 2026-09-01 #65 completion pass' AcoustID read-back regression test, 533 → 534). Previous totals in this file were stale: it long read 466, but the measured pre-#65 count was actually 511 — the count-drift itself is tracked as a follow-up (§9 of the #65 build spec, "for consideration").
+**Total: 546 tests** (653 with --all-features, the CI configuration). All passing (post #65 identifier-types registry batch — 511 → 533 measured; the +4 over the batch's 529 are tag-I/O save/reload round-trip tests added with the #65 silent-data-loss fix — plus +1 from the 2026-09-01 #65 completion pass' AcoustID read-back regression test, 533 → 534; plus +12 default-feature / +29 --all-features from the same-day MusicBrainz Solr-10 search-hardening pass, 534 → 546 / 624 → 653 — the new always-compiled `lucene` escaping module accounts for the default-feature delta (11 unit tests + 1 doctest), and the `--all-features` delta additionally reflects `build_lucene_query`/forward-compat-fixture tests added to the feature-gated `provider-musicbrainz`, `provider-isrc`, and `provider-iswc` modules). Previous totals in this file were stale: it long read 466, but the measured pre-#65 count was actually 511 — the count-drift itself is tracked as a follow-up (§9 of the #65 build spec, "for consideration").
 
 ---
 
@@ -490,11 +490,26 @@ Shared metadata provider framework — traits, capabilities, registry, rate limi
 pub use cover_art::CoverArtSize;
 pub use credentials::{CredentialSource, CredentialStore, ResolvedCredential};
 pub use error::CredentialError;
+pub use lucene::{escape_lucene, quote_phrase};
 pub use match_scoring::{MatchScorer, ScoringWeights};
 pub use rate_limiter::{ProviderRateLimiter, RateLimiterRegistry};
 pub use traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 pub use types::{CoverArtInfo, MediaType, ProviderResult, SearchQuery};
 ```
+
+#### `lucene`
+
+Lucene/Solr query escaping for MusicBrainz search — always compiled (pure `std`, no feature gate, no dependencies). Every `providers::musicbrainz` / `providers::isrc` / `providers::iswc` query built from user-supplied text goes through this module rather than interpolating raw strings into the Lucene query.
+
+```rust
+pub fn escape_lucene(value: &str) -> String;
+pub fn quote_phrase(value: &str) -> String;
+```
+
+- **`escape_lucene`** — backslash-escapes every Lucene special character (`+ - ! ( ) { } [ ] ^ " ~ * ? : \ /` and the boolean operators `&`/`|`, so `&&`/`||` become `\&\&`/`\|\|`). Does not handle whitespace or field-scoping.
+- **`quote_phrase`** — the quoting policy providers actually use for free-text field values (`title`, `artist`, etc.): escapes embedded `\` and `"` (backslash first, to avoid double-escaping), then wraps the result in double quotes. Other Lucene special characters are left as-is inside the phrase — Lucene does not interpret them specially within quotes. The field qualifier stays outside the quoted value, e.g. `format!("recording:{}", quote_phrase(title))`.
+
+`MusicBrainzProvider::build_lucene_query` (private) is the reference consumer: it normalises and validates ISRC values (`isrc:<12-char-code>`, no quoting needed — normalisation strips everything that isn't alphanumeric) and, for free-text search, quotes title/artist as `recording:"..." AND artistname:"..."`.
 
 #### `MetadataProvider` trait
 
@@ -506,7 +521,9 @@ pub trait MetadataProvider {
 }
 ```
 
-Downstream apps implement this for each external service (MusicBrainz, TMDB, TheTVDB, Discogs, FanArt.tv, etc.).
+Implemented in-repo, one file per external service, each gated behind its own `provider-<name>` Cargo feature (`crates/meedya-providers/src/providers/`): `musicbrainz`, `spotify`, `apple_music`, `deezer`, `tmdb`, `thetvdb`, `omdb`, `apple_tv`, `itunes_store`, `apple_podcasts`, `isrc`, `eidr`, `iswc`. These are not stubs for downstream apps to fill in — apps opt into the ones they need via Cargo features and get a working `MetadataProvider` impl; a downstream app would only implement this trait itself for a service not already covered here.
+
+**MusicBrainz Solr 9→10 upgrade (2026-11-30)**: `musicbrainz`/`isrc`/`iswc` all default to `https://musicbrainz.org` but expose `with_base_url` for pointing at a self-hosted MusicBrainz mirror (e.g. a local `mbslave`/search-server instance). Anyone running such a mirror is responsible for following MusicBrainz's own Solr 9→10 re-index instructions (SEARCH-764) on their own schedule — this crate's query construction is hardened against the stricter Solr 10 parser (see `lucene` above), but it cannot re-index a mirror's search server for you.
 
 #### `ProviderRateLimiter`
 

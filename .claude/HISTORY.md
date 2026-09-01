@@ -319,3 +319,51 @@ FIX 4 added one test to `meedya-metadata`: measured `cargo test -p meedya-metada
 ### Residual follow-ups noted (not actioned this pass — outside its explicit scope)
 
 `identifier_types.rs`'s `IdentifierValidation::Regex` and `matches_format` doc comments still carry the old blanket uppercase/strip normalisation wording FIX 2 corrected in the TOML header and `docs/API.md` — worth a follow-up pass for full consistency within the crate. `README.md`'s per-crate table still shows stale individual counts (`meedya-metadata` 107, `meedya-providers` 28, etc.) that don't sum to its own bolded total — a pre-existing gap (also present in `CONTEXT.md` before this pass, per that file's own footnote) that a full per-crate audit across every crate would need to close; this pass only touched what FIX 5 explicitly scoped.
+
+---
+
+## 2026-09-01 — MusicBrainz Solr 9→10 search hardening (branch `claude/branch-audit-musicbrainz-migration-l5h8zh`)
+
+The task this repo's own #65-completion-pass entry (above) reserved for later: `meedya-providers/src/providers/musicbrainz.rs`, `isrc.rs`, `iswc.rs`, and the planned `lucene.rs`. Prep for MusicBrainz's announced Solr 9→10 search-service upgrade (2026-11-30). `meedya-metadata` was **not** touched this session.
+
+### Audit outcome: the announced BREAKING tickets don't hit us
+
+MusicBrainz's Solr 10 migration notes list several breaking search-syntax tickets (SEARCH-444/642/666/752/764) plus response-shape changes touched by SEARCH-751/753 and a new-field ticket SEARCH-681 (genre search). Audited each against this crate's actual MusicBrainz usage and found none apply:
+
+- We never search the `area`, `url`, `cdstub`, or `tag` fields (SEARCH-444/642/666/752 territory) — only `recording`, `artistname`, `isrc`, and `iswc`.
+- We never read relationship `target` (the field some tickets restructure) or release `quality` — our serde-derive response structs don't declare those fields at all, so restructuring them upstream is invisible to us.
+- Every response parser (`parse_recordings` in `musicbrainz.rs`/`isrc.rs`, `parse_works` in `iswc.rs`) is a `#[derive(Deserialize)]` struct that silently ignores unknown JSON keys — new fields (SEARCH-751/753's `release-group`, `genres`, etc.) can appear or existing ones gain new shapes without breaking us, provided the *fields we do read* keep their current shape and location.
+
+The real risk was never the announced breaking changes — it was our **own** unescaped Lucene query construction. Solr 10's stricter query parser is more likely to reject or misparse a query containing an unescaped `"`, `(`, `:`, `&`, etc. than Solr 9 was. That's what this session hardens.
+
+### New `crates/meedya-providers/src/lucene.rs`
+
+Pure `std`, no dependencies, always compiled (no feature gate — it's cheap and every MusicBrainz-backed provider needs it). `escape_lucene(value: &str) -> String` backslash-escapes every Lucene special character (`+ - ! ( ) { } [ ] ^ " ~ * ? : \ /` plus the boolean operators `&`/`|`, so `&&`/`||` → `\&\&`/`\|\|`). `quote_phrase(value: &str) -> String` is the policy the providers actually use for free-text field values: escape embedded `\`/`"` (backslash first) and wrap in double quotes, leaving other special characters alone inside the quotes (Lucene doesn't interpret them there) — the field qualifier (`recording:`, `artistname:`, `iswc:`) stays outside the quoted value. 11 unit tests + 1 doctest (on `quote_phrase`, since it's the one consumers actually call at the call site with a `format!`).
+
+### `musicbrainz.rs`: dead `search_term` removed, `build_lucene_query` added
+
+`search_term` (the free-text title+artist fallback) was dead code — it only ever fired when `parts.is_empty()` (both title and artist absent), and the resulting query was `""` after `.trim()`, which MusicBrainz's search endpoint 400s on. Deleted rather than fixed, since a query with nothing to search on should be rejected before the HTTP round-trip, not sent as an empty string.
+
+New `MusicBrainzProvider::build_lucene_query(query: &SearchQuery) -> Result<String, ProviderError>` replaces the old inline query-building block in `search()`. ISRC still takes priority over free-text: the ISRC is normalised (alphanumerics only, uppercased) and rejected with `ProviderError::Other` if it doesn't come out to exactly 12 characters, rather than being sent upstream malformed. Otherwise title/artist are quoted via `lucene::quote_phrase` and joined as `recording:"..." AND artistname:"..."` (either alone if only one is present); a query with none of title/artist/ISRC returns `ProviderError::NotSupported` (matching the existing idiom `isrc.rs`/`iswc.rs` already use for "missing required query field", rather than introducing a fresh `Other` message for the same class of error). No new `ProviderError` variant was added — both branches reuse existing ones.
+
+10 new `build_lucene_query` unit tests cover the exact matrix requested, including the Lucene-hostile titles that motivated this work (`AC/DC`, `Where Is My Mind?`, `Panic! at the Disco`, `[Intro]`, `S&M`, and an embedded-quote title `Say "Hello"`) plus ISRC normalisation (hyphenated/lowercase input → `isrc:GBAYE0601498`) and both error paths (malformed ISRC, no fields at all). All ten match the spec's expected outputs exactly.
+
+### Forward-compat parse fixtures (`musicbrainz.rs`, `isrc.rs`, `iswc.rs`)
+
+Added fixture tests that take a known-good response JSON and inject the specific response-shape noise the Solr 10 announcement touches — recording-level `relations` with `target-type` (no `target`), a release-level string `quality`, a `release-group` object, and an unknown `genres` array — then assert the parse output is byte-for-byte identical to the pre-noise fixture. `musicbrainz.rs` and `isrc.rs` each get one such test on their `parse_recordings`. `iswc.rs` gets two on `parse_works`: one with the new `target-type`-bearing relation shape, one with the legacy `target`-bearing shape (no `target-type`) — both extract composer/title identically, proving `MbRelation` never depended on either field. These are regression fixtures, not integration tests against a live Solr 10 — they prove our serde structs are inert to the announced shape changes, which is the actual guarantee available before 2026-11-30.
+
+### `isrc.rs` / `iswc.rs`: query hardening
+
+`isrc.rs` gained `normalise_isrc(isrc: &str) -> String` (alphanumerics only, uppercased) and `search()` now embeds the normalised ISRC in both the outgoing query and the debug log, rather than the raw (possibly hyphenated) value — `validate_isrc` already accepted hyphenated input but the query was still built from the un-normalised string. `iswc.rs`'s query changed from unescaped `iswc:{iswc}` to `iswc:{}` with `quote_phrase(&iswc.to_uppercase())` (extracted into a small `build_iswc_query` helper so it's unit-testable without a live HTTP call) — deliberately uppercased-but-not-hyphen-stripped, so a hyphenated `T-034524680-1` query becomes `iswc:"T-034524680-1"`, quoted rather than normalised to the compact form, matching how `validate_iswc` already tolerates hyphens without requiring their removal.
+
+### Test count
+
+`meedya-providers`: 28 → 39 default-feature (+11, all in the new `lucene` module), 113 → 141 `--all-features` (+28: 11 lucene + 10 `build_lucene_query` matrix + 1 musicbrainz Solr-10 fixture + 2 `normalise_isrc` + 1 isrc Solr-10 fixture + 2 iswc relation-shape fixtures + 1 `build_iswc_query`). Workspace: 534 → 546 default (624 → 653 `--all-features`; the extra δ over default comes from the feature-gated provider tests, which only compile under `--all-features`). Updated `docs/API.md` (module list + new `#### lucene` subsection + corrected the stale "downstream apps implement this" sentence — `musicbrainz`/`spotify`/`apple_music`/`deezer`/`tmdb`/`thetvdb`/`omdb`/`apple_tv`/`itunes_store`/`apple_podcasts`/`isrc`/`eidr`/`iswc` are all already implemented in-repo behind `provider-<name>` features — plus a note on `with_base_url` mirror operators owning their own Solr 9→10 re-index per SEARCH-764 + test counts + "Last refreshed" date), `README.md` (per-crate table + prose bullet + total test count, same staleness fixed there), `.claude/CONTEXT.md` (module list, design-decision narrative, test counts, "Last updated" date).
+
+### Deferred: genre search (SEARCH-681)
+
+MusicBrainz's Solr 10 migration adds `genre`/`genres` as searchable/sortable fields on several endpoints. We don't currently expose genre as a `SearchQuery` field or a Lucene query term anywhere, so there's nothing to harden — but it's a legitimate feature gap independent of the Solr migration (`ProviderResult` already has a `genre: Option<String>` field with nothing populating it from MusicBrainz). Deferred to a follow-up issue rather than bundled into this hardening pass, since it's a new capability, not a hardening of existing behavior.
+
+### Verification (all green)
+
+`cargo fmt --all -- --check` — clean (after one `cargo fmt --all` pass to fix line-wrapping on 3 test assertions in `lucene.rs`/`iswc.rs`). `cargo build --workspace --all-features --locked` — clean (only pre-existing, unrelated `meedya-tags-extended` warnings). `cargo test --workspace --all-features --locked` — `meedya-providers`: **141 passed, 0 failed**; workspace unit-test sum **651** + doctests **2** (lyrics 1, providers 1 — the new `quote_phrase` doctest) = **653 passed** total, 1 ignored (the pre-existing `meedya-lyrics::embed` doctest). Default-feature `cargo test --workspace --locked` also run for the non-`--all-features` figure: `meedya-providers` **39 passed**, workspace total **546**. `cargo clippy -p meedya-providers --all-targets --all-features -- -D warnings` — clean, no warnings. Did not commit — left in the working tree per instruction; did not touch `meedya-metadata`.

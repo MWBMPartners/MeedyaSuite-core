@@ -12,6 +12,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::extra_keys::{DURATION_SECS, PROVIDER_ID};
+use crate::lucene::quote_phrase;
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
@@ -23,16 +24,6 @@ fn net_err(e: reqwest::Error) -> ProviderError {
 /// Build a parse-style `ProviderError::Other`.
 fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
     ProviderError::Other(format!("parse error: {context}: {e}"))
-}
-
-/// Resolve a free-text search term from `SearchQuery` (title + artist).
-fn search_term(query: &SearchQuery) -> String {
-    let combined = format!(
-        "{} {}",
-        query.title.as_deref().unwrap_or(""),
-        query.artist.as_deref().unwrap_or("")
-    );
-    combined.trim().to_owned()
 }
 
 /// Insert duration (seconds) into result metadata using the conventional key.
@@ -84,6 +75,50 @@ impl MusicBrainzProvider {
     /// True when a User-Agent string is configured. Required by MusicBrainz API.
     fn configured(&self) -> bool {
         !self.user_agent.is_empty()
+    }
+
+    /// Build a Lucene query string for the MusicBrainz `/recording/` search
+    /// endpoint from a `SearchQuery`, escaping/quoting user-supplied values
+    /// so they cannot be misparsed as Lucene syntax under Solr's (9 or 10)
+    /// query parser.
+    ///
+    /// ISRC takes priority over free-text: when `query.isrc` is present it
+    /// is normalised (alphanumerics only, uppercased) and used alone as
+    /// `isrc:<CODE>` — an ISRC that doesn't normalise to exactly 12
+    /// characters is rejected rather than sent upstream. Otherwise, title
+    /// and/or artist are combined as `recording:"..." AND artistname:"..."`
+    /// (either alone if only one is present). A query with none of title,
+    /// artist, or ISRC is rejected — MusicBrainz has nothing to search on.
+    fn build_lucene_query(query: &SearchQuery) -> Result<String, ProviderError> {
+        if let Some(isrc) = &query.isrc {
+            let normalised: String = isrc
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .map(|c| c.to_ascii_uppercase())
+                .collect();
+            if normalised.len() != 12 {
+                return Err(ProviderError::Other(format!(
+                    "parse error: invalid ISRC: {isrc}"
+                )));
+            }
+            return Ok(format!("isrc:{normalised}"));
+        }
+
+        let mut parts = Vec::new();
+        if let Some(title) = &query.title {
+            parts.push(format!("recording:{}", quote_phrase(title)));
+        }
+        if let Some(artist) = &query.artist {
+            parts.push(format!("artistname:{}", quote_phrase(artist)));
+        }
+
+        if parts.is_empty() {
+            return Err(ProviderError::NotSupported(
+                "musicbrainz: search requires a title, artist, or ISRC".into(),
+            ));
+        }
+
+        Ok(parts.join(" AND "))
     }
 
     /// Parse a MusicBrainz recording search response into `ProviderResult`s.
@@ -206,23 +241,7 @@ impl MetadataProvider for MusicBrainzProvider {
             return Err(ProviderError::NotConfigured("musicbrainz".into()));
         }
 
-        // Build query string: ISRC takes priority over free-text
-        let lucene_query = if let Some(isrc) = &query.isrc {
-            format!("isrc:{isrc}")
-        } else {
-            let mut parts = Vec::new();
-            if let Some(title) = &query.title {
-                parts.push(format!("recording:{}", title.replace('"', "")));
-            }
-            if let Some(artist) = &query.artist {
-                parts.push(format!("artistname:{}", artist.replace('"', "")));
-            }
-            if parts.is_empty() {
-                search_term(query)
-            } else {
-                parts.join(" AND ")
-            }
-        };
+        let lucene_query = Self::build_lucene_query(query)?;
 
         let url = format!("{}/ws/2/recording/", self.base_url);
         debug!(
@@ -328,5 +347,146 @@ mod tests {
             .and_then(serde_json::Value::as_f64)
             .unwrap();
         assert!((duration - 240.0).abs() < 1e-3);
+    }
+
+    /// Forward-compat fixture: the same valid response as
+    /// `mb_parse_recordings_valid_json`, plus response-shape noise the
+    /// Solr 10 announcement tickets touch (recording `relations` with
+    /// `target-type`, a release-level string `quality`, a `release-group`
+    /// object, and an unknown `genres` array). None of these are read by
+    /// our serde-derive structs, so parsing must produce identical results
+    /// (SEARCH-444/666/752/751/753 don't hit us).
+    #[test]
+    fn mb_parse_recordings_solr10_shape() {
+        let json = r#"{
+            "recordings": [{
+                "id": "abc123",
+                "title": "Comfortably Numb",
+                "artist-credit": [{"artist": {"name": "Pink Floyd"}}],
+                "releases": [{
+                    "title": "The Wall",
+                    "date": "1979-11-30",
+                    "quality": "normal",
+                    "release-group": {"id": "rg-1", "primary-type": "Album"}
+                }],
+                "isrcs": ["GBAYE7900498"],
+                "length": 382000,
+                "score": 100,
+                "genres": [{"name": "progressive rock", "count": 12}],
+                "relations": [{
+                    "type": "performer",
+                    "target-type": "artist",
+                    "artist": {"id": "x", "name": "Y"}
+                }]
+            }]
+        }"#;
+        let results = MusicBrainzProvider::parse_recordings("musicbrainz", json).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title.as_deref(), Some("Comfortably Numb"));
+        assert_eq!(results[0].artist.as_deref(), Some("Pink Floyd"));
+        assert_eq!(results[0].album.as_deref(), Some("The Wall"));
+        assert_eq!(results[0].year, Some(1979));
+        assert_eq!(results[0].isrc.as_deref(), Some("GBAYE7900498"));
+        assert!((results[0].score - 1.0).abs() < 1e-9);
+    }
+
+    fn sq(title: Option<&str>, artist: Option<&str>, isrc: Option<&str>) -> SearchQuery {
+        SearchQuery {
+            title: title.map(str::to_owned),
+            artist: artist.map(str::to_owned),
+            isrc: isrc.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn build_lucene_query_title_and_artist() {
+        let q = sq(Some("Back in Black"), Some("AC/DC"), None);
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&q).unwrap(),
+            r#"recording:"Back in Black" AND artistname:"AC/DC""#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_title_with_question_mark() {
+        let q = sq(Some("Where Is My Mind?"), Some("Pixies"), None);
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&q).unwrap(),
+            r#"recording:"Where Is My Mind?" AND artistname:"Pixies""#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_artist_with_exclamation() {
+        let q = sq(
+            Some("Nine in the Afternoon"),
+            Some("Panic! at the Disco"),
+            None,
+        );
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&q).unwrap(),
+            r#"recording:"Nine in the Afternoon" AND artistname:"Panic! at the Disco""#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_title_only_with_brackets() {
+        let q = sq(Some("[Intro]"), None, None);
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&q).unwrap(),
+            r#"recording:"[Intro]""#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_title_with_ampersand() {
+        let q = sq(Some("S&M"), Some("Metallica"), None);
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&q).unwrap(),
+            r#"recording:"S&M" AND artistname:"Metallica""#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_title_with_embedded_quotes() {
+        let q = sq(Some(r#"Say "Hello""#), None, None);
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&q).unwrap(),
+            "recording:\"Say \\\"Hello\\\"\""
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_isrc_already_normalised() {
+        let q = sq(None, None, Some("GBAYE0601498"));
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&q).unwrap(),
+            "isrc:GBAYE0601498"
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_isrc_lowercase_hyphenated_normalises() {
+        let q = sq(None, None, Some("gb-aye-06-01498"));
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&q).unwrap(),
+            "isrc:GBAYE0601498"
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_invalid_isrc_is_err() {
+        let q = sq(None, None, Some("not-an-isrc!"));
+        assert!(matches!(
+            MusicBrainzProvider::build_lucene_query(&q),
+            Err(ProviderError::Other(_))
+        ));
+    }
+
+    #[test]
+    fn build_lucene_query_no_fields_is_err() {
+        let q = SearchQuery::default();
+        assert!(MusicBrainzProvider::build_lucene_query(&q).is_err());
     }
 }
