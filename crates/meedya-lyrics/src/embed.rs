@@ -78,7 +78,17 @@ pub fn embed_synced(media: &Path, lyrics: &Lyrics, lang: [u8; 3]) -> Result<()> 
     let mut tagged: TaggedFile = lofty::read_from_path(media)
         .map_err(|e| Error::Metadata(meedya_metadata::MetadataError::ReadError(e.to_string())))?;
 
-    if !tagged.supports_tag_type(TagType::Id3v2) {
+    // #79 — `supports_tag_type` is too permissive here: lofty reports
+    // read-only Id3v2 support for FLAC/APE/MPC (see lofty's own
+    // `#[tag(supported_formats(... read_only(Ape, Flac, Mpc)))]` on
+    // `Id3v2Tag`), which is enough for `supports_tag_type` and `insert_tag`
+    // to both succeed structurally on those containers. The old guard let
+    // them through, and the operation only died later at `save_to` with an
+    // unhelpful lofty write error. `primary_tag_type()` instead reflects
+    // what the container can actually be *written* as (derived from the
+    // FILE type, not from what insert happens to accept), so this rejects
+    // FLAC/APE/MPC up front with a clear, actionable error.
+    if tagged.primary_tag_type() != TagType::Id3v2 {
         return Err(Error::UnsupportedForSync {
             tag_type: format!("{:?}", tagged.primary_tag_type()),
         });
@@ -110,9 +120,17 @@ pub fn embed_synced(media: &Path, lyrics: &Lyrics, lang: [u8; 3]) -> Result<()> 
         Some(tag) => tag,
         None => {
             tagged.insert_tag(lofty::tag::Tag::new(TagType::Id3v2));
-            tagged
-                .tag_mut(TagType::Id3v2)
-                .expect("ID3v2 tag was just inserted")
+            // Unreachable after the primary_tag_type() guard above: for an
+            // ID3v2-primary container, insert_tag() always succeeds (see
+            // that guard's comment), so tag_mut() always finds it here.
+            // House style forbids unwrap/expect regardless — surface the
+            // same UnsupportedFormat error tag_io.rs uses for this class of
+            // failure rather than assume it can't happen.
+            tagged.tag_mut(TagType::Id3v2).ok_or_else(|| {
+                Error::Metadata(meedya_metadata::MetadataError::UnsupportedFormat(
+                    "cannot create an Id3v2 tag in this container".to_string(),
+                ))
+            })?
         }
     };
 
@@ -174,6 +192,36 @@ mod tests {
 
     use super::*;
     use crate::lyrics::SyncedLine;
+
+    // ------------------------------------------------------------------
+    // #79 — minimal, valid, UNTAGGED FLAC fixture, generated at test time
+    // rather than committed as a binary. Mirrors the identical helper in
+    // meedya-metadata's tag_io.rs tests (kept duplicated on purpose: it's
+    // test-only, single-crate-local, and pulling in a shared test-utils
+    // crate for four lines of bytes isn't worth it). See that module's
+    // comment for why this is enough for lofty to accept the file.
+    // ------------------------------------------------------------------
+    // The trailing PADDING block (rather than ending on STREAMINFO alone) is
+    // required, not decorative: it sidesteps a real lofty write-path bug
+    // where a FLAC file whose only metadata block is STREAMINFO panics with
+    // an out-of-bounds index on write (lofty's own TODO cites
+    // lofty-rs/issues/445). See the identical helper in meedya-metadata's
+    // tag_io.rs tests for the full explanation.
+    fn minimal_untagged_flac() -> Vec<u8> {
+        fn flac_block(last: bool, block_type: u8, content: &[u8]) -> Vec<u8> {
+            let mut out = Vec::with_capacity(4 + content.len());
+            out.push((u8::from(last) << 7) | (block_type & 0x7F));
+            out.extend_from_slice(&(content.len() as u32).to_be_bytes()[1..]);
+            out.extend_from_slice(content);
+            out
+        }
+
+        let mut out = Vec::new();
+        out.extend_from_slice(b"fLaC");
+        out.extend_from_slice(&flac_block(false, 0, &[0u8; 34])); // STREAMINFO
+        out.extend_from_slice(&flac_block(true, 1, &[0u8; 16])); // PADDING (last)
+        out
+    }
 
     #[test]
     fn plain_text_prefers_plain() {
@@ -261,6 +309,31 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::NoSyncedLyrics));
+    }
+
+    #[test]
+    fn embed_synced_rejects_non_id3v2_container() {
+        // #79 regression: the old `supports_tag_type(Id3v2)` guard let FLAC
+        // through (lofty reports read-only Id3v2 support for it), and the
+        // call only failed later at save with an unhelpful lofty error —
+        // never panicking, but never surfacing UnsupportedForSync either.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("untagged.flac");
+        std::fs::write(&path, minimal_untagged_flac()).expect("write fixture");
+
+        let lyrics = Lyrics {
+            plain: None,
+            synced: Some(vec![SyncedLine {
+                at: Duration::from_millis(0),
+                text: "hi".into(),
+            }]),
+        };
+
+        let err = embed_synced(&path, &lyrics, DEFAULT_LANGUAGE).unwrap_err();
+        assert!(
+            matches!(err, Error::UnsupportedForSync { .. }),
+            "expected UnsupportedForSync, got {err:?}"
+        );
     }
 
     #[test]

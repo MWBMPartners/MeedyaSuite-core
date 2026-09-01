@@ -20,7 +20,7 @@ use std::path::Path;
 use lofty::config::WriteOptions;
 use lofty::prelude::*;
 use lofty::probe::Probe;
-use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem, TagType};
+use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem};
 
 use crate::common_tags::CommonTag;
 use crate::error::MetadataError;
@@ -200,17 +200,34 @@ pub fn write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<(), Metad
 
     let mut tagged_file = Probe::open(path)?.read()?;
 
+    // #79 — an untagged file has no `primary_tag()`, and the old fallback
+    // hardcoded `TagType::Id3v2` here regardless of container. `insert_tag`
+    // silently no-ops when the container doesn't support the tag type it's
+    // given (lofty file/tagged_file.rs), so on e.g. a fresh untagged .m4a
+    // (the standard MeedyaDL download product) the Id3v2 insert was dropped
+    // on the floor and the `tag_mut(tag_type).unwrap()` below panicked on
+    // the resulting `None`. `primary_tag_type()` derives the correct tag
+    // type from the FILE type instead (Mp4 -> Mp4Ilst, Flac/Opus/Vorbis/
+    // Speex -> VorbisComments, etc.), which is always write-supported for
+    // its own format, so the insert always lands.
     let tag_type = tagged_file
         .primary_tag()
         .map(Tag::tag_type)
-        .unwrap_or(TagType::Id3v2);
+        .unwrap_or_else(|| tagged_file.primary_tag_type());
 
     // Ensure the tag exists before borrowing mutably
     if tagged_file.tag(tag_type).is_none() {
         tagged_file.insert_tag(Tag::new(tag_type));
     }
 
-    let tag = tagged_file.tag_mut(tag_type).unwrap();
+    // Unreachable now that tag_type always comes from an existing tag or
+    // primary_tag_type() (both write-supported), but house style forbids
+    // unwrap — surface a proper error instead of assuming it can't happen.
+    let tag = tagged_file.tag_mut(tag_type).ok_or_else(|| {
+        MetadataError::UnsupportedFormat(format!(
+            "cannot create a {tag_type:?} tag in this container"
+        ))
+    })?;
 
     for (common_tag, value) in tags {
         write_common_tag_to_lofty(tag, *common_tag, value);
@@ -286,16 +303,25 @@ pub fn write_registry_tags(
 
     let mut tagged_file = Probe::open(path)?.read()?;
 
+    // #79 — see the matching comment in write_tags above: fall back to the
+    // container's own primary tag type (always write-supported) instead of
+    // hardcoding Id3v2, which insert_tag silently drops on non-ID3v2
+    // containers.
     let tag_type = tagged_file
         .primary_tag()
         .map(Tag::tag_type)
-        .unwrap_or(TagType::Id3v2);
+        .unwrap_or_else(|| tagged_file.primary_tag_type());
 
     if tagged_file.tag(tag_type).is_none() {
         tagged_file.insert_tag(Tag::new(tag_type));
     }
 
-    let tag = tagged_file.tag_mut(tag_type).unwrap();
+    // Unreachable — see write_tags above — but house style forbids unwrap.
+    let tag = tagged_file.tag_mut(tag_type).ok_or_else(|| {
+        MetadataError::UnsupportedFormat(format!(
+            "cannot create a {tag_type:?} tag in this container"
+        ))
+    })?;
 
     let mut count = 0;
 
@@ -593,6 +619,159 @@ fn write_common_tag_to_lofty(tag: &mut Tag, common_tag: CommonTag, value: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only used by tests below — kept out of the module-level import so a
+    // non-test build doesn't warn about it being unused.
+    use lofty::tag::TagType;
+
+    // ------------------------------------------------------------------
+    // #79 — untagged-container fixtures
+    //
+    // insert_tag() silently no-ops for a container that doesn't support the
+    // given tag type, and the pre-fix code hardcoded TagType::Id3v2 as the
+    // fallback for a file with no primary_tag() (i.e. any freshly downloaded,
+    // untagged file). On an untagged .m4a — the standard MeedyaDL download
+    // product — that meant: no primary tag -> fallback Id3v2 -> insert_tag
+    // no-ops because MP4 doesn't support Id3v2 -> tag_mut(Id3v2) is still
+    // None -> `.unwrap()` panics. These tests build minimal, genuinely
+    // untagged containers (no VORBIS_COMMENT / ilst block at all) byte-by-
+    // byte rather than shipping binary fixtures in git, so the panic
+    // reproduces honestly instead of being masked by an already-tagged file.
+    // ------------------------------------------------------------------
+
+    /// Build one MP4/ISO-BMFF atom: 4-byte big-endian size (content + header)
+    /// + 4-byte fourcc + content.
+    fn atom(fourcc: &[u8; 4], content: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + content.len());
+        out.extend_from_slice(&((content.len() + 8) as u32).to_be_bytes());
+        out.extend_from_slice(fourcc);
+        out.extend_from_slice(content);
+        out
+    }
+
+    /// Minimal, valid, UNTAGGED MP4/M4A container: `ftyp` + `moov > trak >
+    /// mdia > (mdhd, hdlr="soun")`. No `udta`/`meta`/`ilst` (untagged) and no
+    /// sample tables (so lofty reports zero-valued properties) — just enough
+    /// for lofty's MP4 reader to recognise one audio track, which is all
+    /// `TaggedFileExt::primary_tag_type()` (Mp4 -> Mp4Ilst) and the writer
+    /// need. Verified against lofty 0.22.4's mp4::read/moov/properties
+    /// parsing (find_audio_trak requires an "soun" hdlr + mdhd; minf/stbl are
+    /// optional).
+    fn minimal_untagged_m4a() -> Vec<u8> {
+        let mut ftyp_content = Vec::new();
+        ftyp_content.extend_from_slice(b"M4A "); // major brand
+        ftyp_content.extend_from_slice(&0u32.to_be_bytes()); // minor version
+        ftyp_content.extend_from_slice(b"M4A "); // compatible brand
+        let ftyp = atom(b"ftyp", &ftyp_content);
+
+        let mut mdhd_content = Vec::new();
+        mdhd_content.push(0); // version
+        mdhd_content.extend_from_slice(&[0, 0, 0]); // flags
+        mdhd_content.extend_from_slice(&0u32.to_be_bytes()); // creation_time
+        mdhd_content.extend_from_slice(&0u32.to_be_bytes()); // modification_time
+        mdhd_content.extend_from_slice(&44_100u32.to_be_bytes()); // timescale
+        mdhd_content.extend_from_slice(&0u32.to_be_bytes()); // duration
+        let mdhd = atom(b"mdhd", &mdhd_content);
+
+        let mut hdlr_content = Vec::new();
+        hdlr_content.extend_from_slice(&0u32.to_be_bytes()); // version + flags
+        hdlr_content.extend_from_slice(&0u32.to_be_bytes()); // pre_defined
+        hdlr_content.extend_from_slice(b"soun"); // handler_type -> marks the audio track
+        let hdlr = atom(b"hdlr", &hdlr_content);
+
+        let mdia = atom(b"mdia", &[mdhd, hdlr].concat());
+        let trak = atom(b"trak", &mdia);
+        let moov = atom(b"moov", &trak);
+
+        [ftyp, moov].concat()
+    }
+
+    /// One FLAC metadata block: 1-bit last-block flag + 7-bit type in the
+    /// first byte, then a 24-bit big-endian content length, then content.
+    fn flac_block(last: bool, block_type: u8, content: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + content.len());
+        out.push((u8::from(last) << 7) | (block_type & 0x7F));
+        out.extend_from_slice(&(content.len() as u32).to_be_bytes()[1..]);
+        out.extend_from_slice(content);
+        out
+    }
+
+    /// Minimal, valid, UNTAGGED FLAC stream: `"fLaC"` marker + a zeroed
+    /// STREAMINFO block + a trailing (last-block) PADDING block. No
+    /// VORBIS_COMMENT block, so lofty reports no primary tag and
+    /// `primary_tag_type()` falls back to FLAC's native VorbisComments —
+    /// exactly the fallback path under test.
+    ///
+    /// The trailing PADDING block isn't optional set-dressing: a FLAC file
+    /// whose *only* metadata block is STREAMINFO (last=true, nothing after
+    /// it) trips a real lofty write-path bug — flac/write.rs patches the
+    /// previous last-block's header at an absolute file offset into a byte
+    /// buffer that only holds the post-STREAMINFO tail, panicking with an
+    /// out-of-bounds index (lofty's own code notes this padding logic is
+    /// incomplete: `TODO ... lofty-rs/issues/445`). Ending on a PADDING
+    /// block (as real encoders normally do, reserving room for tags) makes
+    /// `end_padding_exists` true and skips that code path entirely — this
+    /// fixture exercises meedya-metadata's #79 fallback fix, not an
+    /// unrelated upstream corner case.
+    fn minimal_untagged_flac() -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"fLaC");
+        out.extend_from_slice(&flac_block(false, 0, &[0u8; 34])); // STREAMINFO
+        out.extend_from_slice(&flac_block(true, 1, &[0u8; 16])); // PADDING (last)
+        out
+    }
+
+    #[test]
+    fn write_tags_on_untagged_m4a_does_not_panic_and_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("untagged.m4a");
+        std::fs::write(&path, minimal_untagged_m4a()).expect("write fixture");
+
+        // Pre-fix, this panicked inside write_tags (see the module comment).
+        write_tags(
+            &path,
+            &[
+                (CommonTag::Title, "Fixture Title".into()),
+                (CommonTag::Artist, "Fixture Artist".into()),
+            ],
+        )
+        .expect("write_tags on untagged m4a");
+
+        let read_back = read_tags(&path).expect("read_tags on written m4a");
+        assert_eq!(
+            read_back.get(&CommonTag::Title).map(Vec::as_slice),
+            Some(["Fixture Title".to_string()].as_slice())
+        );
+        assert_eq!(
+            read_back.get(&CommonTag::Artist).map(Vec::as_slice),
+            Some(["Fixture Artist".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn write_tags_on_untagged_flac_does_not_panic_and_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("untagged.flac");
+        std::fs::write(&path, minimal_untagged_flac()).expect("write fixture");
+
+        write_tags(
+            &path,
+            &[
+                (CommonTag::Title, "Fixture Title".into()),
+                (CommonTag::Album, "Fixture Album".into()),
+            ],
+        )
+        .expect("write_tags on untagged flac");
+
+        let read_back = read_tags(&path).expect("read_tags on written flac");
+        assert_eq!(
+            read_back.get(&CommonTag::Title).map(Vec::as_slice),
+            Some(["Fixture Title".to_string()].as_slice())
+        );
+        assert_eq!(
+            read_back.get(&CommonTag::Album).map(Vec::as_slice),
+            Some(["Fixture Album".to_string()].as_slice())
+        );
+    }
 
     #[test]
     fn read_nonexistent_file_returns_error() {
