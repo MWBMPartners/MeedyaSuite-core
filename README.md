@@ -22,7 +22,7 @@ Written in Rust. Distributable to all Meedya apps via:
 | [`meedya-db`](crates/meedya-db) | MeedyaDB API client, shared media models (Track/Album/Artist), database export trait. | Implemented | 3 |
 | [`meedya-core`](crates/meedya-core) | Unified facade crate re-exporting the implemented crates behind feature flags. | Implemented | — |
 
-**Total: 546 tests passing** (653 with `--all-features`, the CI configuration), workspace builds clean.
+**Total: 546 tests passing** (664 with `--all-features`, the CI configuration), workspace builds clean.
 
 ## Quick Start
 
@@ -114,6 +114,7 @@ Cross-repo **identifier-types registry** (`identifier_types.toml`, #65) — the 
 - Rate limiting (`governor`-backed), credential storage, cover art helpers, fuzzy-match scoring
 - In-repo `MetadataProvider` implementations, one per external service, each behind its own `provider-<name>` Cargo feature: MusicBrainz, Spotify, Apple Music, Deezer, TMDB, TheTVDB, OMDb, Apple TV, iTunes Store, Apple Podcasts, ISRC, EIDR, ISWC
 - `lucene` module — Lucene/Solr query escaping used by the MusicBrainz-backed providers (MusicBrainz, ISRC, ISWC), hardened for MusicBrainz's Solr 9→10 search upgrade (2026-11-30)
+- MusicBrainz free-text search strips a trailing parenthetical/bracket group from title/artist (e.g. "(2011 Remastered Version)", "[Live]") before phrase-quoting, to mitigate a recall miss against MusicBrainz's canonical (unsuffixed) titles — live-service validation tracked in issue #69
 
 ### Database integration (`meedya-db`)
 

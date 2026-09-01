@@ -1,7 +1,7 @@
 # MeedyaSuite-core — Project Context
 
 > Snapshot maintained for Claude Code sessions. Reflects the actual state of `main`, not aspirational state.
-> Last updated: 2026-09-01 (post issue #65 completion pass — GRid/ICPN reserved, per-scheme normalisation guidance, AcoustID read-back fix; same day, post MusicBrainz Solr 9→10 search-hardening pass — new `lucene` module, `build_lucene_query`, ISRC/ISWC query normalisation, forward-compat parse fixtures — on branch `claude/branch-audit-musicbrainz-migration-l5h8zh`).
+> Last updated: 2026-09-01 (post issue #65 completion pass — GRid/ICPN reserved, per-scheme normalisation guidance, AcoustID read-back fix; same day, post MusicBrainz Solr 9→10 search-hardening pass — new `lucene` module, `build_lucene_query`, ISRC/ISWC query normalisation, forward-compat parse fixtures; same day, post ISRC `validate_isrc` panic fix and MusicBrainz trailing-bracket-group recall mitigation (`strip_trailing_bracket_groups`, issue #69) — on branch `claude/branch-audit-musicbrainz-migration-l5h8zh`).
 
 ## What this repo is
 
@@ -29,7 +29,7 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 3 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 546 tests on `main` (653 with `--all-features`, the CI configuration) — post #65 identifier-types registry batch, 511 → 533 measured (the +4 over the batch's 529 are tag-I/O save/reload round-trip tests added with the #65 silent-data-loss fix), plus +1 from the 2026-09-01 #65 completion pass' AcoustID read-back regression test (533 → 534), plus +12 default-feature / +29 `--all-features` from the same-day MusicBrainz Solr 9→10 search-hardening pass (534 → 546 / 624 → 653) — see [HISTORY.md](HISTORY.md) for the full breakdown.** Workspace builds clean. (The 466 figure this file long carried was stale — the measured pre-#65 count was 511; the count-drift itself is tracked as a follow-up, "for consideration".)
+**Total: 546 tests on `main` (664 with `--all-features`, the CI configuration) — post #65 identifier-types registry batch, 511 → 533 measured (the +4 over the batch's 529 are tag-I/O save/reload round-trip tests added with the #65 silent-data-loss fix), plus +1 from the 2026-09-01 #65 completion pass' AcoustID read-back regression test (533 → 534), plus +12 default-feature / +29 `--all-features` from the same-day MusicBrainz Solr 9→10 search-hardening pass (534 → 546 / 624 → 653), plus +11 `--all-features`-only from the same-day ISRC `validate_isrc` panic-fix regression test and the MusicBrainz trailing-bracket-group recall mitigation's 10 new tests (653 → 664; default-feature total unaffected — both land in feature-gated `provider-isrc`/`provider-musicbrainz` modules) — see [HISTORY.md](HISTORY.md) for the full breakdown.** Workspace builds clean. `meedya-providers` itself: 39 default-feature tests (table above, unaffected), 153 with `--all-features` (152 unit + 1 doctest). (The 466 figure this file long carried was stale — the measured pre-#65 count was 511; the count-drift itself is tracked as a follow-up, "for consideration".)
 
 > **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 

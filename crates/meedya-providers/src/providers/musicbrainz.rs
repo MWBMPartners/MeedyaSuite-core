@@ -35,6 +35,55 @@ fn insert_duration(result: &mut ProviderResult, secs: f64) {
     }
 }
 
+/// Strip trailing parenthetical / bracket groups from a free-text search term
+/// before it is phrase-quoted. Tags in real libraries often carry version
+/// suffixes — "(2011 Remastered Version)", "[Live]", "(feat. …)" — that are
+/// absent from MusicBrainz's canonical title, which would turn the phrase
+/// query into a zero-result miss. Removing a trailing group restores recall
+/// for that common case.
+///
+/// Only a *trailing* balanced `(...)` or `[...]` group is removed (a leading
+/// one, e.g. "(I Can't Get No) Satisfaction", is preserved), repeatedly while
+/// the remainder stays non-empty. If stripping would empty the term (e.g.
+/// "[Intro]", "(Reprise)"), the original is kept. Trade-off: this can drop a
+/// parenthetical that is genuinely part of the canonical title (e.g.
+/// "… (Reprise)"); accepted for the tagging use case. Live-service recall is
+/// tracked for post-2026-11-30 validation in issue #69.
+fn strip_trailing_bracket_groups(term: &str) -> &str {
+    let mut s = term.trim();
+    loop {
+        let (open, close) = match s.chars().last() {
+            Some(')') => ('(', ')'),
+            Some(']') => ('[', ']'),
+            _ => break,
+        };
+        let mut depth = 0i32;
+        let mut opener = None;
+        for (i, c) in s.char_indices().rev() {
+            if c == close {
+                depth += 1;
+            } else if c == open {
+                depth -= 1;
+                if depth == 0 {
+                    opener = Some(i);
+                    break;
+                }
+            }
+        }
+        match opener {
+            Some(i) => {
+                let candidate = s[..i].trim();
+                if candidate.is_empty() {
+                    break; // stripping would empty the term — keep it
+                }
+                s = candidate;
+            }
+            None => break, // unbalanced trailing closer — leave as-is
+        }
+    }
+    s
+}
+
 /// Searches the MusicBrainz open database.
 ///
 /// Endpoint: `https://musicbrainz.org/ws/2/recording/`
@@ -85,10 +134,12 @@ impl MusicBrainzProvider {
     /// ISRC takes priority over free-text: when `query.isrc` is present it
     /// is normalised (alphanumerics only, uppercased) and used alone as
     /// `isrc:<CODE>` — an ISRC that doesn't normalise to exactly 12
-    /// characters is rejected rather than sent upstream. Otherwise, title
-    /// and/or artist are combined as `recording:"..." AND artistname:"..."`
-    /// (either alone if only one is present). A query with none of title,
-    /// artist, or ISRC is rejected — MusicBrainz has nothing to search on.
+    /// characters is rejected rather than sent upstream. Otherwise, a
+    /// trailing bracket/parenthetical group is stripped from title and
+    /// artist (see [`strip_trailing_bracket_groups`]) before they are
+    /// combined as `recording:"..." AND artistname:"..."` (either alone if
+    /// only one is present). A query with none of title, artist, or ISRC is
+    /// rejected — MusicBrainz has nothing to search on.
     fn build_lucene_query(query: &SearchQuery) -> Result<String, ProviderError> {
         if let Some(isrc) = &query.isrc {
             let normalised: String = isrc
@@ -106,10 +157,16 @@ impl MusicBrainzProvider {
 
         let mut parts = Vec::new();
         if let Some(title) = &query.title {
-            parts.push(format!("recording:{}", quote_phrase(title)));
+            let t = strip_trailing_bracket_groups(title);
+            if !t.is_empty() {
+                parts.push(format!("recording:{}", quote_phrase(t)));
+            }
         }
         if let Some(artist) = &query.artist {
-            parts.push(format!("artistname:{}", quote_phrase(artist)));
+            let a = strip_trailing_bracket_groups(artist);
+            if !a.is_empty() {
+                parts.push(format!("artistname:{}", quote_phrase(a)));
+            }
         }
 
         if parts.is_empty() {
@@ -488,5 +545,78 @@ mod tests {
     fn build_lucene_query_no_fields_is_err() {
         let q = SearchQuery::default();
         assert!(MusicBrainzProvider::build_lucene_query(&q).is_err());
+    }
+
+    #[test]
+    fn strip_trailing_bracket_groups_remastered_suffix() {
+        assert_eq!(
+            strip_trailing_bracket_groups("Comfortably Numb (2011 Remastered Version)"),
+            "Comfortably Numb"
+        );
+    }
+
+    #[test]
+    fn strip_trailing_bracket_groups_live_suffix() {
+        assert_eq!(strip_trailing_bracket_groups("Song [Live]"), "Song");
+    }
+
+    #[test]
+    fn strip_trailing_bracket_groups_repeated() {
+        assert_eq!(
+            strip_trailing_bracket_groups("Song (Live) (Remastered)"),
+            "Song"
+        );
+    }
+
+    #[test]
+    fn strip_trailing_bracket_groups_nested() {
+        assert_eq!(
+            strip_trailing_bracket_groups("Song (Live (Acoustic))"),
+            "Song"
+        );
+    }
+
+    #[test]
+    fn strip_trailing_bracket_groups_leading_group_preserved() {
+        assert_eq!(
+            strip_trailing_bracket_groups("(I Can't Get No) Satisfaction"),
+            "(I Can't Get No) Satisfaction"
+        );
+    }
+
+    #[test]
+    fn strip_trailing_bracket_groups_would_empty_intro_kept() {
+        assert_eq!(strip_trailing_bracket_groups("[Intro]"), "[Intro]");
+    }
+
+    #[test]
+    fn strip_trailing_bracket_groups_would_empty_reprise_kept() {
+        assert_eq!(strip_trailing_bracket_groups("(Reprise)"), "(Reprise)");
+    }
+
+    #[test]
+    fn strip_trailing_bracket_groups_unbalanced_unchanged() {
+        assert_eq!(strip_trailing_bracket_groups("Song (Live"), "Song (Live");
+    }
+
+    #[test]
+    fn strip_trailing_bracket_groups_no_brackets_unchanged() {
+        assert_eq!(
+            strip_trailing_bracket_groups("Comfortably Numb"),
+            "Comfortably Numb"
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_strips_trailing_bracket_groups() {
+        let q = sq(
+            Some("Comfortably Numb (2011 Remastered Version)"),
+            Some("Pink Floyd (feat. Someone)"),
+            None,
+        );
+        assert_eq!(
+            MusicBrainzProvider::build_lucene_query(&q).unwrap(),
+            r#"recording:"Comfortably Numb" AND artistname:"Pink Floyd""#
+        );
     }
 }
