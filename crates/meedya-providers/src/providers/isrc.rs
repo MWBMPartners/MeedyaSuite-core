@@ -26,7 +26,12 @@ fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
 /// Validate ISRC format: 2 country + 3 registrant + 2 year + 5 designation = 12 chars.
 /// Accepts hyphens as separators (e.g. `GB-AYE-06-01498`).
 pub fn validate_isrc(isrc: &str) -> bool {
-    let normalised: String = isrc.chars().filter(|c| c.is_alphanumeric()).collect();
+    // Filter to ASCII alphanumerics only: a real ISRC is always ASCII, and
+    // this guarantees `normalised` is one byte per char so the byte-index
+    // checks and slices below never straddle a UTF-8 boundary. Using the
+    // Unicode `is_alphanumeric` here would admit multi-byte chars (e.g. a
+    // 12-byte / <12-char string) and panic on `normalised[..2]`.
+    let normalised: String = isrc.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     normalised.len() == 12
         && normalised[..2].chars().all(|c| c.is_ascii_alphabetic())
         && normalised[2..5].chars().all(|c| c.is_ascii_alphanumeric())
@@ -263,6 +268,16 @@ mod tests {
     fn validate_isrc_invalid_country_code() {
         // Country must be 2 letters; digits in first 2 positions → invalid
         assert!(!validate_isrc("12AYE0601498"));
+    }
+
+    #[test]
+    fn validate_isrc_non_ascii_alphanumeric_does_not_panic() {
+        // Regression: `is_alphanumeric` (Unicode) admitted multi-byte chars,
+        // then byte-slicing `normalised[..2]` panicked on a non-char-boundary.
+        // "あAYE060149" is 12 bytes / 10 chars and all-Unicode-alphanumeric.
+        assert!(!validate_isrc("あAYE060149"));
+        assert!(!validate_isrc("ⅦBAYE060149")); // Roman-numeral 'Ⅶ' is alphanumeric
+        assert!(!validate_isrc("１２AYE0601498")); // fullwidth digits
     }
 
     #[test]
