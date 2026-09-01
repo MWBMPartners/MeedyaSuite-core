@@ -1057,12 +1057,13 @@ pub const SIDECAR_SCHEMA_VERSION; pub const SIDECAR_SUFFIX;
 ### ReplayGain analysis + tagging
 
 ```text
-1. let result = fingerprint::ReplayGainAnalyzer::new(ffmpeg_path).analyze_track(&path).await? → ReplayGainResult
-2a. Track mode: metadata::tag_io::write_replaygain_tags(&path, &result, None)?
-2b. Album mode: collect ReplayGainResult per track into `tracks: Vec<ReplayGainResult>`,
-    let album_result = analyzer.compute_album_gain(&tracks); // Option<AlbumGainResult>
-    then call write_replaygain_tags(&path, &result, album_result.as_ref())? once per track
-    (album_result is threaded through the same call, not a separate write)
+1. let analyzer = fingerprint::ReplayGainAnalyzer::new(ffmpeg_path);
+2. let result = analyzer.analyze_track(&path).await? → ReplayGainResult
+3a. Track mode: metadata::tag_io::write_replaygain_tags(&path, &result, None)?
+3b. Album mode: collect one ReplayGainResult per track into `tracks: Vec<ReplayGainResult>`,
+    then let album_result = analyzer.compute_album_gain(&tracks); // Option<AlbumGainResult>
+    and call write_replaygain_tags(&track_path, &track_result, album_result.as_ref())? per
+    track (album_result is threaded through the same call, not a separate write)
 ```
 
 ### Lyrics fetch + write

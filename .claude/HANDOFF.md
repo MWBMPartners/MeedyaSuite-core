@@ -266,6 +266,25 @@ interpolation at `musicbrainz_service.rs:124`, `:533`, `:578`. It *does* already
 
 ---
 
+## 6b. Documentation contract — repaired 2026-09-02
+
+`docs/API.md` had drifted badly: **12 documented signatures did not exist as written**,
+including `MetadataProvider::search` (documented returning `Result<ProviderResult, _>`; it
+returns `Result<Vec<…>, _>`) and `LyricsProvider::fetch` (documented returning `Option`;
+not-found is an `Err`). A partner app coding against the published spec would not have
+compiled. Two whole public surfaces were undocumented — `meedya_metadata::template` and the
+fact that Chromaprint generation sits behind a **non-default** cargo feature.
+
+All fixed in `68a638d`, and every markdown relative link in the repo now resolves.
+
+> **The lesson, for next session**: CLAUDE.md's standing task already said to keep API.md in
+> sync, and it drifted anyway, because nothing enforced it. Evidence added to **#30**, with
+> a suggestion: `cargo public-api` diffing catches *undocumented changes*, but most of these
+> were wrong from the start. A check that extracts the ```rust``` blocks from API.md and
+> compiles them as doctests would turn "the spec compiles" into a CI-enforced property.
+
+---
+
 ## 7. Status board
 
 | Task | State |
