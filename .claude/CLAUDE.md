@@ -1,7 +1,8 @@
 # MeedyaSuite-core — Claude Code Project Instructions
 
 > Conventions, principles, and standing tasks. Read first at session start.
-> For the current architectural snapshot (which evolves more often), see [CONTEXT.md](CONTEXT.md).
+> Then read [HANDOFF.md](HANDOFF.md) for where the last session left off, and
+> [CONTEXT.md](CONTEXT.md) for the current architectural snapshot.
 
 ## Project Overview
 
@@ -68,6 +69,28 @@ The procedure is captured as a reusable prompt at [`PROMPTS.md` → Refresh inte
 ### Keep `CONTEXT.md` reflective of `main`
 
 Update [CONTEXT.md](CONTEXT.md) whenever the workspace structure changes meaningfully — new crate, retired crate, status flip (placeholder → implemented), substantial new module within an implemented crate. CONTEXT.md is the "what does this repo look like right now" snapshot; out-of-date here makes future Claude sessions waste turns rediscovering.
+
+### Keep `HANDOFF.md` current *as work lands*
+
+[HANDOFF.md](HANDOFF.md) is the file that survives an interrupted session. Update it **as
+each piece of work lands**, not at the end of the session — measured ground truth, the
+active branch, decisions the owner has taken, and a status board of what is done vs
+outstanding. If you would have to re-derive something next session, it belongs here.
+
+### Never write a test count you did not just measure
+
+This repo's chronic failure mode is doc-count drift: 248, 466, 533, 546, 601, 653 and 664
+have all appeared across README/CLAUDE.md/CONTEXT.md/API.md, and none matched the code.
+Before writing any count, run it:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"   # cargo is not on the default PATH on the dev machine
+cargo test --workspace --all-features 2>&1 | grep -E '^test result' \
+  | awk -F'[ ;]' '{p+=$4} END {print p}'
+```
+
+Do **not** extend a narrative of incremental deltas ("+12 from X, +11 from Y") — that is how
+the drift accumulated. Write the measured number and the date. CI enforcement: issue #71.
 
 ### Append to `HISTORY.md` per session
 
@@ -138,6 +161,7 @@ docs/
   cross-repo-issues.md              # Pre-drafted issues for downstream apps
 .claude/
   CLAUDE.md (this file)             # Conventions + standing tasks
+  HANDOFF.md                        # Session-resumption state (READ SECOND)
   CONTEXT.md                        # Current architecture snapshot
   HISTORY.md                        # Append-only session log
   MEMORY.md                         # Durable project facts
