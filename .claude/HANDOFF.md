@@ -18,7 +18,7 @@ have historically disagreed (248 / 466 / 653 / 664 all appear somewhere and are 
 | Fact | Value | How verified |
 |---|---|---|
 | Tests on `main` | **601 passing, 0 failing** | `cargo test --workspace --all-features --locked` |
-| Tests on `feature/work-in-progress` | **573 default-feature / 718 `--all-features`, 0 failing** | same command |
+| Tests on `feature/work-in-progress` | **575 default-feature / 720 `--all-features`, 0 failing** | same command |
 | `cargo fmt --all -- --check` | clean on both | run directly |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | **clean** (was 4 warnings; fixed, and CI now enforces) | run directly |
 | `cargo build --workspace --all-features --locked` | 0 errors | run directly |
@@ -315,7 +315,7 @@ fd2a7c5 feat(metadata): identifier-types registry + CommonTag expansion (#65)
 cd "/Users/lance.manasse/Projects/Coding & Development/MWBM Partners Ltd/GitHub/MeedyaSuite/MeedyaSuite-core"
 export PATH="$HOME/.cargo/bin:$PATH"
 git checkout feature/work-in-progress && git pull
-cargo test --workspace --all-features --locked   # expect 718 passing, 0 failing
+cargo test --workspace --all-features --locked   # expect 720 passing, 0 failing
 ```
 
 Then read §7 for what is outstanding.
@@ -365,7 +365,7 @@ Owner selected these on 2026-09-01; all five landed as separate commits on
 | #80 | API keys leaked via reqwest error `Display` | `125011f` |
 | #94 | rate limiter wired to nothing | `1639e7a` |
 
-Measured after all five: **573** default-features / **718** `--all-features`, 0 failing.
+Measured after all five (plus review follow-ups): **575** default-features / **720** `--all-features`, 0 failing.
 fmt clean; clippy clean under the enforcing CI invocation.
 
 ### Corrections to the issue premises found during implementation

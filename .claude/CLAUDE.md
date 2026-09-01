@@ -15,7 +15,7 @@ MeedyaSuite-core is the **shared core library** for all MeedyaSuite applications
 
 ## Architecture (high-level)
 
-Rust workspace, 9 crates, 573 tests passing (718 with `--all-features`). Two co-existing tag-I/O foundations by design: `mp4ameta`-backed (sandbox/App Store safe) and `lofty`-backed (multi-format). See the full per-crate table in [CONTEXT.md](CONTEXT.md) and the public API surface in [`docs/API.md`](../docs/API.md).
+Rust workspace, 9 crates, 575 tests passing (720 with `--all-features`). Two co-existing tag-I/O foundations by design: `mp4ameta`-backed (sandbox/App Store safe) and `lofty`-backed (multi-format). See the full per-crate table in [CONTEXT.md](CONTEXT.md) and the public API surface in [`docs/API.md`](../docs/API.md).
 
 ### Consumption paths
 
@@ -120,8 +120,8 @@ Append a dated entry to [HISTORY.md](HISTORY.md) at the end of any substantial s
 
 ```bash
 cargo build --workspace
-cargo test  --workspace                       # 573 tests
-cargo test  --workspace --all-features        # 718 tests (the CI configuration)
+cargo test  --workspace                       # 575 tests
+cargo test  --workspace --all-features        # 720 tests (the CI configuration)
 cargo test  -p meedya-tags-extended           # single crate
 cargo doc   --workspace --no-deps --open      # exhaustive auto-generated docs
 ```

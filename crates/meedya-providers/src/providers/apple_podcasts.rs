@@ -18,7 +18,7 @@ use crate::rate_limiter::{default_limiter_for, ProviderRateLimiter};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
-use super::leading_year;
+use super::{leading_year, net_err};
 
 /// Searches Apple Podcasts via the iTunes Search API.
 ///
@@ -223,7 +223,7 @@ impl MetadataProvider for ApplePodcastsProvider {
             ])
             .send()
             .await
-            .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
+            .map_err(net_err)?;
 
         if !response.status().is_success() {
             return Err(ProviderError::NetworkError(format!(
@@ -232,10 +232,7 @@ impl MetadataProvider for ApplePodcastsProvider {
             )));
         }
 
-        let body = response
-            .text()
-            .await
-            .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
+        let body = response.text().await.map_err(net_err)?;
         Self::parse_podcasts("apple_podcasts", &body)
     }
 }

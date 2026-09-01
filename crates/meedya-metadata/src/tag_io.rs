@@ -720,6 +720,119 @@ mod tests {
         out
     }
 
+    /// Ogg's CRC-32: polynomial 0x04c11db7, zero init, **no** input/output
+    /// reflection and no final XOR — deliberately not the common zlib
+    /// CRC-32, so a stock crc32 crate would produce a page every parser
+    /// rejects.
+    fn ogg_crc(data: &[u8]) -> u32 {
+        let mut crc: u32 = 0;
+        for &byte in data {
+            crc ^= u32::from(byte) << 24;
+            for _ in 0..8 {
+                crc = if crc & 0x8000_0000 != 0 {
+                    (crc << 1) ^ 0x04c1_1db7
+                } else {
+                    crc << 1
+                };
+            }
+        }
+        crc
+    }
+
+    /// Build one Ogg page around `payload`, filling in the segment table and
+    /// the CRC (which is computed over the whole page with the CRC field
+    /// zeroed).
+    fn ogg_page(header_type: u8, serial: u32, seq: u32, payload: &[u8]) -> Vec<u8> {
+        let mut segments: Vec<u8> = Vec::new();
+        let mut remaining = payload.len();
+        while remaining >= 255 {
+            segments.push(255);
+            remaining -= 255;
+        }
+        segments.push(u8::try_from(remaining).expect("remaining < 255"));
+
+        let mut page = Vec::new();
+        page.extend_from_slice(b"OggS");
+        page.push(0); // stream structure version
+        page.push(header_type);
+        page.extend_from_slice(&0i64.to_le_bytes()); // granule position
+        page.extend_from_slice(&serial.to_le_bytes());
+        page.extend_from_slice(&seq.to_le_bytes());
+        page.extend_from_slice(&[0u8; 4]); // CRC placeholder
+        page.push(u8::try_from(segments.len()).expect("segment count fits"));
+        page.extend_from_slice(&segments);
+        page.extend_from_slice(payload);
+
+        let crc = ogg_crc(&page);
+        page[22..26].copy_from_slice(&crc.to_le_bytes());
+        page
+    }
+
+    /// A minimal, valid, **untagged** Ogg Opus stream: an OpusHead
+    /// identification page followed by an OpusTags comment page carrying a
+    /// vendor string and zero user comments.
+    ///
+    /// "Untagged" for Opus means exactly this — the spec *requires* an
+    /// OpusTags packet, so a stream with no comment header at all is
+    /// malformed rather than untagged. Zero user comments is the real-world
+    /// untagged state, and it is the state that exercises the #79 fix:
+    /// `primary_tag()` finds nothing to prefer, so the fallback path runs.
+    fn minimal_untagged_opus() -> Vec<u8> {
+        const SERIAL: u32 = 0xDEAD_BEEF;
+
+        let mut head = Vec::new();
+        head.extend_from_slice(b"OpusHead");
+        head.push(1); // version
+        head.push(2); // channel count
+        head.extend_from_slice(&312u16.to_le_bytes()); // pre-skip
+        head.extend_from_slice(&48_000u32.to_le_bytes()); // input sample rate
+        head.extend_from_slice(&0i16.to_le_bytes()); // output gain
+        head.push(0); // channel mapping family
+
+        let vendor = b"MeedyaSuite";
+        let mut tags = Vec::new();
+        tags.extend_from_slice(b"OpusTags");
+        tags.extend_from_slice(&u32::try_from(vendor.len()).expect("fits").to_le_bytes());
+        tags.extend_from_slice(vendor);
+        tags.extend_from_slice(&0u32.to_le_bytes()); // zero user comments
+
+        let mut out = ogg_page(0x02, SERIAL, 0, &head); // BOS
+        out.extend_from_slice(&ogg_page(0x00, SERIAL, 1, &tags));
+        out
+    }
+
+    /// Ogg was one of the container families named in #79 as panicking.
+    ///
+    /// Note this shares the *code path* with the FLAC test above — both
+    /// resolve to `TagType::VorbisComments` via `primary_tag_type()` — so
+    /// what this adds is container-level coverage: it proves the fix works
+    /// against Ogg page framing, not just FLAC's metadata-block layout.
+    #[test]
+    fn write_tags_on_untagged_opus_does_not_panic_and_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("untagged.opus");
+        std::fs::write(&path, minimal_untagged_opus()).expect("write fixture");
+
+        write_tags(
+            &path,
+            &[
+                (CommonTag::Title, "Fixture Title".into()),
+                (CommonTag::Artist, "Fixture Artist".into()),
+            ],
+        )
+        .expect("write_tags on untagged opus");
+
+        let read_back = read_tags(&path).expect("read_tags on written opus");
+        assert_eq!(
+            read_back.get(&CommonTag::Title).map(Vec::as_slice),
+            Some(["Fixture Title".to_string()].as_slice())
+        );
+        assert_eq!(
+            read_back.get(&CommonTag::Artist).map(Vec::as_slice),
+            Some(["Fixture Artist".to_string()].as_slice())
+        );
+    }
+
     #[test]
     fn write_tags_on_untagged_m4a_does_not_panic_and_round_trips() {
         let dir = tempfile::tempdir().expect("tempdir");

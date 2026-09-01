@@ -93,6 +93,7 @@ pub use iswc::IswcProvider;
     feature = "provider-isrc",
     feature = "provider-eidr",
     feature = "provider-iswc",
+    feature = "provider-apple-podcasts",
 ))]
 use crate::traits::ProviderError;
 
@@ -129,6 +130,7 @@ use crate::traits::ProviderError;
     feature = "provider-isrc",
     feature = "provider-eidr",
     feature = "provider-iswc",
+    feature = "provider-apple-podcasts",
 ))]
 pub(crate) fn net_err(mut e: reqwest::Error) -> ProviderError {
     if let Some(url) = e.url_mut() {
@@ -287,6 +289,7 @@ mod tests {
     feature = "provider-isrc",
     feature = "provider-eidr",
     feature = "provider-iswc",
+    feature = "provider-apple-podcasts",
 ))]
 mod net_err_tests {
     use super::net_err;

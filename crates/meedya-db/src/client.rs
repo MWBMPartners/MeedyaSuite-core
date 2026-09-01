@@ -16,6 +16,26 @@ use crate::error::DbError;
 /// MeedyaDB API base URL.
 const DEFAULT_BASE_URL: &str = "https://api.meedya.tv/v1";
 
+/// Strip the query string from a `reqwest` error before stringifying it.
+///
+/// `reqwest`'s `Display` appends `" for url (…)"` with the **complete** URL,
+/// query string included. MeedyaDB authenticates with an `X-API-Key` header
+/// rather than a query parameter, so nothing secret leaks today — but the
+/// workspace applies this uniformly so that a future endpoint taking a
+/// query-string token is safe by default rather than by review. Scheme,
+/// host and path are kept; they are the useful part when diagnosing a
+/// failure.
+///
+/// Deliberately duplicated from the equivalent helpers in
+/// `meedya-providers` and `meedya-fingerprint` — `meedya-db` depends on
+/// neither, and a shared home for six lines is not worth a new crate.
+fn sanitized(mut e: reqwest::Error) -> String {
+    if let Some(url) = e.url_mut() {
+        url.set_query(None);
+    }
+    e.to_string()
+}
+
 /// API search response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResponse {
@@ -81,7 +101,7 @@ impl MeedyaDbClient {
             .query(&params)
             .send()
             .await
-            .map_err(|e| DbError::NetworkError(e.to_string()))?;
+            .map_err(|e| DbError::NetworkError(sanitized(e)))?;
 
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(DbError::AuthError("Invalid API key".into()));
@@ -93,7 +113,7 @@ impl MeedyaDbClient {
 
         resp.json()
             .await
-            .map_err(|e| DbError::SerializationError(e.to_string()))
+            .map_err(|e| DbError::SerializationError(sanitized(e)))
     }
 
     /// Look up a specific media item by ID.
@@ -106,7 +126,7 @@ impl MeedyaDbClient {
             .header("X-API-Key", &self.api_key)
             .send()
             .await
-            .map_err(|e| DbError::NetworkError(e.to_string()))?;
+            .map_err(|e| DbError::NetworkError(sanitized(e)))?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(DbError::NotFound(media_id.into()));
@@ -118,7 +138,7 @@ impl MeedyaDbClient {
 
         resp.json()
             .await
-            .map_err(|e| DbError::SerializationError(e.to_string()))
+            .map_err(|e| DbError::SerializationError(sanitized(e)))
     }
 
     /// Match media by filename (fuzzy matching).
@@ -132,7 +152,7 @@ impl MeedyaDbClient {
             .query(&[("filename", filename)])
             .send()
             .await
-            .map_err(|e| DbError::NetworkError(e.to_string()))?;
+            .map_err(|e| DbError::NetworkError(sanitized(e)))?;
 
         if !resp.status().is_success() {
             return Err(DbError::ApiError(format!("HTTP {}", resp.status())));
@@ -140,12 +160,33 @@ impl MeedyaDbClient {
 
         resp.json()
             .await
-            .map_err(|e| DbError::SerializationError(e.to_string()))
+            .map_err(|e| DbError::SerializationError(sanitized(e)))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// Canary: a credential in a query string must never survive into an
+    /// error message. MeedyaDB uses header auth today, so this guards the
+    /// helper against being removed as "unnecessary".
+    #[tokio::test]
+    async fn sanitized_strips_query_string_from_error_text() {
+        // 127.0.0.1 on a closed port refuses immediately — hermetic, no
+        // network, no timeout wait.
+        let err = reqwest::Client::new()
+            .get("http://127.0.0.1:1/v1/search?token=SUPERSECRET")
+            .send()
+            .await
+            .expect_err("connection to a closed port must fail");
+        let message = super::sanitized(err);
+        assert!(!message.contains("SUPERSECRET"), "secret leaked: {message}");
+        assert!(!message.contains("token="), "query key leaked: {message}");
+        assert!(
+            message.contains("127.0.0.1"),
+            "host should be kept: {message}"
+        );
+    }
+
     use super::*;
 
     #[test]
