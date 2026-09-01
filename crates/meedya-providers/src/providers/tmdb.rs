@@ -15,11 +15,10 @@ use crate::extra_keys::PROVIDER_ID;
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
-use super::leading_year;
-
-fn net_err(e: reqwest::Error) -> ProviderError {
-    ProviderError::NetworkError(e.to_string())
-}
+// net_err lives in providers::mod (see MeedyaSuite-core#80): it strips the
+// query string before formatting a reqwest error, since this provider's
+// `api_key` query param would otherwise leak into the error text.
+use super::{leading_year, net_err};
 
 fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
     ProviderError::Other(format!("parse error: {context}: {e}"))

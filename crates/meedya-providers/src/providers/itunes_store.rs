@@ -19,11 +19,9 @@ use crate::extra_keys::{CONTENT_ADVISORY, DURATION_SECS, PROVIDER_ID};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
-use super::leading_year;
-
-fn net_err(e: reqwest::Error) -> ProviderError {
-    ProviderError::NetworkError(e.to_string())
-}
+// net_err lives in providers::mod (see MeedyaSuite-core#80): centralised
+// so every provider redacts a reqwest error's query string uniformly.
+use super::{leading_year, net_err};
 
 fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
     ProviderError::Other(format!("parse error: {context}: {e}"))

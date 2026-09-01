@@ -609,6 +609,29 @@ So `providers::isrc` strips separators and uppercases (`normalise_isrc`), while 
 
 `providers::iswc` additionally exposes `pub fn normalise_iswc(&str) -> String` (compact canonical form). Re-validate after the 2026-11-30 reindex — no ticket announces an identifier-analyzer change, but the stored-form query is the safest bet either way (issue #69).
 
+#### Error text contains no credentials
+
+Every `reqwest` error captured by a provider has its **query string stripped** before being
+stringified into `ProviderError::NetworkError`. `meedya-fingerprint`'s AcoustID client does
+the same for both its transport and decode errors.
+
+This matters because `reqwest`'s `Display` appends `" for url (…)"` with the *complete* URL,
+and three services take their credential as a query parameter — TMDb (`api_key`), OMDb
+(`apikey`) and AcoustID (`client`). Without redaction, any send failure (DNS, timeout, TLS)
+would produce an error string containing the live API key, which then flows into logs,
+tracing output and UI error surfaces.
+
+Scheme, host and path are **kept** — they are the useful part for diagnosing a failure in a
+multi-provider batch, and no secret appears in a path in this workspace. So a TMDb failure
+reads `error sending request for url (https://api.themoviedb.org/3/search/multi)`.
+
+The redaction is applied to **every** provider, not only the three that currently use query
+auth, so a provider added later with query-string credentials is safe by default. Both crates
+carry a canary test asserting a known secret cannot appear in the error string.
+
+> Providers using header auth (Spotify, TheTVDB, EIDR) were never exposed this way —
+> `reqwest` does not print headers. They go through the same helper regardless.
+
 #### `MetadataProvider` trait
 
 ```rust

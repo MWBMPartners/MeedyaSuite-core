@@ -18,12 +18,10 @@ use crate::lucene::phrase_clause;
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
-use super::leading_year;
-
-/// Build a `ProviderError::NetworkError` from a `reqwest::Error`.
-fn net_err(e: reqwest::Error) -> ProviderError {
-    ProviderError::NetworkError(e.to_string())
-}
+// net_err lives in providers::mod (see MeedyaSuite-core#80): centralised
+// so every provider redacts a reqwest error's query string uniformly,
+// even ones like this that authenticate via header rather than query.
+use super::{leading_year, net_err};
 
 /// Build a parse-style `ProviderError::Other`.
 fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {

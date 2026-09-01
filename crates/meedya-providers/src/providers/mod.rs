@@ -76,6 +76,67 @@ pub mod iswc;
 #[cfg(feature = "provider-iswc")]
 pub use iswc::IswcProvider;
 
+/// Feature gate shared by [`net_err`] and its test: every provider module
+/// that captures a `reqwest::Error` into a `ProviderError::NetworkError`.
+/// (`provider-apple-podcasts` is deliberately absent — that provider maps
+/// its network errors inline rather than through this helper.)
+#[cfg(any(
+    feature = "provider-musicbrainz",
+    feature = "provider-spotify",
+    feature = "provider-apple-music",
+    feature = "provider-deezer",
+    feature = "provider-tmdb",
+    feature = "provider-thetvdb",
+    feature = "provider-omdb",
+    feature = "provider-apple-tv",
+    feature = "provider-itunes-store",
+    feature = "provider-isrc",
+    feature = "provider-eidr",
+    feature = "provider-iswc",
+))]
+use crate::traits::ProviderError;
+
+/// Builds a `ProviderError::NetworkError` from a `reqwest::Error`, first
+/// stripping the query string from any URL the error carries.
+///
+/// `reqwest::Error`'s `Display` impl appends `" for url ({url})"` —
+/// including the full query string — so an error from a request that
+/// carried an API key as a query parameter (e.g. TMDb's `api_key=...`,
+/// OMDb's `apikey=...`) would otherwise leak that key into logs and
+/// returned error text. `Error::url_mut` exists precisely for this: its
+/// own docs name "remove sensitive information from the URL (e.g. an API
+/// key in the query), but do not want to remove the URL entirely" as the
+/// intended use. Clearing only the query (not the whole URL via
+/// `without_url()`) keeps scheme/host/path for diagnostics — no provider
+/// in this workspace puts a secret in the path.
+///
+/// Shared by every provider that authenticates via a query parameter
+/// *and* every provider that doesn't (musicbrainz, apple-music, etc. use
+/// header auth or no auth at all) as deliberate defence-in-depth: a
+/// future provider that adds query-string auth is safe by default
+/// instead of depending on its author remembering to redact it here.
+/// See MeedyaSuite-core#80.
+#[cfg(any(
+    feature = "provider-musicbrainz",
+    feature = "provider-spotify",
+    feature = "provider-apple-music",
+    feature = "provider-deezer",
+    feature = "provider-tmdb",
+    feature = "provider-thetvdb",
+    feature = "provider-omdb",
+    feature = "provider-apple-tv",
+    feature = "provider-itunes-store",
+    feature = "provider-isrc",
+    feature = "provider-eidr",
+    feature = "provider-iswc",
+))]
+pub(crate) fn net_err(mut e: reqwest::Error) -> ProviderError {
+    if let Some(url) = e.url_mut() {
+        url.set_query(None);
+    }
+    ProviderError::NetworkError(e.to_string())
+}
+
 /// Extracts a leading four-digit year from a provider date string.
 ///
 /// Provider APIs return dates in inconsistent shapes — full ISO dates
@@ -202,5 +263,59 @@ mod tests {
         // and are not `is_ascii_digit`, so the digit run ends immediately
         // rather than a byte offset landing mid-character.
         assert_eq!(leading_year("１９７９"), None);
+    }
+}
+
+// Canary for MeedyaSuite-core#80: reqwest::Error's Display appends
+// " for url ({url})" including the query string, so an unredacted error
+// from a query-authenticated request (TMDb, OMDb) would leak the API key
+// into logs and returned error text. This forces a real reqwest error
+// against a URL carrying a fake API key in the query string and asserts
+// `net_err`'s output contains neither the secret nor the query string at
+// all, while still naming the host for diagnostics.
+#[cfg(test)]
+#[cfg(any(
+    feature = "provider-musicbrainz",
+    feature = "provider-spotify",
+    feature = "provider-apple-music",
+    feature = "provider-deezer",
+    feature = "provider-tmdb",
+    feature = "provider-thetvdb",
+    feature = "provider-omdb",
+    feature = "provider-apple-tv",
+    feature = "provider-itunes-store",
+    feature = "provider-isrc",
+    feature = "provider-eidr",
+    feature = "provider-iswc",
+))]
+mod net_err_tests {
+    use super::net_err;
+
+    #[tokio::test]
+    async fn net_err_strips_api_key_from_query_string() {
+        // 127.0.0.1 on a closed port refuses the connection immediately
+        // (no listener, no DNS, no real network) so `.send()` fails fast
+        // and deterministically — hermetic and quick.
+        let client = reqwest::Client::new();
+        let result = client
+            .get("http://127.0.0.1:1/lookup?api_key=SUPERSECRET")
+            .send()
+            .await;
+
+        let err = result.expect_err("connection to a closed port must fail");
+        let message = net_err(err).to_string();
+
+        assert!(
+            !message.contains("SUPERSECRET"),
+            "net_err leaked the API key into the error text: {message}"
+        );
+        assert!(
+            !message.contains("api_key"),
+            "net_err leaked the query string into the error text: {message}"
+        );
+        assert!(
+            message.contains("127.0.0.1"),
+            "net_err should still name the host for diagnostics: {message}"
+        );
     }
 }

@@ -19,6 +19,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::FingerprintError;
 
+/// Formats a `reqwest::Error`, stripping the query string from any URL it
+/// carries first.
+///
+/// `reqwest::Error`'s `Display` impl appends `" for url ({url})"` —
+/// including the full query string — and AcoustID lookups pass the API
+/// key as the `client` query parameter, so an unredacted error would leak
+/// it into logs and returned error text. `Error::url_mut` exists
+/// precisely for this (its own docs name "remove sensitive information
+/// from the URL … but do not want to remove the URL entirely" as the
+/// intended use); clearing only the query keeps the host for diagnostics.
+///
+/// This is a deliberate duplicate of `meedya_providers::providers::net_err`
+/// rather than a shared dependency: `meedya-fingerprint` is a leaf crate
+/// in the workspace dependency graph and cannot depend on
+/// `meedya-providers` (see MeedyaSuite-core#80).
+fn sanitized(mut e: reqwest::Error) -> String {
+    if let Some(url) = e.url_mut() {
+        url.set_query(None);
+    }
+    e.to_string()
+}
+
 /// AcoustID API endpoint.
 const ACOUSTID_API_URL: &str = "https://api.acoustid.org/v2/lookup";
 
@@ -83,7 +105,7 @@ impl AcoustIdClient {
             .query(&params)
             .send()
             .await
-            .map_err(|e| FingerprintError::NetworkError(e.to_string()))?;
+            .map_err(|e| FingerprintError::NetworkError(sanitized(e)))?;
 
         if !response.status().is_success() {
             return Err(FingerprintError::AcoustIdApiError(format!(
@@ -95,7 +117,7 @@ impl AcoustIdClient {
         let body: serde_json::Value = response
             .json()
             .await
-            .map_err(|e| FingerprintError::AcoustIdApiError(e.to_string()))?;
+            .map_err(|e| FingerprintError::AcoustIdApiError(sanitized(e)))?;
 
         // Check API-level status
         let status = body["status"].as_str().unwrap_or("error");
@@ -163,5 +185,39 @@ mod tests {
         let back: AcoustIdResult = serde_json::from_str(&json).unwrap();
         assert_eq!(back.acoustid, "abc-123");
         assert_eq!(back.score, 0.95);
+    }
+
+    // Canary for MeedyaSuite-core#80: reqwest::Error's Display appends
+    // " for url ({url})" including the query string, and AcoustID lookups
+    // pass the API key as the `client` query parameter. This forces a
+    // real reqwest error against a URL carrying a fake API key and
+    // asserts `sanitized`'s output contains neither the secret nor the
+    // query string, while still naming the host for diagnostics.
+    #[tokio::test]
+    async fn sanitized_strips_api_key_from_query_string() {
+        // 127.0.0.1 on a closed port refuses the connection immediately
+        // (no listener, no DNS, no real network) so `.send()` fails fast
+        // and deterministically — hermetic and quick.
+        let client = reqwest::Client::new();
+        let result = client
+            .get("http://127.0.0.1:1/v2/lookup?client=SUPERSECRET")
+            .send()
+            .await;
+
+        let err = result.expect_err("connection to a closed port must fail");
+        let message = sanitized(err);
+
+        assert!(
+            !message.contains("SUPERSECRET"),
+            "sanitized leaked the API key into the error text: {message}"
+        );
+        assert!(
+            !message.contains("client="),
+            "sanitized leaked the query string into the error text: {message}"
+        );
+        assert!(
+            message.contains("127.0.0.1"),
+            "sanitized should still name the host for diagnostics: {message}"
+        );
     }
 }
