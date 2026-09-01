@@ -5,6 +5,8 @@
 // Ported from MeedyaManager crates/mm-providers/src/identifiers/mod.rs
 // under MeedyaSuite-core#12 / MeedyaManager#136.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
@@ -68,6 +70,7 @@ impl IswcProvider {
             } else {
                 user_agent.clone()
             })
+            .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest ClientBuilder failed — TLS initialisation error");
         Self {

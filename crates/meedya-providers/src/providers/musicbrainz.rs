@@ -5,6 +5,8 @@
 // Ported from MeedyaManager crates/mm-providers/src/music/mod.rs
 // under MeedyaSuite-core#12 / MeedyaManager#136.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
@@ -47,13 +49,14 @@ fn insert_duration(result: &mut ProviderResult, secs: f64) {
 
 /// Build the MusicBrainz `query=` Lucene query string for `query`.
 ///
-/// ISRC takes priority over free-text search when present. `title` and
-/// `artist` are each emitted as a phrase-quoted, Lucene-escaped field
-/// clause via [`lucene_phrase_clause`] — see that function's doc comment
-/// for why raw interpolation is unsafe here (multi-word values binding
-/// only their first token to the field; Lucene special characters
-/// corrupting the query). The ISRC itself is a single-token identifier, so
-/// it is escaped but left unquoted.
+/// ISRC takes priority over free-text search when present. `title`,
+/// `artist`, `album`, and `year` are each emitted as a Lucene field clause
+/// (joined with ` AND `) when present on `query`. `title` and `artist` are
+/// phrase-quoted and Lucene-escaped via [`lucene_phrase_clause`] — see that
+/// function's doc comment for why raw interpolation is unsafe here
+/// (multi-word values binding only their first token to the field; Lucene
+/// special characters corrupting the query). The ISRC itself is a
+/// single-token identifier, so it is escaped but left unquoted.
 fn build_lucene_query(query: &SearchQuery) -> String {
     if let Some(isrc) = &query.isrc {
         format!("isrc:{}", lucene_escape(isrc))
@@ -64,6 +67,21 @@ fn build_lucene_query(query: &SearchQuery) -> String {
         }
         if let Some(artist) = &query.artist {
             parts.push(lucene_phrase_clause("artistname", artist));
+        }
+        if let Some(album) = &query.album {
+            // MusicBrainz's recording-search `release` field matches the
+            // title of a release the recording appears on.
+            parts.push(lucene_phrase_clause("release", album));
+        }
+        if let Some(year) = &query.year {
+            // Constrains to the recording's (first) release year via the MB
+            // recording-search `date` field. This is an exact-year match,
+            // not a range — a recording whose only indexed release date
+            // falls outside `year` (e.g. a reissue vs. the original year)
+            // will not match. May later be refined to a `date:[start TO
+            // end]` range, and should be validated against the live API
+            // once the FFI path is enabled (not wired up yet).
+            parts.push(format!("date:{year}"));
         }
         if parts.is_empty() {
             search_term(query)
@@ -101,6 +119,7 @@ impl MusicBrainzProvider {
             } else {
                 user_agent.clone()
             })
+            .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest ClientBuilder failed — TLS initialisation error");
         Self {
@@ -191,6 +210,7 @@ impl MusicBrainzProvider {
                 result.score = score;
 
                 if let Some(id) = rec.id {
+                    result.musicbrainz_id = Some(id.clone());
                     result
                         .metadata
                         .insert(PROVIDER_ID.into(), Value::String(id));
@@ -317,6 +337,7 @@ mod tests {
         assert_eq!(results[0].year, Some(1979));
         assert_eq!(results[0].isrc.as_deref(), Some("GBAYE7900498"));
         assert!((results[0].score - 1.0).abs() < 1e-9);
+        assert_eq!(results[0].musicbrainz_id.as_deref(), Some("abc123"));
     }
 
     #[test]
@@ -395,5 +416,46 @@ mod tests {
     fn build_lucene_query_falls_back_to_free_text_search_term() {
         let query = SearchQuery::default();
         assert_eq!(build_lucene_query(&query), "");
+    }
+
+    #[test]
+    fn build_lucene_query_title_artist_album_and_year() {
+        let query = SearchQuery {
+            title: Some("Bohemian Rhapsody".into()),
+            artist: Some("Queen".into()),
+            album: Some("A Night at the Opera".into()),
+            year: Some(1975),
+            ..Default::default()
+        };
+        assert_eq!(
+            build_lucene_query(&query),
+            r#"recording:"Bohemian Rhapsody" AND artistname:"Queen" AND release:"A Night at the Opera" AND date:1975"#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_title_and_album_only() {
+        let query = SearchQuery {
+            title: Some("Comfortably Numb".into()),
+            album: Some("The Wall".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            build_lucene_query(&query),
+            r#"recording:"Comfortably Numb" AND release:"The Wall""#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_title_and_year_only() {
+        let query = SearchQuery {
+            title: Some("Comfortably Numb".into()),
+            year: Some(1979),
+            ..Default::default()
+        };
+        assert_eq!(
+            build_lucene_query(&query),
+            r#"recording:"Comfortably Numb" AND date:1979"#
+        );
     }
 }
