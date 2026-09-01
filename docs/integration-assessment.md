@@ -2,7 +2,7 @@
 
 **Original date**: 2026-04-08
 **Last updated**: 2026-05-18
-**Status**: **Implementation substantially complete.** 9 of 9 workspace crates implemented (211 tests passing). Downstream-app adoption pending.
+**Status**: **Implementation substantially complete.** 9 of 9 workspace crates implemented (211 tests as of 2026-05-18; see [`README.md`](../README.md) for current counts). Downstream-app adoption pending.
 
 > This document captures the original cross-project duplication analysis from 2026-04-08 when all core crates were placeholder stubs. The findings below are preserved as historical context; for the current state of the implementation, see [`README.md`](../README.md) and [`docs/API.md`](API.md).
 

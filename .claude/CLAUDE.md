@@ -39,7 +39,7 @@ Rust workspace, 9 crates, 575 tests passing (720 with `--all-features`). Two co-
 
 ## Key design principles
 
-lets 1. **Standards-first**: Use standard metadata tags (ID3v2 / Vorbis / MP4 ilst spec fields) wherever they exist. Fall back to `MeedyaMeta:*` freeform atoms **only** when no standard equivalent exists (e.g., DJ energy ratings, internal audit trails, MeedyaSuite-only soft-playback bounds). Standards-first applies to every crate — not just MIK or DJ-metadata.
+1. **Standards-first**: Use standard metadata tags (ID3v2 / Vorbis / MP4 ilst spec fields) wherever they exist. Fall back to `MeedyaMeta:*` freeform atoms **only** when no standard equivalent exists (e.g., DJ energy ratings, internal audit trails, MeedyaSuite-only soft-playback bounds). Standards-first applies to every crate — not just MIK or DJ-metadata.
 2. **Results only, not side effects**: Crates return data; consumers handle I/O (file writes, UI updates, DB persistence).
 3. **Config-driven where possible**: Tag definitions, codec registries etc. loaded from TOML — zero Rust changes to add entries.
 4. **No app-specific logic**: No Tauri, no SwiftUI, no CLI framework dependencies in core crates.
@@ -128,7 +128,7 @@ cargo doc   --workspace --no-deps --open      # exhaustive auto-generated docs
 
 ### Adding a metadata tag
 
-Edit `crates/meedya-metadata/tags.toml` (see the procedure in [PROMPTS.md → Adding a new metadata tag](PROMPTS.md#adding-a-new-metadata-tag)). Zero Rust changes. Bump test count in `registry.rs`.
+Edit `crates/meedya-metadata/tags.toml` (see the procedure in [PROMPTS.md → Adding a new metadata tag](PROMPTS.md#adding-a-new-metadata-tag-apple-music--atoms)). Zero Rust changes. Bump test count in `registry.rs`.
 
 ### Adding a workspace crate
 
@@ -166,6 +166,8 @@ docs/
   HISTORY.md                        # Append-only session log
   MEMORY.md                         # Durable project facts
   PROMPTS.md                        # Reusable task prompts
+  ProjectBrief_Chat.claude          # High-level project brief (non-technical audience)
+  agents/                           # Claude Code subagent configs (deep-architect, quick-edits)
 ```
 
 ## Git workflow

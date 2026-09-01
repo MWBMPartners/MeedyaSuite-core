@@ -16,11 +16,17 @@ Before this library, three active projects independently maintained:
 - ReplayGain loudness analysis (EBU R128)
 - MeedyaDB API client code
 - Metadata provider integrations (MusicBrainz, TMDB, TheTVDB, etc.)
+- DJ metadata (BPM, key, cue points, Mixed In Key analysis)
+- Lyrics fetch/parse/write and library import (iTunes XML, CUE sheets)
 
 This duplication existed across Rust (MeedyaDL, MeedyaManager) and Swift
 (MeedyaConverter), making changes error-prone and inconsistent.
 
 ## Crate Responsibilities
+
+The workspace is 9 crates. See [`README.md`](../README.md)'s crate table for the
+authoritative, current list (purpose, implementation status, per-crate test count) — it is
+not repeated here so this brief cannot drift out of sync with it.
 
 ### meedya-codecs (Priority 1 — highest value)
 The single source of truth for codec identity. Defines AudioCodec, VideoCodec,
@@ -31,21 +37,43 @@ metadata (FFmpeg names, lossless flags, compatibility matrices, classification).
 Config-driven metadata tag system. TagRegistry loads tag definitions from TOML
 (zero code changes to add tags). JSON path extraction engine for API responses.
 CommonTag enum mapping standard field names across iTunes atoms, Vorbis Comments,
-and ID3v2 frames.
+and ID3v2 frames. Also owns the cross-repo `identifier_types` registry and a
+filename `template` engine shared across the downstream apps.
+
+### meedya-tags-extended
+Multi-format (lofty-based) DJ metadata foundation: BPM/key/cue points/loops/beat
+grid, plus a Mixed In Key reader. Other proprietary DJ readers (Serato, Rekordbox,
+Traktor, Virtual DJ) are pending fixture-based implementation sessions.
+
+### meedya-library-import
+Ingests playback bounds and metadata from external library databases — iTunes /
+Music.app XML and CUE sheets — into a normalized `LibraryEntry` stream.
+
+### meedya-lyrics
+LRCLIB client, LRC parser/writer, sidecar + tag-embed writes (plain text and
+synced ID3v2 SYLT), plus the `.lyrics` YAML canonical model with Apple Music TTML
+import and multi-format export.
 
 ### meedya-fingerprint (Priority 3)
 Audio identification and loudness analysis. AcoustID API client with rate limiting.
 ReplayGain analyzer using FFmpeg EBU R128 filter. Returns results only — consumers
-handle tag writing via meedya-metadata.
+handle tag writing via meedya-metadata. Fingerprint *generation* (Chromaprint) is
+behind a non-default, opt-in Cargo feature.
+
+### meedya-providers
+Centralised metadata provider framework. `MetadataProvider` trait, capabilities
+system, rate limiting, credential storage, cover art helpers, match scoring, and
+in-repo provider implementations (feature-gated, one per external service) —
+MusicBrainz, Spotify, Apple Music, Deezer, TMDb, TheTVDB, OMDb, Apple TV, iTunes
+Store, Apple Podcasts, ISRC, EIDR, ISWC.
 
 ### meedya-db (Priority 4)
 Shared media record types (Track, Album, Artist). MeedyaDB API client for
 api.meedya.tv/v1. DbExporter trait for multi-backend database export.
 
-### meedya-providers (in progress)
-Centralised metadata provider framework. MetadataProvider trait, capabilities
-system, and shared implementations for services used across multiple apps
-(MusicBrainz, TMDB, TheTVDB, AcoustID, Discogs, FanArt.tv, etc.).
+### meedya-core
+Unified facade crate re-exporting all of the above behind Cargo feature flags, so
+a downstream app can depend on one crate instead of nine.
 
 ## Integration Status
 
@@ -53,18 +81,24 @@ system, and shared implementations for services used across multiple apps
 |----------|--------|-----------------|
 | MeedyaDL (Rust/Tauri) | Pending | Direct Cargo git dependency |
 | MeedyaManager (Rust) | Pending | Direct Cargo git dependency |
-| MeedyaConverter (Swift) | Pending | Via bindings/swift C FFI |
-| MeedyaDB (Swift) | Not started | Via bindings/swift C FFI |
+| MeedyaConverter (Swift) | Pending | Via bindings/swift C FFI (not yet scaffolded) |
+| MeedyaDB (Swift) | Not started | Via bindings/swift C FFI (not yet scaffolded) |
 
 ## Key Dependencies
 
-- serde (serialization), toml (config), thiserror (errors), strum (enum derive)
-- reqwest + tokio (HTTP/async for API clients)
-- lofty (planned: multi-format tag I/O)
-- rusty-chromaprint + symphonia (planned: pure-Rust fingerprinting)
+- serde (serialization), toml + serde_yaml (config / YAML), thiserror (errors), strum (enum derive)
+- reqwest + tokio (HTTP/async for API clients), governor (rate limiting)
+- lofty (multi-format tag I/O — one of the two co-existing tag-I/O surfaces)
+- quick-xml (TTML/XML parsing in meedya-lyrics)
+- rusty-chromaprint + symphonia (pure-Rust fingerprinting — behind the opt-in `chromaprint` feature on meedya-fingerprint)
 - chrono (timestamps), serde_json (JSON handling)
+
+MSRV: Rust 1.82 (declared via `rust-version`; driven by `Option::is_none_or`).
 
 ## Testing
 
-55 unit tests across all crates. Run with `cargo test --workspace`.
+See [`README.md`](../README.md) for the current total test count and per-crate
+breakdown — deliberately not repeated here. This repo's chronic failure mode is
+doc-count drift across multiple files; a single source of truth avoids it.
+Run with `cargo test --workspace` (or `--all-features` for the CI configuration).
 All tests must pass before any push.

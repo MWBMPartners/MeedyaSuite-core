@@ -585,3 +585,45 @@ budget.
 
 **#95** filed: governor's default clock does not work on `wasm32`, which only matters now
 that the limiter is load-bearing. Blocks the planned WASM binding (#29).
+
+### Addendum — adversarial review follow-up and a documentation-contract repair
+
+Two follow-up passes after the five fixes landed.
+
+**Adversarial review of the five commits** found the work sound but surfaced three real
+gaps, fixed in `7ba2266`:
+- `docs/API.md` asserted the #80 redaction applied to "every provider" while
+  `apple_podcasts` was exempted. The code was brought up to the published contract rather
+  than the contract down to the code.
+- `meedya-db` had been descoped from #80 (header auth, leaks nothing today) — true, but it
+  left the acceptance criterion unmet and the next query-string endpoint unprotected. It now
+  has its own `sanitized` helper plus a canary.
+- #79's fixtures covered m4a and flac but not ogg. Added a minimal untagged Ogg Opus
+  fixture. Two things worth knowing about it: Ogg's CRC-32 is poly `0x04c11db7` with **no**
+  reflection and no final XOR — a stock crc32 crate produces pages every parser rejects; and
+  "untagged" for Opus means an OpusTags packet with **zero user comments**, not an absent
+  one, because the spec requires the comment header.
+
+**A full documentation audit against the code** then found something more serious: twelve
+signatures in `docs/API.md` did not match the source. Among them
+`MetadataProvider::search` — the single most central integration point in the workspace —
+documented as returning `Result<ProviderResult, _>` when it returns `Result<Vec<…>, _>`;
+`LyricsProvider::fetch` documented as returning `Option` when "not found" is an `Err`;
+`sidecar::write` with its arguments in the wrong order; `write_registry_tags` and
+`write_replaygain_tags` each missing a parameter; and a `meedya-codecs` usage example
+calling three functions that do not exist.
+
+A partner app coding against the published spec would not have compiled. This is precisely
+the failure mode CLAUDE.md's standing task warns about — "stale spec is worse than missing
+spec because it produces silent integration bugs" — and it had accumulated regardless.
+
+Also found entirely undocumented: `meedya_metadata::template` (the filename template engine
+from #47) and the fact that `meedya-fingerprint`'s Chromaprint generation is behind a
+**non-default** cargo feature, while the docs implied it worked out of the box.
+`DEFAULT_ANALYSIS_TIMEOUT` was documented as a crate-root re-export but was not one — fixed
+in the code, since #81's intent was clearly that callers can reference it.
+
+All 27 findings fixed. Every markdown relative link in the repo now resolves.
+
+Measured after: **575** default-features / **720** `--all-features`, 0 failing; fmt clean;
+clippy clean and enforcing.

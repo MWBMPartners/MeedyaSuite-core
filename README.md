@@ -13,13 +13,13 @@ Written in Rust. Distributable to all Meedya apps via:
 | Crate | Purpose | Status | Tests |
 |---|---|---|---|
 | [`meedya-codecs`](crates/meedya-codecs) | Audio/video/subtitle codecs, container formats, HDR, spatial audio, media classification, FFprobe + MediaInfo integration | Implemented | 47 |
-| [`meedya-metadata`](crates/meedya-metadata) | Two coexisting tag-I/O surfaces: lofty-backed multi-format (`CommonTag`, `tag_io`, `tag_registry`) and `mp4ameta`-backed sandbox-safe registry for the Apple Music tagging flow. Includes `playback_bounds` (soft start/stop atoms), codec ID tags, and the cross-repo `identifier_types` registry (scope→slug→validation vocabulary, #65). | Implemented | 107 |
+| [`meedya-metadata`](crates/meedya-metadata) | Two coexisting tag-I/O surfaces: lofty-backed multi-format (`CommonTag`, `tag_io`, `tag_registry`) and `mp4ameta`-backed sandbox-safe registry for the Apple Music tagging flow. Includes `playback_bounds` (soft start/stop atoms), codec ID tags, the cross-repo `identifier_types` registry (scope→slug→validation vocabulary, #65), and a filename `template` engine. | Implemented | 115 |
 | [`meedya-tags-extended`](crates/meedya-tags-extended) | Multi-format tag I/O foundation with DJ metadata support. `ExtendedTags` model, `MusicalKey` (Camelot/Open Key/traditional), `CuePoint`/`LoopPoint`/`BeatGrid`, standard BPM+key+comment read/write, **Mixed In Key reader** (`mik` module). Other proprietary readers (Serato/Rekordbox/Traktor/VDJ) pending fixture-based sessions. | Implemented | 180 |
 | [`meedya-library-import`](crates/meedya-library-import) | Ingest playback bounds + metadata from external library DBs. `itunes_xml` parses Music.app exports; `cuesheet` is a full CUE parser at CD-frame precision. | Implemented | 30 |
-| [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar writes, plain-text + synchronised ID3v2 SYLT tag-embed. | Implemented | 128 |
-| [`meedya-providers`](crates/meedya-providers) | Metadata provider framework: traits, capabilities, registry, rate limiting, cover art helpers, match scoring, Lucene/Solr query escaping (`lucene`). | Implemented | 39 |
-| [`meedya-fingerprint`](crates/meedya-fingerprint) | AcoustID fingerprinting + ReplayGain/EBU R128 loudness analysis. | Implemented | 6 |
-| [`meedya-db`](crates/meedya-db) | MeedyaDB API client, shared media models (Track/Album/Artist), database export trait. | Implemented | 3 |
+| [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar + ID3v2 SYLT tag-embed, Lyricsfile YAML canonical model with Apple Music TTML import (syllable-level timing) and LRC/Enhanced-LRC/SRT/WebVTT/ASS export. | Implemented | 130 |
+| [`meedya-providers`](crates/meedya-providers) | Metadata provider framework: traits, capabilities, registry, rate limiting, cover art helpers, match scoring, Lucene/Solr query escaping (`lucene`). | Implemented | 59 (199 with `--all-features`) |
+| [`meedya-fingerprint`](crates/meedya-fingerprint) | AcoustID fingerprinting + ReplayGain/EBU R128 loudness analysis. | Implemented | 10 (15 with `--all-features`) |
+| [`meedya-db`](crates/meedya-db) | MeedyaDB API client, shared media models (Track/Album/Artist), database export trait. | Implemented | 4 |
 | [`meedya-core`](crates/meedya-core) | Unified facade crate re-exporting the implemented crates behind feature flags. | Implemented | — |
 
 **Total: 575 tests passing** (720 with `--all-features`, the CI configuration), workspace builds clean.
@@ -59,6 +59,8 @@ meedya-db            = { git = "https://github.com/MWBMPartners/MeedyaSuite-core
 # Or the unified facade
 meedya-core = { git = "https://github.com/MWBMPartners/MeedyaSuite-core", features = ["full"] }
 ```
+
+**MSRV**: Rust 1.82 (declared via `rust-version` on `[workspace.package]`, inherited by all 9 crates; driven by `Option::is_none_or`).
 
 ## What's Shared
 
@@ -101,11 +103,13 @@ Cross-repo **identifier-types registry** (`identifier_types.toml`, #65) — the 
 
 - LRCLIB API client with pluggable `LyricsProvider` trait
 - `.lrc` parser/writer with synced `[mm:ss.xx]` timestamps
-- Sidecar writes + tag-embed via `meedya-metadata::CommonTag::Lyrics`
+- Sidecar writes + tag-embed (plain text + ID3v2 SYLT) via `meedya-metadata::CommonTag::Lyrics`
+- `.lyrics` YAML canonical model (`Lyricsfile`) with Apple Music TTML import (syllable-level timing) and export to LRC, Enhanced LRC, SRT, WebVTT, and ASS
+- `TtmlGranularity` classifier for detecting line/word/syllable timing precision in imported TTML
 
 ### Audio identification + loudness (`meedya-fingerprint`)
 
-- AcoustID API client with rate limiting and MusicBrainz recording extraction
+- AcoustID API client with rate limiting and MusicBrainz recording extraction (fingerprint generation itself is behind the opt-in, non-default `chromaprint` Cargo feature)
 - ReplayGain analyzer — EBU R128 loudness measurement, track + album gain
 
 ### Metadata providers (`meedya-providers`)
@@ -168,6 +172,7 @@ docs/
   cross-repo-issues.md              # Pre-drafted GitHub issues for downstream apps
 .claude/
   CLAUDE.md / CONTEXT.md            # Project state + architecture for Claude Code sessions
+  HANDOFF.md                        # Session-resumption state (read second, after CLAUDE.md)
   HISTORY.md                        # Append-only session log
   MEMORY.md / PROMPTS.md            # Durable facts + reusable task templates
 ```

@@ -4,7 +4,7 @@
 > **Read order at session start**: [CLAUDE.md](CLAUDE.md) → this file → [CONTEXT.md](CONTEXT.md).
 > **Update rule**: amend this file *as work lands*, not at the end. If a session is interrupted, this file is the only thing that survives.
 
-**Last updated**: 2026-09-01
+**Last updated**: 2026-09-02
 **Active branch**: `feature/work-in-progress`
 **Eventual PR target**: `main` (owner-confirmed 2026-09-01)
 
@@ -215,10 +215,8 @@ needed — or possible: there is no version-negotiation header, parameter, or re
 
 These were found while reading the code and are **not** covered by the consolidation:
 
-1. **`rate_limiter.rs` is dead code.** `crates/meedya-providers/src/rate_limiter.rs` exists
-   and configures `("musicbrainz", 50)`, but **no provider calls it**. MusicBrainz's ToS is
-   ~1 req/sec; core currently issues unthrottled requests. (Verified: grep for
-   `RateLimiter|acquire` across `src/providers/` returns nothing.)
+1. ~~**`rate_limiter.rs` is dead code.**~~ **Fixed by #94** — `ProviderRateLimiter` is now
+   wired across all 13 providers (see §11). No longer outstanding.
 
 2. **10+ providers have no HTTP timeout.** These use bare `Client::new()`:
    `tmdb`, `spotify`, `deezer`, `omdb`, `apple_music`, `itunes_store`, `apple_tv`,
@@ -229,8 +227,9 @@ These were found while reading the code and are **not** covered by the consolida
    date of the earliest release including this recording". Directly relevant to issue #74
    (earliest-dated release selection); we currently use `date`.
 
-4. **Pre-existing build warning**: unused import `MEEDYA_NAMESPACE` at
-   `crates/meedya-tags-extended/src/mik.rs:43`.
+4. ~~**Pre-existing build warning**: unused import `MEEDYA_NAMESPACE` at
+   `crates/meedya-tags-extended/src/mik.rs:43`.~~ **Fixed by #93** — the clippy-enforcement
+   pass scoped the import to `#[cfg(test)]`, where it's actually used. No longer outstanding.
 
 ---
 
@@ -407,13 +406,15 @@ because the limiter is load-bearing. Blocks #29.
 
 ---
 
-## 12. Remaining recommendations (not selected)
+## 12. Originally proposed ranking — all five since implemented, see §11
 
-Ranked by value-for-effort. Nothing here has been implemented — these are proposals.
+This section originally read "Nothing here has been implemented — these are proposals,"
+ranked by value-for-effort. That is now **stale and contradicts §11**: all five (issues #78,
+#79, #80, #81 and #94) landed as separate commits and are closed. Kept only as a historical
+record of the original ranking rationale; do not treat anything below as outstanding.
 
 1. **#78** — `d[..4.min(d.len())]` year extraction panics on multi-byte UTF-8 dates, in
    **11 provider parsers**. Same bug class as the `validate_isrc` panic already fixed. `S`
-   *(Note: #93 is already done — clippy is clean and enforcing.)*
 2. **#79** — insert-then-`unwrap()` panics when lofty silently refuses an unsupported tag
    type. Tagging a freshly-downloaded untagged M4A is a first-class MeedyaSuite flow. `S`
 3. **#80** — API keys leak into error text: `reqwest`'s `Display` appends the full URL
@@ -423,4 +424,4 @@ Ranked by value-for-effort. Nothing here has been implemented — these are prop
 5. **#94** — `rate_limiter.rs` is fully built and wired to **nothing**. First real batch run
    risks getting partner apps throttled or banned. `M`
 
-Full ranked list with evidence is in each issue body.
+Full ranked list with evidence is in each issue body (all now closed).

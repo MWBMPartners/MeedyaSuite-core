@@ -15,7 +15,7 @@
 
 Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bindings (Swift/web — bindings not yet scaffolded). No app-specific logic lives in this workspace.
 
-## Workspace state on `main`
+## Workspace state (feature/work-in-progress; PR target main)
 
 | Crate | Purpose | Status | Tests |
 |---|---|---|---|
@@ -25,13 +25,13 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | [meedya-library-import](../crates/meedya-library-import/) | External library ingestion: iTunes XML, CUE sheets. Emits normalized `LibraryEntry` records. | **Implemented** | 30 |
 | [meedya-lyrics](../crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O, plain-text and SYLT tag-embed. | **Implemented** | 130 |
 | [meedya-providers](../crates/meedya-providers/) | Provider framework: traits, capabilities, rate limiting, credentials, cover art, fuzzy match scoring, Lucene/Solr query escaping (`lucene`). In-repo `MetadataProvider` impls (feature-gated): MusicBrainz, Spotify, Apple Music, Deezer, TMDB, TheTVDB, OMDb, Apple TV, iTunes Store, Apple Podcasts, ISRC, EIDR, ISWC. | **Implemented** | 59 (199 all-features) |
-| [meedya-fingerprint](../crates/meedya-fingerprint/) | AcoustID client + ReplayGain EBU R128 analyser (bounded FFmpeg subprocess). Pure-Rust Chromaprint (no fpcalc). | **Implemented** | 15 |
-| [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 3 |
+| [meedya-fingerprint](../crates/meedya-fingerprint/) | AcoustID client + ReplayGain EBU R128 analyser (bounded FFmpeg subprocess). Pure-Rust Chromaprint fingerprint generation (no fpcalc) behind the non-default `chromaprint` feature. | **Implemented** | 10 (15 all-features) |
+| [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 4 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
 **Total: 575 tests with default features, 720 with `--all-features`** (the CI configuration) on `feature/work-in-progress`. All passing, 0 failing. `main` measures **601** with `--all-features`.
 
-> **Measured, not carried forward.** From `cargo test --workspace [--all-features]` run on 2026-09-01. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
+> **Measured, not carried forward.** From `cargo test --workspace [--all-features]` run on 2026-09-02. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
 
 Per-crate, `--all-features`: `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 115 · `meedya-providers` 199 · `meedya-tags-extended` 180. `meedya-providers` measures 59 with default features (provider impls are feature-gated).
 
@@ -48,6 +48,7 @@ Public surface: `AudioCodec` (42+ variants), `VideoCodec` (21+), `ContainerForma
 Two surfaces coexist by design:
 
 - **`lofty`-backed**: `common_tags` (CommonTag enum — `#[non_exhaustive]` as of #65/0.2.0, STANDARD_NAMESPACES), `tag_io` (read_tags, write_tags, write_registry_tags, write_acoustid_tags, write_replaygain_tags, TagMap), `tag_registry` (TagDefinition, TagRegistry, TagScope, TagValueType, AtomTarget), `json_path`.
+- **`template`** (#47) — filename template engine (`Template`, `TemplateError`, `TagSource` trait), root re-exported. `{name}` placeholders, `|`-piped transforms (sanitize/ascii/lower/upper/title/trim/round/fallback:VAR/max:N), `:NN` width specifiers.
 - **`identifier_types`** (#65) — cross-repo identifier-type registry loaded from [identifier_types.toml](../crates/meedya-metadata/identifier_types.toml) (scope→slug→validation vocabulary; DATA, not an enum). `IdentifierType`/`IdentifierScope`/`IdentifierStatus`/`IdentifierValidation`; `identifier_types()`/`identifier_type()`/`active_identifier_slugs()`; raw artifact re-exported as `IDENTIFIER_TYPES_TOML`. Guard-held: `crates/meedya-metadata/tests/identifier_registry_guard.rs` declares the expected active/reserved slug sets and fails CI if the artifact drifts from that declaration or from `CommonTag::identifier_slug()`.
 - **`mp4ameta`-backed (sandbox-safe)**: `registry` (TAG_REGISTRY static loaded from [tags.toml](../crates/meedya-metadata/tags.toml)), `writer` (`write_tags_from_registry`, `write_local_tags`, `extract_isrc_from_vendor`), `codec_tags` (CodecKind enum + per-codec writers), `playback_bounds` (`set_playback_start/stop`, `get_playback_*_ms`, `clear_*`).
 
@@ -88,8 +89,9 @@ The three `lucene` helpers implement **two different escaping regimes and are no
 
 ### meedya-fingerprint
 
-- `acoustid` — `AcoustIdClient`, `AcoustIdResult`. Pure-Rust Chromaprint, no fpcalc binary. Rate-limited.
-- `replaygain` — `ReplayGainAnalyzer`, `ReplayGainResult`, `AlbumGainResult`, `DEFAULT_REFERENCE_LEVEL` (-18 LUFS).
+- `acoustid` — `AcoustIdClient`, `AcoustIdResult`. Rate-limited AcoustID lookup client.
+- `chromaprint` (feature-gated, `default = []`) — pure-Rust fingerprint generation (`generate_fingerprint`), no fpcalc binary. Opt-in via the `chromaprint` Cargo feature (pulls `rusty-chromaprint` + `symphonia` + `base64`); `meedya-core` does not forward this feature.
+- `replaygain` — `ReplayGainAnalyzer`, `ReplayGainResult`, `AlbumGainResult`, `DEFAULT_REFERENCE_LEVEL` (-18 LUFS), `DEFAULT_ANALYSIS_TIMEOUT` (600s).
 
 ### meedya-db
 
@@ -128,7 +130,7 @@ cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```
 
-Workspace uses Rust edition 2021, MIT license, copyright header `// Copyright (c) 2026 MeedyaSuite` on new source files (older files retain `// Copyright (c) 2026 MeedyaSuite`).
+Workspace uses Rust edition 2021, MIT license, copyright header `// Copyright (c) 2026 MeedyaSuite` on every source file.
 
 ## Cross-repo coordination
 

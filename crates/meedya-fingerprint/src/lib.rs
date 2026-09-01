@@ -29,5 +29,6 @@ pub use acoustid::{AcoustIdClient, AcoustIdResult};
 pub use chromaprint::generate_fingerprint;
 pub use error::FingerprintError;
 pub use replaygain::{
-    AlbumGainResult, ReplayGainAnalyzer, ReplayGainResult, DEFAULT_REFERENCE_LEVEL,
+    AlbumGainResult, ReplayGainAnalyzer, ReplayGainResult, DEFAULT_ANALYSIS_TIMEOUT,
+    DEFAULT_REFERENCE_LEVEL,
 };

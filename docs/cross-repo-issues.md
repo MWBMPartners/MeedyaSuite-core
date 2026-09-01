@@ -9,6 +9,16 @@ because the session scope is restricted to `mwbmpartners/meedyasuite-core`.
 **To create these**: Start a new Claude Code session with all repos connected,
 or create them manually using the content below.
 
+> **Historical-snapshot notice (2026-09-02)**: this document was drafted while
+> `meedya-providers` was still unimplemented; several issue bodies below (DL-4, MC-3, MM-4)
+> reference it as blocked. **`meedya-providers` has since been implemented** (13 providers,
+> rate limiting wired across all of them) — MeedyaSuite-core #2 is no longer a blocker. For
+> the MusicBrainz path specifically, DL-4 is superseded by the owner-approved plan tracked as
+> MeedyaSuite-core #75 and MeedyaDL #1119 (MeedyaDL delegates `musicbrainz_service.rs`
+> internals to core). The Swift-bindings blockage (MeedyaSuite-core #3) still applies to
+> MC-1/MC-2/MC-3. Discogs, FanArt.tv, and OpenSubtitles (named in MC-3) are **not** implemented
+> in `meedya-providers` today.
+
 ---
 
 ## MeedyaDL Issues

@@ -69,7 +69,7 @@ Don't try to unify these. They serve genuinely different needs and unifying woul
 ## License obligations
 
 - MIT license on all source files (header above).
-- Third-party Rust crates: license compatibility is checked at the Cargo.lock level by CI. Dependencies must be MIT, Apache-2.0, BSD, MPL-2.0, or similarly permissive. Avoid GPL/AGPL.
+- Third-party Rust crates: license compatibility is currently a **manual review obligation** — no CI check exists yet (`ci.yml` runs fmt/build/test/clippy only; there is no cargo-deny/cargo-about job, and no `deny.toml`/`about.toml` in the repo). Dependencies must be MIT, Apache-2.0, BSD, MPL-2.0, or similarly permissive. Avoid GPL/AGPL. Adding a `cargo-deny` CI job to make this an enforced check is tracked in issue #84.
 
 ## Development environment
 

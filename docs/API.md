@@ -6,7 +6,7 @@
 >
 > **This is not a Swagger/OpenAPI spec.** `MeedyaSuite-core` is a Rust library workspace, not a web service. There are no HTTP endpoints. If you need an HTTP-shaped contract, build one in your downstream app on top of these crates.
 >
-> **Last refreshed**: 2026-09-02 (`feature/work-in-progress`: provider rate limiting wired up — #94 — on top of the #78/#79/#80/#81 hardening pass; test counts re-measured). See the [maintenance section](#maintenance) for how this stays in sync with the code.
+> **Last refreshed**: 2026-09-02 (`feature/work-in-progress`: provider rate limiting wired up — #94 — on top of the #78/#79/#80/#81 hardening pass, plus the post-review hardening that followed — `apple_podcasts` routed through the shared `net_err` redaction helper, a sanitized-error-string helper + canary test added to `meedya-db`, and an untagged-Ogg regression fixture — test counts re-measured). See the [maintenance section](#maintenance) for how this stays in sync with the code.
 
 ---
 
@@ -38,11 +38,11 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 |---|---|---|---|
 | `meedya-codecs` | `audio_codec`, `channel_config`, `classify`, `container`, `ffprobe`, `hdr`, `mediainfo`, `registry`, `spatial`, `spatial_type`, `subtitle_codec`, `tool_path`, `video_codec` | 47 | Stable for partner-app consumption |
 | `meedya-core` | (facade re-exports only — `tags-extended` and `library-import` now included) | 0 | Stable |
-| `meedya-db` | `client`, `export`, `models` | 3 | Foundation stable; specific endpoints may evolve |
-| `meedya-fingerprint` | `acoustid`, `replaygain` | 10 | Stable |
+| `meedya-db` | `client`, `export`, `models` | 4 | Foundation stable; specific endpoints may evolve |
+| `meedya-fingerprint` | `acoustid`, `chromaprint` (feature-gated, non-default), `replaygain` | 10 | Stable |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
 | `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 130 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
-| `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `writer` | 114 | Stable (two co-existing surfaces + identifier-types registry) |
+| `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `template`, `writer` | 115 | Stable (two co-existing surfaces + identifier-types registry + filename template engine) |
 | `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 59 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `ai_content`, `conflict_policy`, `genre_hierarchy`, `io`, `mik`, `model`, `play_history`, `quick_tag`, `sidecar_json`, `standard`, `stems` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
@@ -92,14 +92,16 @@ pub use video_codec::VideoCodec;                           // 21+ variants
 #### Typical usage
 
 ```rust
+use std::path::Path;
 use meedya_codecs::{AudioCodec, ContainerFormat, ffprobe};
 
-// Detect codec from a file
-let info = ffprobe::probe("/path/to/song.m4a")?;
-let codec = info.audio_codec(); // Option<AudioCodec>
+// Detect codec from a file (async; needs the resolved ffprobe binary path —
+// see the `tool_path` module)
+let info = ffprobe::detect_audio_info(&ffprobe_bin, Path::new("/path/to/song.m4a")).await;
+let codec = info.and_then(|i| ffprobe::resolve_codec(&i)); // Option<AudioCodec>
 
 // Check container compatibility
-let is_compatible = ContainerFormat::M4a.supports_audio(AudioCodec::Alac);
+let is_compatible = ContainerFormat::M4a.supports_audio_codec(AudioCodec::Alac);
 ```
 
 ---
@@ -140,7 +142,7 @@ pub use meedya_library_import as library_import;
 
 ```rust
 // With default features
-pub use meedya_metadata::{CommonTag, MetadataError, TagRegistry};
+pub use meedya_metadata::{CommonTag, IdentifierType, MetadataError, TagRegistry};
 pub use meedya_codecs::{AudioCodec, ChannelConfig, CodecRegistry, ContainerFormat, SpatialType};
 pub use meedya_providers::{CredentialStore, MetadataProvider, ProviderCapabilities,
                             ProviderRateLimiter, ProviderResult, SearchQuery};
@@ -198,7 +200,26 @@ pub use replaygain::{
 
 #### `AcoustIdClient`
 
-AcoustID API client with built-in rate limiting (3 requests/second per the AcoustID terms). Returns `AcoustIdResult` containing matched MusicBrainz recording IDs and scores. Uses pure-Rust Chromaprint via `rusty-chromaprint` — no `fpcalc` binary required.
+AcoustID API client with built-in rate limiting (3 requests/second per the AcoustID terms). Returns `AcoustIdResult` containing matched MusicBrainz recording IDs and scores.
+
+`AcoustIdClient` itself only performs the HTTP lookup — it takes an already-computed fingerprint string. Producing that fingerprint is a **separate, non-default** step: see `chromaprint` below.
+
+#### `chromaprint` — fingerprint generation (opt-in feature)
+
+Fingerprint generation is **not** compiled in by default (`meedya-fingerprint`'s `Cargo.toml` declares `default = []`). It is gated behind the `chromaprint` Cargo feature, which pulls in `rusty-chromaprint` (pure-Rust Chromaprint port) + `symphonia` (pure-Rust audio decode) + `base64` — a real compile-time and binary-size cost that consumers who only want the AcoustID HTTP client or the ReplayGain analyser shouldn't have to pay:
+
+```toml
+meedya-fingerprint = { git = "https://github.com/MWBMPartners/MeedyaSuite-core", features = ["chromaprint"] }
+```
+
+With the feature enabled, the crate root additionally exposes:
+
+```rust
+#[cfg(feature = "chromaprint")]
+pub use chromaprint::generate_fingerprint;
+```
+
+No external `fpcalc` binary is required either way — this is the path that enables AcoustID support on platforms (e.g. ARM Linux) where no `fpcalc` binaries exist. `meedya-core` does **not** forward this feature — a consumer going through the facade needs `meedya-fingerprint` as a direct dependency to opt in. See MWBMPartners/MeedyaDL#353 Phase 3 for the consumer migration.
 
 #### `ReplayGainAnalyzer`
 
@@ -330,16 +351,18 @@ pub struct SyncedLine {
 #### `LyricsProvider` trait
 
 ```rust
-pub trait LyricsProvider {
-    async fn fetch(&self, query: &TrackQuery) -> Result<Option<Lyrics>>;
+pub trait LyricsProvider: Send + Sync {
+    async fn fetch(&self, query: &TrackQuery) -> Result<Lyrics>;
 }
 ```
+
+Note the return type is `Result<Lyrics>`, **not** `Result<Option<Lyrics>>` — "no lyrics found" is surfaced as an `Err`, not a `None`. Callers should `?`-propagate rather than pattern-match an `Option`.
 
 Implementation: `LrclibProvider` (calls lrclib.net).
 
 #### Write targets
 
-- **`sidecar::write(lyrics: &Lyrics, target_path: &Path) -> Result<()>`** — writes a `.lrc` file next to the source media.
+- **`sidecar::write(media: &Path, lyrics: &Lyrics) -> Result<Option<PathBuf>>`** — writes a `.lrc` file next to `media`. Returns `Ok(None)` (not an error) when `lyrics` has no synced lines to write; `Ok(Some(path))` with the sidecar path on success.
 - **`embed::embed(media: &Path, lyrics: &Lyrics) -> Result<bool>`** — plain-text tag-embed via `meedya-metadata` (USLT for ID3v2, `LYRICS` for Vorbis, `©lyr` for MP4).
 - **`embed::embed_synced(media: &Path, lyrics: &Lyrics, lang: [u8; 3]) -> Result<()>`** — synchronised ID3v2 SYLT frame. ID3v2-only by design; errors with `Error::UnsupportedForSync` on other formats. Encoding: UTF-16 with BOM; timestamp format: milliseconds. Recommended pattern: call both `embed()` and `embed_synced()` — the former handles cross-format plain text, the latter adds SYLT where applicable.
 - **`embed::DEFAULT_LANGUAGE`** — `*b"eng"`, the ISO-639-2 default for callers without a known language code.
@@ -347,8 +370,8 @@ Implementation: `LrclibProvider` (calls lrclib.net).
 #### `lrc` module
 
 ```rust
-pub fn parse(text: &str) -> Result<Lyrics>;
-pub fn write(lyrics: &Lyrics) -> String;
+pub fn parse(input: &str) -> Vec<SyncedLine>;
+pub fn write(lines: &[SyncedLine]) -> String;
 ```
 
 ---
@@ -368,16 +391,20 @@ pub struct LyricsfileSyllable;      // syllable-level timing (#60)
 pub const LYRICSFILE_VERSION;
 pub const INSTRUMENTAL_MARKER;
 
-pub enum TtmlGranularity;            // Line | Word | Syllable
+pub enum TtmlGranularity;            // Unknown | Line | Word | Syllable
 pub fn classify_ttml_granularity(..) -> TtmlGranularity;
 ```
+
+`Unknown` is the parse-failure signal (XML parse error or empty input) — treated as "lowest
+known granularity," i.e. it still needs upgrading if a syllable-capable source is reachable.
+Consumers matching on `TtmlGranularity` must handle all four variants.
 
 Modules: `lyricsfile` (model + YAML I/O), `lyricsfile_ttml` (Apple Music TTML import,
 including `lyricOffset` extraction — see #61), `lyricsfile_lrc` (LRC bridge),
 `lyricsfile_export` (multi-format export), `lyricsfile_ttml_classify` (granularity
 classifier, consumed by MeedyaDL's enrichment Step 1b), `error` (`Error`, `Result`).
 
-See `docs/APPLE_MUSIC_TTML_SPEC.md` where present for the TTML dialect notes.
+See [`crates/meedya-lyrics/docs/APPLE_MUSIC_TTML_SPEC.md`](../crates/meedya-lyrics/docs/APPLE_MUSIC_TTML_SPEC.md) where present for the TTML dialect notes.
 
 ### `meedya-metadata`
 
@@ -396,6 +423,7 @@ pub use json_path::{extract_json_value, value_to_string};
 pub use tag_io::{read_tags, write_acoustid_tags, write_registry_tags,
                  write_replaygain_tags, write_tags, TagMap};
 pub use tag_registry::{AtomTarget, TagDefinition, TagRegistry, TagScope, TagValueType};
+pub use template::{TagSource, Template, TemplateError};
 ```
 
 #### Surface 1: `lofty`-backed (multi-format)
@@ -407,9 +435,9 @@ For MP3 / M4A / FLAC / WAV / AIFF / OGG and downstream-app general use.
 - **`tag_io`** — Lofty-driven file I/O:
   - `read_tags(path: &Path) -> Result<TagMap>`
   - `write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<()>`
-  - `write_registry_tags(path, json: &Value, registry: &TagRegistry) -> Result<()>`
+  - `write_registry_tags(path: &Path, registry: &TagRegistry, json_source: &serde_json::Value, scope: TagScope) -> Result<usize>` — returns the number of tags written
   - `write_acoustid_tags(path, result: &AcoustIdResult) -> Result<()>`
-  - `write_replaygain_tags(path, result: &ReplayGainResult) -> Result<()>`
+  - `write_replaygain_tags(path: &Path, result: &ReplayGainResult, album_result: Option<&AlbumGainResult>) -> Result<()>`
 - **`tag_registry`** — `TagDefinition`, `TagRegistry`, `TagScope`, `TagValueType`, `AtomTarget` for declarative tag mapping loaded from TOML.
 - **`json_path`** — Dot-path extraction (`extract_json_value`, `value_to_string`) with array indexing for API JSON → tag-value pipelines.
 
@@ -522,6 +550,51 @@ For the App Store distribution path. No subprocess spawning, no `lofty` dependen
   - `format_hms_ms(ms) -> String` (helper for UI)
 
 Both surfaces share the `json_path` module.
+
+#### `template` — filename template engine (#47)
+
+Format-agnostic filename template engine shared across MeedyaConverter / MeedyaDL /
+MeedyaManager for composing filenames from tag values. Root re-exported (`use
+meedya_metadata::{Template, TemplateError, TagSource};`).
+
+```rust
+pub struct Template { /* parsed AST */ }
+pub enum TemplateError {
+    UnclosedPlaceholder { column: usize },
+    UnexpectedCloseBrace { column: usize },
+    EmptyPlaceholder { column: usize },
+    UnknownTransform { column: usize, name: String },
+    InvalidWidthSpec { column: usize, raw: String },
+    MissingVariable { name: String },
+}
+
+pub trait TagSource {
+    fn get(&self, name: &str) -> Option<String>;
+}
+// Implemented for HashMap<String, String> and HashMap<&'static str, &'static str>.
+// Callers wrap their own Tag type (lofty / mp4ameta / etc.) in a thin newtype.
+
+impl Template {
+    pub fn parse(template: &str) -> Result<Self, TemplateError>;
+    pub fn render<S: TagSource>(&self, source: &S) -> Result<String, TemplateError>;
+}
+```
+
+Syntax: `{name}` placeholders, `|` to pipe through transformations, `:NN` for a width
+specifier (zero-pads a numeric value, truncates a string):
+
+```text
+"{tracknumber:02} - {artist|fallback:albumartist} - {title|sanitize}.{ext}"
+→ "03 - Aphex Twin - Selected Ambient Works.flac"
+```
+
+Transforms (applied left-to-right in the pipe): `sanitize` (replaces `/ \ : * ? " < > |` and
+control characters with `_`), `ascii` (folds common Latin diacritics, e.g. `é` → `e`),
+`lower`, `upper`, `title`, `trim`, `round` (numeric strings only; non-numeric input passes
+through unchanged), `fallback:VAR` (substitute another variable when the placeholder's own
+lookup misses — evaluated before other transforms), `max:N` (truncate to `N` characters).
+A missing variable with no `fallback` in its pipe is a `TemplateError::MissingVariable`
+returned from `render`, not a panic.
 
 #### Adding a metadata tag
 
@@ -637,7 +710,7 @@ carry a canary test asserting a known secret cannot appear in the error string.
 ```rust
 pub trait MetadataProvider {
     fn capabilities(&self) -> ProviderCapabilities;
-    async fn search(&self, query: &SearchQuery) -> Result<ProviderResult, ProviderError>;
+    async fn search(&self, query: &SearchQuery) -> Result<Vec<ProviderResult>, ProviderError>;
     // ... (lookup, get_by_id, etc.)
 }
 ```
@@ -725,7 +798,24 @@ Fuzzy-match scoring for metadata search results. `ScoringWeights` configures per
 
 #### `cover_art`
 
-Helpers for cover art selection — `CoverArtSize` (e.g., `Thumbnail`, `Square500`, `Full`), `CoverArtInfo` (URL + dimensions).
+Helpers for cover art selection. `CoverArtSize` variants: `Unknown`, `Thumbnail` (<200px), `Small` (200–499px), `Medium` (500–999px), `Large` (1000–1999px), `ExtraLarge` (>=2000px) — classified from the larger of an image's width/height via `CoverArtSize::from_dimension(px: u32)`. `CoverArtInfo` carries the URL + dimensions.
+
+`best_cover_art` and `has_cover_art` are crate-root re-exports; the rest live in the `cover_art` module:
+
+```rust
+pub fn best_cover_art(r: &ProviderResult) -> Option<&CoverArtInfo>;      // root re-export
+pub fn has_cover_art(r: &ProviderResult) -> bool;                        // root re-export
+
+pub fn classify(art: &CoverArtInfo) -> CoverArtSize;
+pub fn select_largest(arts: &[CoverArtInfo]) -> Option<&CoverArtInfo>;
+pub fn select_smallest(arts: &[CoverArtInfo]) -> Option<&CoverArtInfo>;
+pub fn select_best(arts: &[CoverArtInfo], min_size: CoverArtSize) -> Option<&CoverArtInfo>;
+pub fn filter_by_min_size(arts: &[CoverArtInfo], min_size: CoverArtSize) -> Vec<&CoverArtInfo>;
+pub fn is_valid_art_url(url: &str) -> bool;
+pub fn url_has_image_extension(url: &str) -> bool;
+pub fn mime_type_for_url(url: &str) -> &'static str;
+pub fn deduplicate(arts: &[CoverArtInfo]) -> Vec<CoverArtInfo>;
+```
 
 ---
 
@@ -884,10 +974,6 @@ Source fields (Artist/Title/Comment/Grouping/Label) are **read-only**; the origi
 
 `serato`, `rekordbox`, `traktor`, `virtualdj` modules. Each will be implemented in its own focused session against real DJ-tagged fixture files. See [`.claude/PROMPTS.md`](../.claude/PROMPTS.md#implementing-a-proprietary-dj-reader) for the procedure and guardrails.
 
----
-
-## Common workflows
-
 #### Modules not covered above
 
 These are fully implemented and root-re-exported, and were missing from earlier revisions of
@@ -946,6 +1032,10 @@ pub fn sidecar_path_for(..);
 pub const SIDECAR_SCHEMA_VERSION; pub const SIDECAR_SUFFIX;
 ```
 
+---
+
+## Common workflows
+
 ### Apple Music download + tag (MeedyaDL flow)
 
 ```text
@@ -967,17 +1057,20 @@ pub const SIDECAR_SCHEMA_VERSION; pub const SIDECAR_SUFFIX;
 ### ReplayGain analysis + tagging
 
 ```text
-1. fingerprint::ReplayGainAnalyzer.analyze(&path)? → ReplayGainResult
-2. metadata::tag_io::write_replaygain_tags(&path, &replaygain_result)?
-   // For album mode: collect ReplayGainResult per track, build AlbumGainResult, then write both
+1. let result = fingerprint::ReplayGainAnalyzer::new(ffmpeg_path).analyze_track(&path).await? → ReplayGainResult
+2a. Track mode: metadata::tag_io::write_replaygain_tags(&path, &result, None)?
+2b. Album mode: collect ReplayGainResult per track into `tracks: Vec<ReplayGainResult>`,
+    let album_result = analyzer.compute_album_gain(&tracks); // Option<AlbumGainResult>
+    then call write_replaygain_tags(&path, &result, album_result.as_ref())? once per track
+    (album_result is threaded through the same call, not a separate write)
 ```
 
 ### Lyrics fetch + write
 
 ```text
-1. let lyrics = lyrics::LrclibProvider::new().fetch(&TrackQuery { ... }).await?;
-2a. lyrics::sidecar::write(&lyrics, &media_path)?;        // .lrc next to file
-2b. lyrics::embed::embed(&lyrics, &media_path)?;          // tag-embed via meedya-metadata
+1. let lyrics = lyrics::LrclibProvider::new().fetch(&TrackQuery { ... }).await?;  // Err, not None, when not found
+2a. lyrics::sidecar::write(&media_path, &lyrics)?;        // .lrc next to file; Ok(None) if no synced lines
+2b. lyrics::embed::embed(&media_path, &lyrics)?;          // tag-embed via meedya-metadata
 ```
 
 ### Library import → apply soft trim
@@ -1030,7 +1123,7 @@ pub const SIDECAR_SCHEMA_VERSION; pub const SIDECAR_SUFFIX;
 ### Embed lyrics with both plain text and synchronised SYLT (MP3)
 
 ```text
-1. let lyrics = LrclibProvider::new().fetch(&query).await?.unwrap();
+1. let lyrics = LrclibProvider::new().fetch(&query).await?;   // Err (not None) when not found
 2. let _ = meedya_lyrics::embed(&path, &lyrics)?;     // USLT/©lyr/LYRICS
 3. if lyrics.synced.is_some() {
        // SYLT — succeeds on ID3v2 (MP3) only; ignore Error::UnsupportedForSync.
@@ -1069,6 +1162,8 @@ meedya-core = { git = "https://github.com/MWBMPartners/MeedyaSuite-core", rev = 
 ```
 
 Pin to a specific `rev = "<sha>"` or `tag = "..."` in production — `branch = "main"` will pull the latest and may break unexpectedly until 1.0.
+
+**MSRV**: Rust 1.82 (declared via `rust-version` on `[workspace.package]`, inherited by every member crate; driven by `Option::is_none_or`).
 
 ### Swift (MeedyaConverter, MeedyaDB)
 

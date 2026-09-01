@@ -100,6 +100,7 @@ Reference implementation: crates/meedya-library-import/src/itunes_xml.rs::decode
 ```
 After landing substantive work, update:
 - .claude/CONTEXT.md — if architecture, crate status, or design decisions changed
+- .claude/HANDOFF.md — as each piece of work lands (not just at session end); measured ground truth, active branch, owner decisions, status board
 - .claude/HISTORY.md — append a session entry under today's date; do NOT rewrite existing entries
 - .claude/MEMORY.md — if any durable project fact changed (rare)
 - .claude/PROMPTS.md — if you discovered a workflow that should be a reusable prompt
@@ -154,10 +155,11 @@ Anti-patterns to avoid:
 ## Running the full local validation
 
 ```
+export PATH="$HOME/.cargo/bin:$PATH"      # cargo is not on the default PATH on the dev machine
 cargo build --workspace
-cargo test  --workspace
-cargo clippy --workspace -- -D warnings   # if clippy is set up
+cargo test  --workspace --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings   # enforcing in CI as of 2026-09-01
 cargo fmt --all -- --check                # formatting check
 ```
 
-Workspace currently has 211 tests on `main`. All must pass before push.
+All must pass before push. Don't hardcode a test count here — see [MEMORY.md → Test counts are measured, never carried forward](MEMORY.md#test-counts-are-measured-never-carried-forward); run the count yourself if you need one.
