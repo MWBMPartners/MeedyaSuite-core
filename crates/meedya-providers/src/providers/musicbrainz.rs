@@ -154,6 +154,38 @@ impl MusicBrainzProvider {
             isrcs: Option<Vec<String>>,
             length: Option<u64>,
             score: Option<u32>,
+            /// User-submitted genres, each with a vote `count`. Absent on
+            /// older/uncategorised recordings.
+            genres: Option<Vec<MbTag>>,
+            /// Free-form folksonomy tags, each with a vote `count`. Used as
+            /// a fallback genre source when `genres` is absent or empty.
+            tags: Option<Vec<MbTag>>,
+        }
+
+        /// A MusicBrainz genre or tag entry: a name with a community vote
+        /// count. Both fields are optional — MusicBrainz returns tags with
+        /// no recorded votes as `count: 0` or omits `count` entirely.
+        #[derive(Deserialize)]
+        struct MbTag {
+            name: Option<String>,
+            count: Option<u32>,
+        }
+
+        /// Pick the `name` of the highest-`count` entry in a genre/tag list.
+        /// A missing `count` ranks as `0`. When multiple entries tie for the
+        /// highest count, the first one encountered is kept.
+        fn top_tag(tags: &[MbTag]) -> Option<String> {
+            let mut best: Option<(&str, u32)> = None;
+            for tag in tags {
+                let Some(name) = tag.name.as_deref() else {
+                    continue;
+                };
+                let count = tag.count.unwrap_or(0);
+                if best.is_none_or(|(_, best_count)| count > best_count) {
+                    best = Some((name, count));
+                }
+            }
+            best.map(|(name, _)| name.to_owned())
         }
 
         #[derive(Deserialize)]
@@ -201,6 +233,22 @@ impl MusicBrainzProvider {
                 // MusicBrainz score is 0–100; normalise to [0.0, 1.0]
                 let score = f64::from(rec.score.unwrap_or(0)) / 100.0;
 
+                // Prefer the highest-vote genre; fall back to the
+                // highest-vote folksonomy tag when no genre is present.
+                // Both are optional community data, so either (or both)
+                // may be absent or empty.
+                let genre = rec
+                    .genres
+                    .as_deref()
+                    .filter(|g| !g.is_empty())
+                    .and_then(top_tag)
+                    .or_else(|| {
+                        rec.tags
+                            .as_deref()
+                            .filter(|t| !t.is_empty())
+                            .and_then(top_tag)
+                    });
+
                 let mut result = ProviderResult::new(provider_name);
                 result.title = rec.title;
                 result.artist = artist;
@@ -208,6 +256,7 @@ impl MusicBrainzProvider {
                 result.year = year;
                 result.isrc = rec.isrcs.and_then(|v| v.into_iter().next());
                 result.score = score;
+                result.genre = genre;
 
                 if let Some(id) = rec.id {
                     result.musicbrainz_id = Some(id.clone());
@@ -363,6 +412,64 @@ mod tests {
             .and_then(serde_json::Value::as_f64)
             .unwrap();
         assert!((duration - 240.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn mb_parse_recordings_genre_picks_highest_count_genre() {
+        let json = r#"{
+            "recordings": [{
+                "id": "abc123",
+                "genres": [
+                    {"name": "psychedelic rock", "count": 4},
+                    {"name": "progressive rock", "count": 12},
+                    {"name": "art rock", "count": 7}
+                ],
+                "tags": [
+                    {"name": "classic rock", "count": 99}
+                ]
+            }]
+        }"#;
+        let results = MusicBrainzProvider::parse_recordings("musicbrainz", json).unwrap();
+        // Genres take priority over tags even when a tag has a higher count.
+        assert_eq!(results[0].genre.as_deref(), Some("progressive rock"));
+    }
+
+    #[test]
+    fn mb_parse_recordings_genre_falls_back_to_highest_count_tag() {
+        let json = r#"{
+            "recordings": [{
+                "id": "abc123",
+                "genres": [],
+                "tags": [
+                    {"name": "guitar solo", "count": 2},
+                    {"name": "classic rock", "count": 9}
+                ]
+            }]
+        }"#;
+        let results = MusicBrainzProvider::parse_recordings("musicbrainz", json).unwrap();
+        assert_eq!(results[0].genre.as_deref(), Some("classic rock"));
+    }
+
+    #[test]
+    fn mb_parse_recordings_genre_none_when_absent() {
+        let json = r#"{"recordings": [{"id": "abc123"}]}"#;
+        let results = MusicBrainzProvider::parse_recordings("musicbrainz", json).unwrap();
+        assert_eq!(results[0].genre, None);
+    }
+
+    #[test]
+    fn mb_parse_recordings_genre_missing_count_ranks_as_zero() {
+        let json = r#"{
+            "recordings": [{
+                "id": "abc123",
+                "genres": [
+                    {"name": "no count"},
+                    {"name": "has count", "count": 1}
+                ]
+            }]
+        }"#;
+        let results = MusicBrainzProvider::parse_recordings("musicbrainz", json).unwrap();
+        assert_eq!(results[0].genre.as_deref(), Some("has count"));
     }
 
     #[test]
