@@ -6,7 +6,7 @@
 >
 > **This is not a Swagger/OpenAPI spec.** `MeedyaSuite-core` is a Rust library workspace, not a web service. There are no HTTP endpoints. If you need an HTTP-shaped contract, build one in your downstream app on top of these crates.
 >
-> **Last refreshed**: 2026-09-01 (post issue #65 completion pass: GRid/ICPN reserved, per-scheme normalisation guidance, `write_tags` signature fix, AcoustID read-back; same-day, post MusicBrainz Solr 9→10 search-hardening pass — new `lucene` escaping module, `MusicBrainzProvider::build_lucene_query`, ISRC/ISWC query normalisation, forward-compat parse fixtures; same-day, post ISRC `validate_isrc` panic fix (non-ASCII alphanumeric byte-slicing) and MusicBrainz trailing-bracket-group recall mitigation (`strip_trailing_bracket_groups`, issue #69)). See the [maintenance section](#maintenance) for how this stays in sync with the code.
+> **Last refreshed**: 2026-09-01 (branch-consolidation pass on `feature/work-in-progress`: the two divergent MusicBrainz branches union-merged, `lucene` module API unified, #65 identifier-types registry carried across). See the [maintenance section](#maintenance) for how this stays in sync with the code.
 
 ---
 
@@ -43,10 +43,16 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
 | `meedya-lyrics` | `embed`, `lrc`, `lyrics`, `provider`, `sidecar` | 128 | Stable (plain + synced via SYLT for ID3v2) |
 | `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `writer` | 112 | Stable (two co-existing surfaces + identifier-types registry) |
-| `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 39 | Stable foundation; specific provider implementations may evolve |
+| `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 49 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `io`, `mik`, `model`, `standard` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 546 tests** (664 with --all-features, the CI configuration). All passing (post #65 identifier-types registry batch — 511 → 533 measured; the +4 over the batch's 529 are tag-I/O save/reload round-trip tests added with the #65 silent-data-loss fix — plus +1 from the 2026-09-01 #65 completion pass' AcoustID read-back regression test, 533 → 534; plus +12 default-feature / +29 --all-features from the same-day MusicBrainz Solr-10 search-hardening pass, 534 → 546 / 624 → 653 — the new always-compiled `lucene` escaping module accounts for the default-feature delta (11 unit tests + 1 doctest), and the `--all-features` delta additionally reflects `build_lucene_query`/forward-compat-fixture tests added to the feature-gated `provider-musicbrainz`, `provider-isrc`, and `provider-iswc` modules; plus +11 --all-features-only from the same-day ISRC panic-fix regression test (653 → 654, feature-gated `provider-isrc`, not previously reconciled into this total — the drift `meedya-providers` all-features count of 141 → 142 tests) and the trailing-bracket-group recall mitigation's 10 new `provider-musicbrainz` tests (654 → 664); the default-feature total of 546 is unaffected by either, as both land in feature-gated provider modules). `meedya-providers` unit-test count: 39 default-feature (table above), 153 with --all-features (152 unit + 1 doctest). Previous totals in this file were stale: it long read 466, but the measured pre-#65 count was actually 511 — the count-drift itself is tracked as a follow-up (§9 of the #65 build spec, "for consideration").
+**Total: 555 tests** with default features, **683** with `--all-features` (the CI configuration). All passing, 0 failing.
+
+> These are **measured** figures — `cargo test --workspace [--all-features]` run against `feature/work-in-progress` on 2026-09-01 — not carried forward from a previous edit. For reference, `main` measures 601 with `--all-features`.
+>
+> Earlier revisions of this file accumulated a long narrative of incremental count deltas (466 → 511 → 533 → 546 → 664 …) which had drifted from reality. That narration has been removed: the only trustworthy number is one you just measured. Guarding these counts automatically in CI is tracked in issue #71.
+
+Per-crate, `--all-features` (measured): `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 3 · `meedya-fingerprint` 11 · `meedya-library-import` 30 · `meedya-lyrics` 128 · `meedya-metadata` 112 · `meedya-providers` 172 · `meedya-tags-extended` 180.
 
 ---
 
@@ -490,7 +496,7 @@ Shared metadata provider framework — traits, capabilities, registry, rate limi
 pub use cover_art::CoverArtSize;
 pub use credentials::{CredentialSource, CredentialStore, ResolvedCredential};
 pub use error::CredentialError;
-pub use lucene::{escape_lucene, quote_phrase};
+pub use lucene::{escape_lucene, phrase_clause, quote_phrase};
 pub use match_scoring::{MatchScorer, ScoringWeights};
 pub use rate_limiter::{ProviderRateLimiter, RateLimiterRegistry};
 pub use traits::{MetadataProvider, ProviderCapabilities, ProviderError};
@@ -504,12 +510,37 @@ Lucene/Solr query escaping for MusicBrainz search — always compiled (pure `std
 ```rust
 pub fn escape_lucene(value: &str) -> String;
 pub fn quote_phrase(value: &str) -> String;
+pub fn phrase_clause(field: &str, value: &str) -> String;
 ```
 
-- **`escape_lucene`** — backslash-escapes every Lucene special character (`+ - ! ( ) { } [ ] ^ " ~ * ? : \ /` and the boolean operators `&`/`|`, so `&&`/`||` become `\&\&`/`\|\|`). Does not handle whitespace or field-scoping.
-- **`quote_phrase`** — the quoting policy providers actually use for free-text field values (`title`, `artist`, etc.): escapes embedded `\` and `"` (backslash first, to avoid double-escaping), then wraps the result in double quotes. Other Lucene special characters are left as-is inside the phrase — Lucene does not interpret them specially within quotes. The field qualifier stays outside the quoted value, e.g. `format!("recording:{}", quote_phrase(title))`.
+The three helpers are **not interchangeable** — they implement two genuinely different
+Lucene escaping regimes:
 
-`MusicBrainzProvider::build_lucene_query` (private) is the reference consumer: it normalises and validates ISRC values (`isrc:<12-char-code>`, no quoting needed — normalisation strips everything that isn't alphanumeric) and, for free-text search, strips a trailing parenthetical/bracket group from title/artist (`strip_trailing_bracket_groups`, private — mitigates the common "(2011 Remastered Version)"/"[Live]" recall miss against MusicBrainz's canonical title; a leading group, or one whose removal would empty the term, is preserved) before quoting each as `recording:"..." AND artistname:"..."`. Tracked for live-service recall validation post-2026-11-30 in issue #69.
+| Context | Helper | Escapes |
+| --- | --- | --- |
+| Bare / unquoted term | `escape_lucene` | all 19 Lucene special characters |
+| Inside a double-quoted phrase | `quote_phrase` | only `\` and `"` |
+| A whole `field:"value"` clause | `phrase_clause` | delegates to `quote_phrase` |
+
+Inside a quoted phrase Lucene treats `( ) : + - ?` as literal text, so escaping them there
+would make the backslashes part of the searched string. Outside a phrase they are operators
+and must be escaped — the MusicBrainz documentation's own `AC/DC` example escapes the slash
+for exactly this reason.
+
+- **`escape_lucene`** — backslash-escapes every Lucene special character (`+ - ! ( ) { } [ ] ^ " ~ * ? : \ /` and the boolean operators `&`/`|`, so `&&`/`||` become `\&\&`/`\|\|`). Does not handle whitespace or field-scoping.
+- **`quote_phrase`** — the quoting policy providers actually use for free-text field values (`title`, `artist`, etc.): escapes embedded `\` and `"` (backslash first, to avoid double-escaping), then wraps the result in double quotes. Other Lucene special characters are left as-is inside the phrase. The field qualifier stays outside the quoted value, e.g. `format!("recording:{}", quote_phrase(title))`.
+- **`phrase_clause`** — convenience over `quote_phrase` producing a complete `field:"value"` clause. `field` is a developer-controlled literal emitted verbatim; only `value` is escaped and quoted. This is the helper to reach for when building recording/release/artist search clauses from tag data.
+
+`MusicBrainzProvider::build_lucene_query` (private, returns `Result`) is the reference consumer:
+
+- **ISRC takes priority.** Normalised to the canonical 12-character form (ASCII alphanumerics only, uppercased) and emitted as `isrc:<CODE>`. Normalisation leaves nothing Lucene could misparse, so no quoting is applied. An ISRC that does not normalise to exactly 12 characters is **rejected** rather than forwarded upstream. `album`/`year` are ignored in this branch — an exact identifier needs no narrowing, and narrowing could only exclude the correct recording.
+- **Free-text search.** A trailing parenthetical/bracket group is stripped from `title`, `artist` and `album` (`strip_trailing_bracket_groups`, private) — this mitigates the common `"(2011 Remastered Version)"` / `"[Live]"` recall miss against MusicBrainz's canonical title. A *leading* group (e.g. `"(I Can't Get No) Satisfaction"`), or one whose removal would empty the term, is preserved.
+- **Clause composition.** `recording:"…"`, `artistname:"…"`, and — when present — `release:"…"` and `date:NNNN`, joined with ` AND `. A title or artist is **required**; `album`/`year` only narrow an already-anchored query, so an album/year-only query is rejected as too broad.
+- **`date` caveat.** This is an exact-year match, not a range: a recording whose only indexed release date falls outside `year` (a reissue vs. the original year) will not match. MusicBrainz also exposes `firstreleasedate` ("the release date of the earliest release including this recording"), which may suit earliest-release selection better — see issue #74.
+
+Tracked for live-service recall validation post-2026-11-30 in issue #69.
+
+**ISRC vs ISWC are normalised differently, on purpose.** MusicBrainz documents and indexes ISRCs unpunctuated (`isrc:GBAHT1600302`), so `providers::isrc` strips separators before querying. MusicBrainz displays ISWCs in the punctuated ISO form (`T-034.524.680-1`) and does **not** document which form the `iswc` search field indexes, so `providers::iswc` preserves the caller's separators and relies on phrase-quoting to keep them syntactically inert. Stripping them would be an unverified behaviour change that could silently reduce recall; settling it needs a live-service check (issue #69).
 
 #### `MetadataProvider` trait
 
