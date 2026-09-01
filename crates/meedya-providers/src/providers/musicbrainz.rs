@@ -18,6 +18,8 @@ use crate::lucene::phrase_clause;
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
+use super::leading_year;
+
 /// Build a `ProviderError::NetworkError` from a `reqwest::Error`.
 fn net_err(e: reqwest::Error) -> ProviderError {
     ProviderError::NetworkError(e.to_string())
@@ -302,7 +304,7 @@ impl MusicBrainzProvider {
                 let album = first_release.and_then(|r| r.title.clone());
                 let year = first_release
                     .and_then(|r| r.date.as_deref())
-                    .and_then(|d| d[..4.min(d.len())].parse::<u32>().ok());
+                    .and_then(leading_year);
 
                 // MusicBrainz score is 0–100; normalise to [0.0, 1.0]
                 let score = f64::from(rec.score.unwrap_or(0)) / 100.0;

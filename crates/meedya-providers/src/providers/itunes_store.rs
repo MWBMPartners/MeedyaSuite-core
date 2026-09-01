@@ -19,6 +19,8 @@ use crate::extra_keys::{CONTENT_ADVISORY, DURATION_SECS, PROVIDER_ID};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
+use super::leading_year;
+
 fn net_err(e: reqwest::Error) -> ProviderError {
     ProviderError::NetworkError(e.to_string())
 }
@@ -90,10 +92,7 @@ impl ItunesStoreProvider {
             .results
             .into_iter()
             .map(|r| {
-                let year = r
-                    .release_date
-                    .as_deref()
-                    .and_then(|d| d[..4.min(d.len())].parse::<u32>().ok());
+                let year = r.release_date.as_deref().and_then(leading_year);
                 let cover_art = r
                     .artwork_url100
                     .as_deref()

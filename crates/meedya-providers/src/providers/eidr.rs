@@ -15,6 +15,8 @@ use crate::extra_keys::{EIDR, PROVIDER_ID};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
+use super::leading_year;
+
 fn net_err(e: reqwest::Error) -> ProviderError {
     ProviderError::NetworkError(e.to_string())
 }
@@ -100,10 +102,7 @@ impl EidrProvider {
         let record: EidrRecord =
             serde_json::from_str(body).map_err(|e| parse_err("EIDR response", e))?;
 
-        let year = record
-            .release_date
-            .as_deref()
-            .and_then(|d| d[..4.min(d.len())].parse::<u32>().ok());
+        let year = record.release_date.as_deref().and_then(leading_year);
 
         let director = record
             .extra

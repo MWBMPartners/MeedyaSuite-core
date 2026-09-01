@@ -17,6 +17,8 @@ use crate::extra_keys::{DURATION_SECS, PROVIDER_ID};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
+use super::leading_year;
+
 fn net_err(e: reqwest::Error) -> ProviderError {
     ProviderError::NetworkError(e.to_string())
 }
@@ -142,7 +144,7 @@ impl IsrcProvider {
                 let album = first_release.and_then(|r| r.title.clone());
                 let year = first_release
                     .and_then(|r| r.date.as_deref())
-                    .and_then(|d| d[..4.min(d.len())].parse::<u32>().ok());
+                    .and_then(leading_year);
 
                 let mut result = ProviderResult::new(provider_name);
                 result.title = rec.title;

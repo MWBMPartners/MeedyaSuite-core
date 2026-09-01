@@ -15,6 +15,8 @@ use crate::extra_keys::PROVIDER_ID;
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
+use super::leading_year;
+
 fn net_err(e: reqwest::Error) -> ProviderError {
     ProviderError::NetworkError(e.to_string())
 }
@@ -74,10 +76,7 @@ impl TheTvdbProvider {
         let results = data
             .into_iter()
             .map(|r| {
-                let year = r
-                    .first_air_time
-                    .as_deref()
-                    .and_then(|d| d[..4.min(d.len())].parse::<u32>().ok());
+                let year = r.first_air_time.as_deref().and_then(leading_year);
                 let cover_art = r
                     .image_url
                     .as_deref()

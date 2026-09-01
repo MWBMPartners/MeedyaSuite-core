@@ -15,6 +15,8 @@ use crate::extra_keys::{CONTENT_ADVISORY, DURATION_SECS, PROVIDER_ID, TRACK_TOTA
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
+use super::leading_year;
+
 fn net_err(e: reqwest::Error) -> ProviderError {
     ProviderError::NetworkError(e.to_string())
 }
@@ -120,10 +122,7 @@ impl AppleMusicProvider {
                     })
                     .unwrap_or_default();
 
-                let year = t
-                    .release_date
-                    .as_deref()
-                    .and_then(|d| d[..4.min(d.len())].parse::<u32>().ok());
+                let year = t.release_date.as_deref().and_then(leading_year);
 
                 let content_advisory = t.explicit_ness.as_deref().map(|e| {
                     if e.to_lowercase() == "explicit" {

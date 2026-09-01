@@ -15,6 +15,8 @@ use crate::extra_keys::PROVIDER_ID;
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
+use super::leading_year;
+
 /// Searches Apple Podcasts via the iTunes Search API.
 ///
 /// Endpoint: `https://itunes.apple.com/search?media=podcast`
@@ -97,10 +99,7 @@ impl ApplePodcastsProvider {
                     });
                 }
 
-                let year = r
-                    .release_date
-                    .as_deref()
-                    .and_then(|d| d[..4.min(d.len())].parse::<u32>().ok());
+                let year = r.release_date.as_deref().and_then(leading_year);
 
                 let mut result = ProviderResult::new(provider_name);
                 result.title = r.collection_name; // Podcast name

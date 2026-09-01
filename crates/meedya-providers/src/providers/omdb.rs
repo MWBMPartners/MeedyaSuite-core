@@ -15,6 +15,8 @@ use crate::extra_keys::PROVIDER_ID;
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
+use super::leading_year;
+
 fn net_err(e: reqwest::Error) -> ProviderError {
     ProviderError::NetworkError(e.to_string())
 }
@@ -84,10 +86,7 @@ impl OmdbProvider {
         let results = items
             .into_iter()
             .map(|r| {
-                let year = r
-                    .year
-                    .as_deref()
-                    .and_then(|y| y[..4.min(y.len())].parse::<u32>().ok());
+                let year = r.year.as_deref().and_then(leading_year);
                 let cover_art = r
                     .poster
                     .as_deref()
