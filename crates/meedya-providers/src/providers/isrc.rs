@@ -12,6 +12,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::extra_keys::{DURATION_SECS, PROVIDER_ID};
+use crate::lucene::lucene_escape;
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
@@ -23,10 +24,16 @@ fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
     ProviderError::Other(format!("parse error: {context}: {e}"))
 }
 
+/// Strip separators (e.g. hyphens) from an ISRC, leaving the canonical
+/// 12-character form MusicBrainz's `isrc:` query field expects.
+fn normalise_isrc(isrc: &str) -> String {
+    isrc.chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
 /// Validate ISRC format: 2 country + 3 registrant + 2 year + 5 designation = 12 chars.
 /// Accepts hyphens as separators (e.g. `GB-AYE-06-01498`).
 pub fn validate_isrc(isrc: &str) -> bool {
-    let normalised: String = isrc.chars().filter(|c| c.is_alphanumeric()).collect();
+    let normalised = normalise_isrc(isrc);
     normalised.len() == 12
         && normalised[..2].chars().all(|c| c.is_ascii_alphabetic())
         && normalised[2..5].chars().all(|c| c.is_ascii_alphanumeric())
@@ -189,20 +196,28 @@ impl MetadataProvider for IsrcProvider {
             )));
         }
 
+        // Query the normalised (hyphen-stripped) form — the canonical
+        // 12-character identifier MusicBrainz's `isrc:` field expects —
+        // rather than the raw, possibly-hyphenated user input.
+        let normalised_isrc = normalise_isrc(isrc);
+
         debug!(
             provider = "isrc",
-            isrc = isrc,
+            isrc = &normalised_isrc,
             "Sending ISRC lookup request"
         );
 
         let limit = query.max_results.unwrap_or(10).to_string();
         let url = format!("{}/ws/2/recording/", self.base_url);
+        // The ISRC is a single-token identifier: escape it (backslash/quote
+        // safety) but leave it unquoted rather than phrase-quoting it.
+        let lucene_query = format!("isrc:{}", lucene_escape(&normalised_isrc));
         let response = self
             .client
             .get(&url)
             .header("Accept", "application/json")
             .query(&[
-                ("query", &format!("isrc:{isrc}")),
+                ("query", &lucene_query),
                 ("limit", &limit),
                 ("fmt", &"json".to_owned()),
             ])
@@ -226,6 +241,16 @@ impl MetadataProvider for IsrcProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalise_isrc_strips_hyphens() {
+        assert_eq!(normalise_isrc("GB-AYE-06-01498"), "GBAYE0601498");
+    }
+
+    #[test]
+    fn normalise_isrc_passthrough_no_separators() {
+        assert_eq!(normalise_isrc("GBAYE0601498"), "GBAYE0601498");
+    }
 
     #[test]
     fn validate_isrc_valid_standard() {

@@ -12,6 +12,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::extra_keys::{DURATION_SECS, PROVIDER_ID};
+use crate::lucene::{lucene_escape, lucene_phrase_clause};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
@@ -41,6 +42,34 @@ fn insert_duration(result: &mut ProviderResult, secs: f64) {
         result
             .metadata
             .insert(DURATION_SECS.into(), Value::Number(num));
+    }
+}
+
+/// Build the MusicBrainz `query=` Lucene query string for `query`.
+///
+/// ISRC takes priority over free-text search when present. `title` and
+/// `artist` are each emitted as a phrase-quoted, Lucene-escaped field
+/// clause via [`lucene_phrase_clause`] — see that function's doc comment
+/// for why raw interpolation is unsafe here (multi-word values binding
+/// only their first token to the field; Lucene special characters
+/// corrupting the query). The ISRC itself is a single-token identifier, so
+/// it is escaped but left unquoted.
+fn build_lucene_query(query: &SearchQuery) -> String {
+    if let Some(isrc) = &query.isrc {
+        format!("isrc:{}", lucene_escape(isrc))
+    } else {
+        let mut parts = Vec::new();
+        if let Some(title) = &query.title {
+            parts.push(lucene_phrase_clause("recording", title));
+        }
+        if let Some(artist) = &query.artist {
+            parts.push(lucene_phrase_clause("artistname", artist));
+        }
+        if parts.is_empty() {
+            search_term(query)
+        } else {
+            parts.join(" AND ")
+        }
     }
 }
 
@@ -206,23 +235,8 @@ impl MetadataProvider for MusicBrainzProvider {
             return Err(ProviderError::NotConfigured("musicbrainz".into()));
         }
 
-        // Build query string: ISRC takes priority over free-text
-        let lucene_query = if let Some(isrc) = &query.isrc {
-            format!("isrc:{isrc}")
-        } else {
-            let mut parts = Vec::new();
-            if let Some(title) = &query.title {
-                parts.push(format!("recording:{}", title.replace('"', "")));
-            }
-            if let Some(artist) = &query.artist {
-                parts.push(format!("artistname:{}", artist.replace('"', "")));
-            }
-            if parts.is_empty() {
-                search_term(query)
-            } else {
-                parts.join(" AND ")
-            }
-        };
+        // Build query string: ISRC takes priority over free-text.
+        let lucene_query = build_lucene_query(query);
 
         let url = format!("{}/ws/2/recording/", self.base_url);
         debug!(
@@ -328,5 +342,58 @@ mod tests {
             .and_then(serde_json::Value::as_f64)
             .unwrap();
         assert!((duration - 240.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn build_lucene_query_multi_word_title_and_artist_are_phrase_quoted() {
+        let query = SearchQuery {
+            title: Some("Bohemian Rhapsody".into()),
+            artist: Some("Queen".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            build_lucene_query(&query),
+            r#"recording:"Bohemian Rhapsody" AND artistname:"Queen""#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_title_only() {
+        let query = SearchQuery {
+            title: Some("Comfortably Numb".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            build_lucene_query(&query),
+            r#"recording:"Comfortably Numb""#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_escapes_special_characters_in_title() {
+        let query = SearchQuery {
+            title: Some(r#"What's Up? (Say "Hello")"#.into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            build_lucene_query(&query),
+            r#"recording:"What's Up? (Say \"Hello\")""#
+        );
+    }
+
+    #[test]
+    fn build_lucene_query_isrc_takes_priority_and_is_escaped_unquoted() {
+        let query = SearchQuery {
+            isrc: Some("GBAYE0601498".into()),
+            title: Some("Ignored Title".into()),
+            ..Default::default()
+        };
+        assert_eq!(build_lucene_query(&query), "isrc:GBAYE0601498");
+    }
+
+    #[test]
+    fn build_lucene_query_falls_back_to_free_text_search_term() {
+        let query = SearchQuery::default();
+        assert_eq!(build_lucene_query(&query), "");
     }
 }

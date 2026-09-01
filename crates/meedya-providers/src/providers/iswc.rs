@@ -12,6 +12,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::extra_keys::{ISWC, PROVIDER_ID};
+use crate::lucene::lucene_escape;
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
@@ -23,14 +24,20 @@ fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
     ProviderError::Other(format!("parse error: {context}: {e}"))
 }
 
+/// Strip separators and normalise case on an ISWC, leaving the canonical
+/// 11-character form (`T` + 10 digits) MusicBrainz's `iswc:` query field
+/// expects.
+fn normalise_iswc(iswc: &str) -> String {
+    iswc.to_uppercase()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect()
+}
+
 /// Validate ISWC format: `T-123456789-C` (T + 9 digits + check digit).
 /// Accepts the format with or without hyphens.
 pub fn validate_iswc(iswc: &str) -> bool {
-    let normalised: String = iswc
-        .to_uppercase()
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .collect();
+    let normalised = normalise_iswc(iswc);
     // Must be exactly 11 chars: T + 9 digits + 1 check digit
     normalised.len() == 11
         && normalised.starts_with('T')
@@ -167,20 +174,27 @@ impl MetadataProvider for IswcProvider {
             )));
         }
 
+        // Query the normalised (uppercased, hyphen-stripped) form rather
+        // than the raw user input.
+        let normalised_iswc = normalise_iswc(iswc);
+
         debug!(
             provider = "iswc",
-            iswc = iswc,
+            iswc = &normalised_iswc,
             "Sending ISWC lookup request"
         );
 
         let limit = query.max_results.unwrap_or(10).to_string();
         let url = format!("{}/ws/2/work/", self.base_url);
+        // The ISWC is a single-token identifier: escape it (backslash/quote
+        // safety) but leave it unquoted rather than phrase-quoting it.
+        let lucene_query = format!("iswc:{}", lucene_escape(&normalised_iswc));
         let response = self
             .client
             .get(&url)
             .header("Accept", "application/json")
             .query(&[
-                ("query", &format!("iswc:{iswc}")),
+                ("query", &lucene_query),
                 ("limit", &limit),
                 ("fmt", &"json".to_owned()),
             ])
@@ -204,6 +218,11 @@ impl MetadataProvider for IswcProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalise_iswc_strips_hyphens_and_uppercases() {
+        assert_eq!(normalise_iswc("t-034524680-1"), "T0345246801");
+    }
 
     #[test]
     fn validate_iswc_valid_standard() {
