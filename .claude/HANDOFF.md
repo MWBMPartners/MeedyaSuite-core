@@ -20,7 +20,8 @@ have historically disagreed (248 / 466 / 653 / 664 all appear somewhere and are 
 | Tests on `main` | **601 passing, 0 failing** | `cargo test --workspace --all-features --locked` |
 | Tests on `feature/work-in-progress` | **555 default-feature / 688 `--all-features`, 0 failing** | same command |
 | `cargo fmt --all -- --check` | clean on both | run directly |
-| `cargo clippy -p meedya-providers --all-targets --all-features` | clean | run directly |
+| `cargo clippy --workspace --all-targets --all-features` | 4 unique warnings, all **pre-existing** | run directly |
+| `cargo build --workspace --all-features --locked` | 0 errors | run directly |
 | Workspace crates | 9 | `ls crates` |
 | Web/HTTP-server/OpenAPI surface | **none** | no axum/actix/warp/rocket/utoipa anywhere; `bindings/` is 2 README stubs |
 
@@ -278,8 +279,8 @@ interpolation at `musicbrainz_service.rs:124`, `:533`, `:578`. It *does* already
 | GitHub issue sweep (62 issues verified vs code) | ✅ Complete — 7 closed, 13 updated, 12 relabelled |
 | Documentation sweep | ✅ Complete — README, CLAUDE.md, CONTEXT.md, API.md, HISTORY.md |
 | MeedyaDL + core migration issues (both repos) | ✅ Complete — core #75, MeedyaDL #1119 |
-| New-work proposals | ⏳ Analysis running — will be presented for your decision |
-| Claude MEMORY.md update | ⏳ Pending |
+| New-work proposals | ✅ Complete — 18 proposals, issues #78–#94 opened |
+| Claude MEMORY.md / CLAUDE.md / CONTEXT.md / HISTORY.md | ✅ Complete |
 | OpenAPI / Swagger | ⛔ N/A by owner decision — no web surface |
 
 ---
@@ -317,3 +318,52 @@ cargo test --workspace --all-features --locked   # expect 688 passing, 0 failing
 ```
 
 Then read §7 for what is outstanding.
+
+---
+
+## 10. Issue state after the 2026-09-01 verification sweep
+
+All 62 issues (open + closed) were checked against **actual file contents**, not commit
+messages or docs.
+
+**Closed as verified-complete** (7): #6 (bundled `tags.toml`), #7 (duplicate of #2), #8
+(config-driven registry), #9 (codec detection), #13 (`extract_json_value` hardening), #14
+(credential storage — all four fixes present; the file moved to `meedya-providers`), #15
+(AcoustID timeout).
+
+**Updated with corrected state** (13): #2, #4, #5, #11, #17, #45, #52, #53, #61, #68, #69,
+#73, #74. **Relabelled** (12). **No closed issue needed reopening** — 21 were spot-verified
+as genuinely done.
+
+### New issues opened this session
+
+| # | Subject |
+|---|---|
+| #75 | Core absorbs the shared MusicBrainz lookup mechanism (**blocks** MeedyaDL#1119) |
+| #76 | 11 HTTP clients with no timeout (workspace gap left by #15) |
+| #77 | Three divergent copies of ISRC normalisation |
+| #78–#94 | The 18 ranked review proposals (rank 4 folded into #76) |
+| MeedyaDL#1119 | MeedyaDL delegates its MusicBrainz service to core |
+
+> **Correction on #76**: its original body listed `meedya-lyrics/lrclib.rs` as already
+> covered. That was an *inference* from it using `Client::builder()` rather than a reading —
+> it has **no** timeout. Corrected in a comment; the real count is 11, not 10.
+
+---
+
+## 11. Top recommendations (awaiting your decision)
+
+Ranked by value-for-effort. Nothing here has been implemented — these are proposals.
+
+1. **#78** — `d[..4.min(d.len())]` year extraction panics on multi-byte UTF-8 dates, in
+   **11 provider parsers**. Same bug class as the `validate_isrc` panic already fixed. `S`
+2. **#79** — insert-then-`unwrap()` panics when lofty silently refuses an unsupported tag
+   type. Tagging a freshly-downloaded untagged M4A is a first-class MeedyaSuite flow. `S`
+3. **#80** — API keys leak into error text: `reqwest`'s `Display` appends the full URL
+   including secret query params, so keys reach logs and bug reports. `S`
+4. **#81** — ReplayGain's FFmpeg subprocess has no timeout; one bad file freezes an album
+   scan. `S`
+5. **#94** — `rate_limiter.rs` is fully built and wired to **nothing**. First real batch run
+   risks getting partner apps throttled or banned. `M`
+
+Full ranked list with evidence is in each issue body.
