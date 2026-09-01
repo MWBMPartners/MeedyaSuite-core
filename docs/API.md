@@ -46,13 +46,13 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 49 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `io`, `mik`, `model`, `standard` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 555 tests** with default features, **683** with `--all-features` (the CI configuration). All passing, 0 failing.
+**Total: 555 tests** with default features, **688** with `--all-features` (the CI configuration). All passing, 0 failing.
 
 > These are **measured** figures — `cargo test --workspace [--all-features]` run against `feature/work-in-progress` on 2026-09-01 — not carried forward from a previous edit. For reference, `main` measures 601 with `--all-features`.
 >
 > Earlier revisions of this file accumulated a long narrative of incremental count deltas (466 → 511 → 533 → 546 → 664 …) which had drifted from reality. That narration has been removed: the only trustworthy number is one you just measured. Guarding these counts automatically in CI is tracked in issue #71.
 
-Per-crate, `--all-features` (measured): `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 3 · `meedya-fingerprint` 11 · `meedya-library-import` 30 · `meedya-lyrics` 128 · `meedya-metadata` 112 · `meedya-providers` 172 · `meedya-tags-extended` 180.
+Per-crate, `--all-features` (measured): `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 3 · `meedya-fingerprint` 11 · `meedya-library-import` 30 · `meedya-lyrics` 128 · `meedya-metadata` 112 · `meedya-providers` 177 · `meedya-tags-extended` 180.
 
 ---
 
@@ -540,7 +540,19 @@ for exactly this reason.
 
 Tracked for live-service recall validation post-2026-11-30 in issue #69.
 
-**ISRC vs ISWC are normalised differently, on purpose.** MusicBrainz documents and indexes ISRCs unpunctuated (`isrc:GBAHT1600302`), so `providers::isrc` strips separators before querying. MusicBrainz displays ISWCs in the punctuated ISO form (`T-034.524.680-1`) and does **not** document which form the `iswc` search field indexes, so `providers::iswc` preserves the caller's separators and relies on phrase-quoting to keep them syntactically inert. Stripping them would be an unverified behaviour change that could silently reduce recall; settling it needs a live-service check (issue #69).
+**ISRC vs ISWC are normalised differently, on purpose.** MusicBrainz documents neither field's indexed form, so this was settled by **live probing** `musicbrainz.org/ws/2/` on 2026-09-01:
+
+| Field | Query form | Live result |
+| --- | --- | --- |
+| ISRC | `isrc:GBAYE0601498` (compact) | matches |
+| ISRC | `isrc:GB-AYE-06-01498` (hyphenated) | 0 results |
+| ISWC | `iswc:"T-304.031.869-8"` (dotted display form) | matches |
+| ISWC | `iswc:T3040318698` (compact) | 0 results |
+| ISWC | `iswc:"T-304031869-8"` (hyphen-only) | parse error |
+
+So `providers::isrc` strips separators and uppercases (`normalise_isrc`), while `providers::iswc` **reformats to MusicBrainz's stored display form** `T-DDD.DDD.DDD-C` (`normalise_iswc` -> `format_iswc_dotted`) and phrase-quotes it so its `-` and `.` cannot parse as Lucene operators. All accepted input forms (compact, hyphen-only, dotted) converge on the dotted query.
+
+`providers::iswc` additionally exposes `pub fn normalise_iswc(&str) -> String` (compact canonical form). Re-validate after the 2026-11-30 reindex — no ticket announces an identifier-analyzer change, but the stored-form query is the safest bet either way (issue #69).
 
 #### `MetadataProvider` trait
 

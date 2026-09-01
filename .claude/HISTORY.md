@@ -395,3 +395,103 @@ Trade-off accepted explicitly: this can strip a parenthetical that genuinely bel
 ### Verification (all green)
 
 `cargo fmt --all -- --check` — clean, no changes needed. `cargo build --workspace --all-features --locked` — clean (only pre-existing, unrelated `meedya-tags-extended` warnings — unused import `MEEDYA_NAMESPACE` and dead `split_at_last_separator` in `mik.rs`, neither touched this session). `cargo test --workspace --all-features --locked` — `meedya-providers`: **152 passed, 0 failed** (unit) + **1 passed** (`quote_phrase` doctest) = 153; workspace unit/integration sum **662** + doctests **2** (lyrics 1, providers 1) = **664 passed** total, 1 ignored (the pre-existing `meedya-lyrics::embed` doctest — untouched). Default-feature `cargo test --workspace --locked` also run to confirm the non-`--all-features` figure is unaffected: `meedya-providers` **39 passed**, workspace total **546** (both unchanged). `cargo clippy -p meedya-providers --all-targets --all-features -- -D warnings` — clean, no warnings. Did not commit — left in the working tree for review. Touched only `crates/meedya-providers/src/providers/musicbrainz.rs`, `docs/API.md`, `README.md`, `.claude/CONTEXT.md`, and this `HISTORY.md` entry; did not touch `isrc.rs`, `iswc.rs`, `lucene.rs`, or `meedya-metadata` (the `isrc.rs` panic fix described above was already committed to the branch as `8836967` before this session started — not a change made in this pass).
+
+---
+
+## 2026-09-01 — Branch consolidation + MusicBrainz Solr-10 readiness
+
+Branch: `feature/work-in-progress` (based on `main`, eventual PR target `main`).
+
+### What prompted it
+
+Four WIP branches had accumulated with unclear relationships. The audit was done by
+**full file content**, not commit messages — which turned out to matter.
+
+### The finding that changed the approach
+
+The two MusicBrainz branches were **divergent siblings, not superset/subset**. Each had
+dropped features the other introduced, so merging either one wholesale would have silently
+regressed working functionality:
+
+- Only on `fix/musicbrainz-lucene-hardening`: 30s HTTP timeouts, `musicbrainz_id`
+  population, genre extraction, and the `album`→`release:` / `year`→`date:` clauses.
+- Only on `claude/branch-audit-…`: bracket-stripping recall, ISRC validation, the
+  no-searchable-field error, a **real panic fix** in `validate_isrc`, Solr-10 fixtures,
+  and the whole #65 identifier registry.
+
+`main` was the weakest baseline of the three (naive `title.replace('"', "")`, no timeout,
+no `lucene.rs` at all).
+
+Resolved as a **semantic union** across five conflicting files rather than by picking a
+side. A grep audit verified all 21 at-risk features present afterwards.
+
+### `lucene` API unified
+
+The branches exposed incompatible module APIs (`lucene_escape`/`lucene_phrase_clause` vs
+`escape_lucene`/`quote_phrase`). Neither had shipped, so they were unified on one correct
+API. The key insight both branches had missed: **bare-term escaping and in-phrase escaping
+are different regimes.** Inside a quoted phrase only `\` and `"` are structurally
+significant — escaping the full special set there would embed literal backslashes into the
+phrase and kill the match. Final surface: `escape_lucene` (bare), `quote_phrase` (phrase),
+`phrase_clause(field, value)` (whole clause).
+
+### ISWC query form — corrected by live probing
+
+Both branches were wrong about ISWC, in different ways. MusicBrainz documents neither
+identifier's indexed form, so it was settled by probing `musicbrainz.org/ws/2/` directly:
+
+| Field | Query form | Live result |
+|---|---|---|
+| ISRC | `isrc:GBAYE0601498` (compact) | matches |
+| ISRC | `isrc:GB-AYE-06-01498` | 0 results |
+| ISWC | `iswc:"T-304.031.869-8"` (dotted) | matches |
+| ISWC | `iswc:T3040318698` (compact) | 0 results |
+| ISWC | `iswc:"T-304031869-8"` (hyphen-only) | **parse error** |
+
+The consolidation had inherited the audit branch's hyphen-only form — a parse error in
+production. Now `format_iswc_dotted` reformats to the stored display form. ISRC and ISWC
+are deliberately asymmetric because MusicBrainz indexes them asymmetrically.
+
+### Solr-10 ticket audit
+
+Only **SEARCH-764** affects us, and only indirectly (our own query construction). Verified
+not applicable: SEARCH-444, -642, -666, -752, -751, -753, -680, -681, -452, -646, -677 —
+we never call the area/url/cdstub/tag/annotation endpoints, never read relationship
+`target` or release `quality`, and no response struct uses `deny_unknown_fields`. Solr 10's
+upgrade notes document no query-parser changes visible to API clients, so one conservative
+code path is valid on both sides of the cutover; no runtime switching is needed or possible
+(there is no version-negotiation mechanism).
+
+### Also landed
+
+- **MSRV declared**: `rust-version = "1.82"` on the workspace and all 9 member crates.
+  `Option::is_none_or` needed it and nothing declared it — CI hid this by always using
+  stable, but a downstream app on an older toolchain would have hit an opaque compile error.
+- `.claude/HANDOFF.md` created — no handoff document existed on any branch.
+- `.claude/settings.local.json` gitignored (machine-local permission grants).
+
+### Test counts — measured, and the drift finally cut out
+
+| | default features | `--all-features` |
+|---|---|---|
+| `main` | — | **601** |
+| `feature/work-in-progress` | **555** | **688** |
+
+Docs across the repo variously claimed 248, 466, 533, 546, 601, 653 and 664 — all stale.
+The accumulated "delta narration" in `docs/API.md` and `CONTEXT.md` was **removed** rather
+than extended: it had become a record of guesses. Rule going forward: only ever write a
+number you just measured. CI enforcement is tracked in issue #71.
+
+### Branches
+
+`claude/branch-audit-musicbrainz-migration-l5h8zh`, `claude/issue-65-identifier-registry`,
+`fix/musicbrainz-lucene-hardening` and `feat/60-syllable-schema-and-classifier` were
+deleted after `archive/*` tags were pushed to keep every commit reachable.
+`alpha`/`beta` were **not** touched — both are ancestors of `main` (75 commits behind,
+nothing unique); an owner decision on fast-forwarding or deleting them is still open.
+
+### Deferred
+
+Issue #75 (core absorbs the shared MusicBrainz lookup mechanism) and MeedyaDL#1119 (that
+app delegates to core) — sequenced so core grows the capability first, before the
+2026-11-30 cutover forces relationship-parsing changes in two repos instead of one.

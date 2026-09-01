@@ -1,7 +1,7 @@
 # MeedyaSuite-core — Project Context
 
 > Snapshot maintained for Claude Code sessions. Reflects the actual state of `main`, not aspirational state.
-> Last updated: 2026-09-01 (post issue #65 completion pass — GRid/ICPN reserved, per-scheme normalisation guidance, AcoustID read-back fix; same day, post MusicBrainz Solr 9→10 search-hardening pass — new `lucene` module, `build_lucene_query`, ISRC/ISWC query normalisation, forward-compat parse fixtures; same day, post ISRC `validate_isrc` panic fix and MusicBrainz trailing-bracket-group recall mitigation (`strip_trailing_bracket_groups`, issue #69) — on branch `claude/branch-audit-musicbrainz-migration-l5h8zh`).
+> Last updated: 2026-09-01 — **branch-consolidation pass**. The four in-flight WIP branches were audited by full file content and merged into a single branch, `feature/work-in-progress` (based on `main`, eventual PR target `main`). This file describes that branch. See [HANDOFF.md](HANDOFF.md) for in-flight state and [HISTORY.md](HISTORY.md) for the narrative.
 
 ## What this repo is
 
@@ -24,12 +24,16 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | [meedya-tags-extended](../crates/meedya-tags-extended/) | Multi-format DJ metadata (lofty). `ExtendedTags`/`MusicalKey`/`CuePoint`/`LoopPoint`/`BeatGrid`. Standard BPM+key+comment + Mixed In Key reader (`mik`). Other proprietary readers pending. | **Implemented (foundation + MIK)** | 180 |
 | [meedya-library-import](../crates/meedya-library-import/) | External library ingestion: iTunes XML, CUE sheets. Emits normalized `LibraryEntry` records. | **Implemented** | 30 |
 | [meedya-lyrics](../crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O, plain-text and SYLT tag-embed. | **Implemented** | 128 |
-| [meedya-providers](../crates/meedya-providers/) | Provider framework: traits, capabilities, rate limiting, credentials, cover art, fuzzy match scoring, Lucene/Solr query escaping (`lucene`). In-repo `MetadataProvider` impls (feature-gated): MusicBrainz, Spotify, Apple Music, Deezer, TMDB, TheTVDB, OMDb, Apple TV, iTunes Store, Apple Podcasts, ISRC, EIDR, ISWC. | **Implemented** | 39 |
+| [meedya-providers](../crates/meedya-providers/) | Provider framework: traits, capabilities, rate limiting, credentials, cover art, fuzzy match scoring, Lucene/Solr query escaping (`lucene`). In-repo `MetadataProvider` impls (feature-gated): MusicBrainz, Spotify, Apple Music, Deezer, TMDB, TheTVDB, OMDb, Apple TV, iTunes Store, Apple Podcasts, ISRC, EIDR, ISWC. | **Implemented** | 49 (177 all-features) |
 | [meedya-fingerprint](../crates/meedya-fingerprint/) | AcoustID client + ReplayGain EBU R128 analyser. Pure-Rust Chromaprint (no fpcalc). | **Implemented** | 6 |
 | [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 3 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 546 tests on `main` (664 with `--all-features`, the CI configuration) — post #65 identifier-types registry batch, 511 → 533 measured (the +4 over the batch's 529 are tag-I/O save/reload round-trip tests added with the #65 silent-data-loss fix), plus +1 from the 2026-09-01 #65 completion pass' AcoustID read-back regression test (533 → 534), plus +12 default-feature / +29 `--all-features` from the same-day MusicBrainz Solr 9→10 search-hardening pass (534 → 546 / 624 → 653), plus +11 `--all-features`-only from the same-day ISRC `validate_isrc` panic-fix regression test and the MusicBrainz trailing-bracket-group recall mitigation's 10 new tests (653 → 664; default-feature total unaffected — both land in feature-gated `provider-isrc`/`provider-musicbrainz` modules) — see [HISTORY.md](HISTORY.md) for the full breakdown.** Workspace builds clean. `meedya-providers` itself: 39 default-feature tests (table above, unaffected), 153 with `--all-features` (152 unit + 1 doctest). (The 466 figure this file long carried was stale — the measured pre-#65 count was 511; the count-drift itself is tracked as a follow-up, "for consideration".)
+**Total: 555 tests with default features, 688 with `--all-features`** (the CI configuration) on `feature/work-in-progress`. All passing, 0 failing. `main` measures **601** with `--all-features`.
+
+> **Measured, not carried forward.** From `cargo test --workspace [--all-features]` run on 2026-09-01. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
+
+Per-crate, `--all-features`: `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 3 · `meedya-fingerprint` 11 · `meedya-library-import` 30 · `meedya-lyrics` 128 · `meedya-metadata` 112 · `meedya-providers` 177 · `meedya-tags-extended` 180. `meedya-providers` measures 49 with default features (provider impls are feature-gated).
 
 > **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 
@@ -74,9 +78,13 @@ Two surfaces coexist by design:
 
 ### meedya-providers
 
-Provider framework. Re-exports: `MetadataProvider`, `ProviderCapabilities`, `ProviderError`, `SearchQuery`, `ProviderResult`, `MediaType`, `CoverArtInfo`, `CoverArtSize`, `CredentialStore`, `CredentialSource`, `ResolvedCredential`, `MatchScorer`, `ScoringWeights`, `ProviderRateLimiter`, `RateLimiterRegistry`, `escape_lucene`, `quote_phrase`. Modules: `traits`, `types`, `cover_art`, `credentials`, `match_scoring`, `rate_limiter`, `lucene` (Lucene/Solr query escaping — always compiled, no feature gate), `providers` (feature-gated concrete `MetadataProvider` impls: `musicbrainz`, `isrc`, `iswc`, `spotify`, `apple_music`, `deezer`, `tmdb`, `thetvdb`, `omdb`, `apple_tv`, `itunes_store`, `apple_podcasts`, `eidr`).
+Provider framework. Re-exports: `MetadataProvider`, `ProviderCapabilities`, `ProviderError`, `SearchQuery`, `ProviderResult`, `MediaType`, `CoverArtInfo`, `CoverArtSize`, `CredentialStore`, `CredentialSource`, `ResolvedCredential`, `MatchScorer`, `ScoringWeights`, `ProviderRateLimiter`, `RateLimiterRegistry`, `escape_lucene`, `quote_phrase`, `phrase_clause`. Modules: `traits`, `types`, `cover_art`, `credentials`, `match_scoring`, `rate_limiter`, `lucene` (Lucene/Solr query escaping — always compiled, no feature gate), `providers` (feature-gated concrete `MetadataProvider` impls: `musicbrainz`, `isrc`, `iswc`, `spotify`, `apple_music`, `deezer`, `tmdb`, `thetvdb`, `omdb`, `apple_tv`, `itunes_store`, `apple_podcasts`, `eidr`).
 
-**MusicBrainz Solr 9→10 search hardening (2026-09-01)**: audited the announced breaking tickets (SEARCH-444/642/666/752/764) against `musicbrainz`/`isrc`/`iswc` — none hit us (we never search `area`/`url`/`cdstub`/`tag`, never read relationship `target` or release `quality`, and all response parsers are serde-derive structs that ignore unknown fields). The real risk was our own unescaped Lucene query construction under the stricter Solr 10 parser; `lucene::{escape_lucene, quote_phrase}` now hardens every user-supplied value going into a query, `MusicBrainzProvider::build_lucene_query` replaced the old dead `search_term` fallback, and ISRC/ISWC queries are normalised before being embedded. Forward-compat parse fixtures (Solr-10-shaped response JSON with `relations`/`quality`/`release-group`/`genres` noise) prove the parsers are unaffected. Genre search (SEARCH-681) deferred — see [HISTORY.md](HISTORY.md).
+**MusicBrainz Solr 9→10 search hardening (2026-09-01)**: audited the announced breaking tickets (SEARCH-444/642/666/752/764) against `musicbrainz`/`isrc`/`iswc` — none hit us (we never search `area`/`url`/`cdstub`/`tag`, never read relationship `target` or release `quality`, and all response parsers are serde-derive structs that ignore unknown fields). The real risk was our own unescaped Lucene query construction under the stricter Solr 10 parser; `lucene::{escape_lucene, quote_phrase, phrase_clause}` now hardens every user-supplied value going into a query, `MusicBrainzProvider::build_lucene_query` replaced the old dead `search_term` fallback, and ISRC/ISWC queries are normalised before being embedded.
+
+The three `lucene` helpers implement **two different escaping regimes and are not interchangeable**: inside a quoted phrase only `\` and `"` are structurally significant (escaping the full special set there would embed literal backslashes into the phrase and kill the match), while a bare term needs the full 19-character set escaped. Both prior branches had conflated these.
+
+**Identifier query forms were settled by live probing**, not documentation — MusicBrainz documents neither: ISRC matches compact (`isrc:GBAYE0601498`) and misses hyphenated; ISWC matches only in the stored dotted display form (`iswc:"T-304.031.869-8"`), while the compact form returns 0 results and the hyphen-only form is a parse error. Hence the deliberate asymmetry between `normalise_isrc` and `format_iswc_dotted`. Forward-compat parse fixtures (Solr-10-shaped response JSON with `relations`/`quality`/`release-group`/`genres` noise) prove the parsers are unaffected. Genre search (SEARCH-681) deferred — see [HISTORY.md](HISTORY.md).
 
 ### meedya-fingerprint
 
@@ -114,7 +122,8 @@ Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `p
 
 ```bash
 cargo build --workspace          # all 9 crates
-cargo test  --workspace          # 546 tests (664 with --all-features)
+cargo test  --workspace          # 555 tests
+cargo test  --workspace --all-features   # 688 tests (the CI configuration)
 cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```
