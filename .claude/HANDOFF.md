@@ -357,13 +357,34 @@ as genuinely done.
 Owner selected these on 2026-09-01. **One commit per issue**, all on
 `feature/work-in-progress`. Status is updated in this table as each lands.
 
-| Issue | Subject | Status |
-|---|---|---|
-| #78 | year byte-slice panic in 11 provider parsers | ⏳ planned |
-| #79 | insert-then-unwrap panic on unsupported tag type | ⏳ planned |
-| #80 | API keys leak via reqwest error Display | ⏳ planned |
-| #81 | ReplayGain subprocess has no timeout | ⏳ planned |
-| #94 | rate limiter wired to nothing | ⏳ planned |
+| Issue | Subject | Status | Commit |
+|---|---|---|---|
+| #78 | year byte-slice panic in 11 provider parsers | ✅ done, closed | `eb70ddd` |
+| #79 | insert-then-unwrap panic on unsupported tag type | ✅ done, closed | `bce3c6c` |
+| #81 | ReplayGain subprocess has no timeout | ✅ done, closed | `e3a1026` |
+| #80 | API keys leak via reqwest error Display | ⏳ in flight | — |
+| #94 | rate limiter wired to nothing | ⏳ in flight | — |
+
+Measured after #78/#79/#81: **562** default-features / **704** `--all-features`, 0 failing.
+fmt clean, clippy clean under the enforcing CI invocation.
+
+### Corrections to the issue premises found during implementation
+
+These matter because the issue bodies are the spec, and three of them were wrong:
+
+- **#79** — blast radius is wider and non-uniform. Untagged MP4/Ogg/WavPack **panic**;
+  untagged FLAC/APE/MPC do **not** panic but write into a read-only Id3v2 tag and fail later
+  at save. Also: **no new error variant was needed**, contrary to the issue — using
+  `primary_tag_type()` removes the fallible path entirely.
+- **#81** — the issue cites `meedya-codecs`' ffprobe/mediainfo as the correct counter-pattern.
+  **They are also broken**: `tokio::time::timeout` around `Command::output()` does *not* kill
+  the child without `kill_on_drop`, so they leaked a runaway process on every timeout. Fixed
+  there too.
+- **#80** — only **3** capture points are actually vulnerable (tmdb, omdb, acoustid — all
+  query-param secrets). spotify/thetvdb/eidr use header auth and are *not* exposed by
+  reqwest's Display; meedya-db uses a header; LRCLIB has no secret.
+- **#78** — no corrections; all 11 sites verified exactly. A workspace-wide sweep found
+  **zero** further instances of the byte-slice bug class.
 
 ### Facts verified directly (do not re-derive)
 
