@@ -5,6 +5,8 @@
 // Ported from MeedyaManager crates/mm-providers/src/identifiers/mod.rs
 // under MeedyaSuite-core#12 / MeedyaManager#136.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
@@ -12,6 +14,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::extra_keys::{EIDR, PROVIDER_ID};
+use crate::rate_limiter::{default_limiter_for, ProviderRateLimiter};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
@@ -39,6 +42,7 @@ pub struct EidrProvider {
     base_url: String,
     username: Option<String>,
     password: Option<String>,
+    limiter: Arc<ProviderRateLimiter>,
 }
 
 impl EidrProvider {
@@ -56,7 +60,17 @@ impl EidrProvider {
             base_url: base_url.into(),
             username,
             password,
+            limiter: default_limiter_for("eidr"),
         }
+    }
+
+    /// Replace the shared default rate limiter (see [`default_limiter_for`])
+    /// with a caller-supplied one — an app-wide budget held in a
+    /// [`crate::rate_limiter::RateLimiterRegistry`], a paid tier or a
+    /// self-hosted mirror with no such limit, or a permissive limiter in tests.
+    pub fn with_rate_limiter(mut self, limiter: Arc<ProviderRateLimiter>) -> Self {
+        self.limiter = limiter;
+        self
     }
 
     /// True if both username and password are present.
@@ -170,6 +184,8 @@ impl MetadataProvider for EidrProvider {
         );
 
         let url = format!("{}/EIDR/object/{}", self.base_url, eidr);
+        // Throttle against this provider's shared upstream budget (MeedyaSuite-core#94).
+        self.limiter.wait_until_ready().await;
         let response = self
             .client
             .get(&url)

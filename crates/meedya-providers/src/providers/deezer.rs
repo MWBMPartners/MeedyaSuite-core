@@ -5,6 +5,8 @@
 // Ported from MeedyaManager crates/mm-providers/src/music/mod.rs
 // under MeedyaSuite-core#12 / MeedyaManager#136.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
@@ -12,6 +14,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::extra_keys::{CONTENT_ADVISORY, DURATION_SECS, PROVIDER_ID};
+use crate::rate_limiter::{default_limiter_for, ProviderRateLimiter};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
@@ -49,6 +52,7 @@ pub struct DeezerProvider {
     client: Client,
     base_url: String,
     enabled: bool,
+    limiter: Arc<ProviderRateLimiter>,
 }
 
 impl DeezerProvider {
@@ -61,7 +65,17 @@ impl DeezerProvider {
             client: Client::new(),
             base_url: base_url.into(),
             enabled: true,
+            limiter: default_limiter_for("deezer"),
         }
+    }
+
+    /// Replace the shared default rate limiter (see [`default_limiter_for`])
+    /// with a caller-supplied one — an app-wide budget held in a
+    /// [`crate::rate_limiter::RateLimiterRegistry`], a paid tier or a
+    /// self-hosted mirror with no such limit, or a permissive limiter in tests.
+    pub fn with_rate_limiter(mut self, limiter: Arc<ProviderRateLimiter>) -> Self {
+        self.limiter = limiter;
+        self
     }
 
     fn parse_deezer(provider_name: &str, body: &str) -> Result<Vec<ProviderResult>, ProviderError> {
@@ -214,6 +228,8 @@ impl MetadataProvider for DeezerProvider {
             req = req.query(&[("q", q.as_str()), ("limit", &limit)]);
         }
 
+        // Throttle against this provider's shared upstream budget (MeedyaSuite-core#94).
+        self.limiter.wait_until_ready().await;
         let response = req.send().await.map_err(net_err)?;
 
         if !response.status().is_success() {

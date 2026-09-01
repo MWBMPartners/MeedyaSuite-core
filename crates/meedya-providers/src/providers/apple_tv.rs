@@ -5,6 +5,8 @@
 // Ported from MeedyaManager crates/mm-providers/src/video/mod.rs
 // under MeedyaSuite-core#12 / MeedyaManager#136.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
@@ -12,6 +14,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::extra_keys::{CONTENT_ADVISORY, DURATION_SECS, PROVIDER_ID};
+use crate::rate_limiter::{default_limiter_for, ProviderRateLimiter};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
@@ -35,12 +38,15 @@ fn insert_duration(result: &mut ProviderResult, secs: f64) {
 ///
 /// Endpoint: `https://itunes.apple.com/search?media=movie`
 /// Auth:     None (public API)
-/// Limits:   20 RPM (conservative)
+/// Limits:   20 RPM — Apple's documented iTunes Search figure, held as one
+///           `itunes.apple.com` budget shared with every other Apple
+///           provider on that endpoint, not a per-provider allowance
 pub struct AppleTvProvider {
     client: Client,
     base_url: String,
     enabled: bool,
     country: String,
+    limiter: Arc<ProviderRateLimiter>,
 }
 
 impl AppleTvProvider {
@@ -54,7 +60,17 @@ impl AppleTvProvider {
             base_url: base_url.into(),
             enabled: true,
             country: country.into(),
+            limiter: default_limiter_for("apple_tv"),
         }
+    }
+
+    /// Replace the shared default rate limiter (see [`default_limiter_for`])
+    /// with a caller-supplied one — an app-wide budget held in a
+    /// [`crate::rate_limiter::RateLimiterRegistry`], a paid tier or a
+    /// self-hosted mirror with no such limit, or a permissive limiter in tests.
+    pub fn with_rate_limiter(mut self, limiter: Arc<ProviderRateLimiter>) -> Self {
+        self.limiter = limiter;
+        self
     }
 
     pub(crate) fn parse_itunes_video(
@@ -187,6 +203,9 @@ impl MetadataProvider for AppleTvProvider {
 
         let limit = query.max_results.unwrap_or(10).to_string();
         let url = format!("{}/search", self.base_url);
+        // Throttle: one itunes.apple.com budget shared across every
+        // Apple provider pointed at this endpoint (MeedyaSuite-core#94).
+        self.limiter.wait_until_ready().await;
         let response = self
             .client
             .get(&url)

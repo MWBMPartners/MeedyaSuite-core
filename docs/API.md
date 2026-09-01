@@ -6,7 +6,7 @@
 >
 > **This is not a Swagger/OpenAPI spec.** `MeedyaSuite-core` is a Rust library workspace, not a web service. There are no HTTP endpoints. If you need an HTTP-shaped contract, build one in your downstream app on top of these crates.
 >
-> **Last refreshed**: 2026-09-01 (branch-consolidation pass on `feature/work-in-progress`: the two divergent MusicBrainz branches union-merged, `lucene` module API unified, #65 identifier-types registry carried across). See the [maintenance section](#maintenance) for how this stays in sync with the code.
+> **Last refreshed**: 2026-09-02 (`feature/work-in-progress`: provider rate limiting wired up — #94 — on top of the #78/#79/#80/#81 hardening pass; test counts re-measured). See the [maintenance section](#maintenance) for how this stays in sync with the code.
 
 ---
 
@@ -39,20 +39,20 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-codecs` | `audio_codec`, `channel_config`, `classify`, `container`, `ffprobe`, `hdr`, `mediainfo`, `registry`, `spatial`, `spatial_type`, `subtitle_codec`, `tool_path`, `video_codec` | 47 | Stable for partner-app consumption |
 | `meedya-core` | (facade re-exports only — `tags-extended` and `library-import` now included) | 0 | Stable |
 | `meedya-db` | `client`, `export`, `models` | 3 | Foundation stable; specific endpoints may evolve |
-| `meedya-fingerprint` | `acoustid`, `replaygain` | 6 | Stable |
+| `meedya-fingerprint` | `acoustid`, `replaygain` | 10 | Stable |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
-| `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 129 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
-| `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `writer` | 112 | Stable (two co-existing surfaces + identifier-types registry) |
-| `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 49 | Stable foundation; specific provider implementations may evolve |
+| `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 130 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
+| `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `writer` | 114 | Stable (two co-existing surfaces + identifier-types registry) |
+| `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 59 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `ai_content`, `conflict_policy`, `genre_hierarchy`, `io`, `mik`, `model`, `play_history`, `quick_tag`, `sidecar_json`, `standard`, `stems` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 556 tests** with default features, **689** with `--all-features` (the CI configuration). All passing, 0 failing.
+**Total: 573 tests** with default features, **718** with `--all-features` (the CI configuration). All passing, 0 failing.
 
-> These are **measured** figures — `cargo test --workspace [--all-features]` run against `feature/work-in-progress` on 2026-09-01 — not carried forward from a previous edit. For reference, `main` measures 601 with `--all-features`.
+> These are **measured** figures — `cargo test --workspace [--all-features]` run against `feature/work-in-progress` on 2026-09-02 — not carried forward from a previous edit. For reference, `main` measures 601 with `--all-features`.
 >
 > Earlier revisions of this file accumulated a long narrative of incremental count deltas (466 → 511 → 533 → 546 → 664 …) which had drifted from reality. That narration has been removed: the only trustworthy number is one you just measured. Guarding these counts automatically in CI is tracked in issue #71.
 
-Per-crate, `--all-features` (measured): `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 3 · `meedya-fingerprint` 11 · `meedya-library-import` 30 · `meedya-lyrics` 129 · `meedya-metadata` 112 · `meedya-providers` 177 · `meedya-tags-extended` 180.
+Per-crate, `--all-features` (measured): `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 3 · `meedya-fingerprint` 15 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 114 · `meedya-providers` 199 · `meedya-tags-extended` 180.
 
 ---
 
@@ -553,7 +553,7 @@ pub use credentials::{CredentialSource, CredentialStore, ResolvedCredential};
 pub use error::CredentialError;
 pub use lucene::{escape_lucene, phrase_clause, quote_phrase};
 pub use match_scoring::{MatchScorer, ScoringWeights};
-pub use rate_limiter::{ProviderRateLimiter, RateLimiterRegistry};
+pub use rate_limiter::{default_limiter_for, ProviderRateLimiter, RateLimiterRegistry};
 pub use traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 pub use types::{CoverArtInfo, MediaType, ProviderResult, SearchQuery};
 ```
@@ -646,9 +646,74 @@ Implemented in-repo, one file per external service, each gated behind its own `p
 
 **MusicBrainz Solr 9→10 upgrade (2026-11-30)**: `musicbrainz`/`isrc`/`iswc` all default to `https://musicbrainz.org` but expose `with_base_url` for pointing at a self-hosted MusicBrainz mirror (e.g. a local `mbslave`/search-server instance). Anyone running such a mirror is responsible for following MusicBrainz's own Solr 9→10 re-index instructions (SEARCH-764) on their own schedule — this crate's query construction is hardened against the stricter Solr 10 parser (see `lucene` above), but it cannot re-index a mirror's search server for you.
 
-#### `ProviderRateLimiter`
+#### Rate limiting
 
-`governor`-backed rate limiter with configurable quotas per provider. `RateLimiterRegistry` manages multiple providers' limits.
+```rust
+impl ProviderRateLimiter {
+    pub fn new(provider_name: impl Into<String>, rpm: u32) -> Self;         // per-minute quota
+    pub fn per_second(provider_name: impl Into<String>, rps: u32) -> Self;  // per-second quota
+    pub fn check(&self) -> bool;            // non-blocking; consumes a cell when it returns true
+    pub async fn wait_until_ready(&self);   // blocking
+    pub fn provider_name(&self) -> &str;
+    pub fn rpm(&self) -> u32;               // sustained rate
+    pub fn burst(&self) -> u32;             // requests admissible back-to-back
+}
+
+pub fn default_limiter_for(provider_id: &str) -> Arc<ProviderRateLimiter>;
+
+// …and on every provider struct:
+pub fn with_rate_limiter(self, limiter: Arc<ProviderRateLimiter>) -> Self;
+```
+
+**The contract — read this before building a batch caller.**
+
+1. **Providers are throttled by default.** Every provider awaits its limiter immediately
+   before each outbound request (Spotify does so twice per search — the token POST and the
+   search GET both spend from its budget). There is nothing to opt into and no retry loop to
+   write; a caller that ignores rate limiting entirely still behaves.
+2. **It blocks, it does not error.** `wait_until_ready` delays the request rather than
+   returning `ProviderError::RateLimited`, because the correct response to "too fast" is to
+   go slower, and every caller writing its own backoff would be the same loop thirteen times.
+   `check()` stays public for fail-fast callers that would rather skip a provider than queue
+   behind it.
+3. **Budgets are keyed by upstream host, not by provider name.** Several providers share one
+   upstream allowance, and a limiter per provider name would multiply it by the number of
+   providers pointed at that host:
+
+   | Budget | Default | Providers sharing it |
+   | --- | --- | --- |
+   | `musicbrainz.org` | 1 req/**sec** | `musicbrainz`, `isrc`, `iswc` |
+   | `itunes.apple.com` | 20 RPM | `apple_music`, `apple_tv`, `itunes_store`, `apple_podcasts` |
+   | `api.spotify.com` | 100 RPM | `spotify` |
+   | `api.deezer.com` | 50 RPM | `deezer` |
+   | `api.themoviedb.org` | 40 RPM | `tmdb` |
+   | `api4.thetvdb.com` | 30 RPM | `thetvdb` |
+   | `www.omdbapi.com` | 10 RPM | `omdb` |
+   | `id.eidr.org` | 10 RPM | `eidr` |
+   | *(unrecognised id)* | 30 RPM | shared conservative fallback |
+
+   Each figure carries its source in `rate_limiter.rs`; where a service publishes no limit
+   the default is labelled a conservative guess.
+4. **`per_second` is not `per_minute / 60`.** `governor` treats a quota's cell count as its
+   burst capacity too, so `new(name, 60)` admits sixty requests back-to-back. MusicBrainz
+   documents a *one-per-second average* and answers such a burst with 503s, which is why its
+   budget is `per_second(1)` — `rpm()` reports 60, `burst()` reports 1.
+5. **Limiters are shared process-wide, across provider instances.** `default_limiter_for`
+   hands out `Arc`s from a `OnceLock` table; two `MusicBrainzProvider`s constructed in
+   different tasks share one budget, as do a `MusicBrainzProvider` and an `IsrcProvider`.
+   A per-instance limiter would throttle nothing useful, since batch callers construct a
+   provider per work item.
+6. **Overriding.** Provider constructors are unchanged (this addition is non-breaking); pass
+   a different budget with the consuming builder, e.g.
+   `MusicBrainzProvider::new(ua).with_rate_limiter(mine)`. Use it for a self-hosted mirror
+   with no published limit, a paid tier, or a permissive limiter in a test that points a
+   provider at a mock server — a test hitting the shared default would otherwise queue on a
+   real 1 req/sec budget.
+7. **`RateLimiterRegistry` is the app-level custom-budget mechanism**, not the source of the
+   defaults. `RateLimiterRegistry::with_defaults()` is pre-populated with the *same* `Arc`s
+   the process table hands to providers, so it observes the budgets already in force;
+   `get_or_create(name, rpm)` adds app-specific ones. Registry entries reach a provider only
+   when you install one with `with_rate_limiter`.
 
 #### `CredentialStore`
 

@@ -44,6 +44,6 @@ pub use credentials::{CredentialSource, CredentialStore, ResolvedCredential};
 pub use error::CredentialError;
 pub use lucene::{escape_lucene, phrase_clause, quote_phrase};
 pub use match_scoring::{MatchScorer, ScoringWeights};
-pub use rate_limiter::{ProviderRateLimiter, RateLimiterRegistry};
+pub use rate_limiter::{default_limiter_for, ProviderRateLimiter, RateLimiterRegistry};
 pub use traits::{is_retryable, MetadataProvider, ProviderCapabilities, ProviderError};
 pub use types::{CoverArtInfo, MediaType, ProviderResult, SearchQuery};

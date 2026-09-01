@@ -5,6 +5,8 @@
 // Ported from MeedyaManager crates/mm-providers/src/video/mod.rs
 // under MeedyaSuite-core#12 / MeedyaManager#136.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
@@ -12,6 +14,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::extra_keys::PROVIDER_ID;
+use crate::rate_limiter::{default_limiter_for, ProviderRateLimiter};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
@@ -32,6 +35,7 @@ pub struct TheTvdbProvider {
     client: Client,
     base_url: String,
     api_key: Option<String>,
+    limiter: Arc<ProviderRateLimiter>,
 }
 
 impl TheTvdbProvider {
@@ -44,7 +48,17 @@ impl TheTvdbProvider {
             client: Client::new(),
             base_url: base_url.into(),
             api_key,
+            limiter: default_limiter_for("thetvdb"),
         }
+    }
+
+    /// Replace the shared default rate limiter (see [`default_limiter_for`])
+    /// with a caller-supplied one — an app-wide budget held in a
+    /// [`crate::rate_limiter::RateLimiterRegistry`], a paid tier or a
+    /// self-hosted mirror with no such limit, or a permissive limiter in tests.
+    pub fn with_rate_limiter(mut self, limiter: Arc<ProviderRateLimiter>) -> Self {
+        self.limiter = limiter;
+        self
     }
 
     fn configured(&self) -> bool {
@@ -153,6 +167,8 @@ impl MetadataProvider for TheTvdbProvider {
 
         let limit = query.max_results.unwrap_or(10).to_string();
         let url = format!("{}/v4/search", self.base_url);
+        // Throttle against this provider's shared upstream budget (MeedyaSuite-core#94).
+        self.limiter.wait_until_ready().await;
         let response = self
             .client
             .get(&url)

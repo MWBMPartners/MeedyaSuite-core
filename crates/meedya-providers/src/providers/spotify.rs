@@ -5,6 +5,8 @@
 // Ported from MeedyaManager crates/mm-providers/src/music/mod.rs
 // under MeedyaSuite-core#12 / MeedyaManager#136.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
@@ -12,6 +14,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::extra_keys::{CONTENT_ADVISORY, DURATION_SECS, PROVIDER_ID};
+use crate::rate_limiter::{default_limiter_for, ProviderRateLimiter};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
@@ -51,6 +54,7 @@ pub struct SpotifyProvider {
     base_url: String,
     client_id: Option<String>,
     client_secret: Option<String>,
+    limiter: Arc<ProviderRateLimiter>,
 }
 
 impl SpotifyProvider {
@@ -71,7 +75,17 @@ impl SpotifyProvider {
             base_url: base_url.into(),
             client_id,
             client_secret,
+            limiter: default_limiter_for("spotify"),
         }
+    }
+
+    /// Replace the shared default rate limiter (see [`default_limiter_for`])
+    /// with a caller-supplied one — an app-wide budget held in a
+    /// [`crate::rate_limiter::RateLimiterRegistry`], a paid tier or a
+    /// self-hosted mirror with no such limit, or a permissive limiter in tests.
+    pub fn with_rate_limiter(mut self, limiter: Arc<ProviderRateLimiter>) -> Self {
+        self.limiter = limiter;
+        self
     }
 
     fn configured(&self) -> bool {
@@ -95,6 +109,9 @@ impl SpotifyProvider {
                     reason: "No client_secret".into(),
                 })?;
 
+        // The token endpoint spends from the same Spotify budget as the
+        // search below — both sends are throttled (MeedyaSuite-core#94).
+        self.limiter.wait_until_ready().await;
         let resp = self
             .client
             .post("https://accounts.spotify.com/api/token")
@@ -293,6 +310,8 @@ impl MetadataProvider for SpotifyProvider {
         );
 
         let limit = query.max_results.unwrap_or(10).to_string();
+        // Throttle against this provider's shared upstream budget (MeedyaSuite-core#94).
+        self.limiter.wait_until_ready().await;
         let response = self
             .client
             .get(&url)

@@ -5,6 +5,7 @@
 // Ported from MeedyaManager crates/mm-providers/src/identifiers/mod.rs
 // under MeedyaSuite-core#12 / MeedyaManager#136.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -15,6 +16,7 @@ use tracing::debug;
 
 use crate::extra_keys::{ISWC, PROVIDER_ID};
 use crate::lucene::phrase_clause;
+use crate::rate_limiter::{default_limiter_for, ProviderRateLimiter};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
@@ -108,11 +110,14 @@ pub fn validate_iswc(iswc: &str) -> bool {
 ///
 /// Endpoint: `https://musicbrainz.org/ws/2/work/?query=iswc:<ISWC>`
 /// Auth:     None (but User-Agent required)
-/// Limits:   50 RPM
+/// Limits:   ~1 req/sec — MusicBrainz's documented anonymous average, held
+///           as one `musicbrainz.org` budget shared with the sibling
+///           MusicBrainz-backed providers, not a per-provider allowance
 pub struct IswcProvider {
     client: Client,
     base_url: String,
     user_agent: String,
+    limiter: Arc<ProviderRateLimiter>,
 }
 
 impl IswcProvider {
@@ -137,7 +142,17 @@ impl IswcProvider {
             client,
             base_url: base_url.into(),
             user_agent,
+            limiter: default_limiter_for("iswc"),
         }
+    }
+
+    /// Replace the shared default rate limiter (see [`default_limiter_for`])
+    /// with a caller-supplied one — an app-wide budget held in a
+    /// [`crate::rate_limiter::RateLimiterRegistry`], a paid tier or a
+    /// self-hosted mirror with no such limit, or a permissive limiter in tests.
+    pub fn with_rate_limiter(mut self, limiter: Arc<ProviderRateLimiter>) -> Self {
+        self.limiter = limiter;
+        self
     }
 
     fn configured(&self) -> bool {
@@ -245,6 +260,9 @@ impl MetadataProvider for IswcProvider {
 
         let limit = query.max_results.unwrap_or(10).to_string();
         let url = format!("{}/ws/2/work/", self.base_url);
+        // Throttle: musicbrainz.org allows ~1 req/sec on average, one
+        // budget shared with the sibling providers (MeedyaSuite-core#94).
+        self.limiter.wait_until_ready().await;
         let response = self
             .client
             .get(&url)

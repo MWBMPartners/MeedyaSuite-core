@@ -5,6 +5,7 @@
 // Ported from MeedyaManager crates/mm-providers/src/music/mod.rs
 // under MeedyaSuite-core#12 / MeedyaManager#136.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -15,6 +16,7 @@ use tracing::debug;
 
 use crate::extra_keys::{DURATION_SECS, PROVIDER_ID};
 use crate::lucene::phrase_clause;
+use crate::rate_limiter::{default_limiter_for, ProviderRateLimiter};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{ProviderResult, SearchQuery};
 
@@ -90,13 +92,16 @@ fn strip_trailing_bracket_groups(term: &str) -> &str {
 ///
 /// Endpoint: `https://musicbrainz.org/ws/2/recording/`
 /// Auth:     None required (but a User-Agent string is required)
-/// Limits:   50 RPM (free tier)
+/// Limits:   ~1 req/sec — MusicBrainz's documented anonymous average, held
+///           as one `musicbrainz.org` budget shared with the sibling
+///           MusicBrainz-backed providers, not a per-provider allowance
 pub struct MusicBrainzProvider {
     client: Client,
     base_url: String,
     /// Required by MusicBrainz API: identifies the application making requests.
     #[allow(dead_code)]
     user_agent: String,
+    limiter: Arc<ProviderRateLimiter>,
 }
 
 impl MusicBrainzProvider {
@@ -124,7 +129,17 @@ impl MusicBrainzProvider {
             client,
             base_url: base_url.into(),
             user_agent,
+            limiter: default_limiter_for("musicbrainz"),
         }
+    }
+
+    /// Replace the shared default rate limiter (see [`default_limiter_for`])
+    /// with a caller-supplied one — an app-wide budget held in a
+    /// [`crate::rate_limiter::RateLimiterRegistry`], a paid tier or a
+    /// self-hosted mirror with no such limit, or a permissive limiter in tests.
+    pub fn with_rate_limiter(mut self, limiter: Arc<ProviderRateLimiter>) -> Self {
+        self.limiter = limiter;
+        self
     }
 
     /// True when a User-Agent string is configured. Required by MusicBrainz API.
@@ -390,6 +405,9 @@ impl MetadataProvider for MusicBrainzProvider {
         );
 
         let limit = query.max_results.unwrap_or(10).to_string();
+        // Throttle: musicbrainz.org allows ~1 req/sec on average, one
+        // budget shared with the sibling providers (MeedyaSuite-core#94).
+        self.limiter.wait_until_ready().await;
         let response = self
             .client
             .get(&url)
@@ -845,5 +863,28 @@ mod tests {
             MusicBrainzProvider::build_lucene_query(&query).unwrap(),
             "isrc:GBAYE0601498"
         );
+    }
+
+    #[test]
+    fn provider_defaults_to_the_shared_musicbrainz_host_budget() {
+        // Two independently constructed providers — and the ISRC provider,
+        // which hits the same host — must share one limiter, or a batch run
+        // spawning a provider per task would multiply the 1 req/sec budget by
+        // the number of tasks. See MeedyaSuite-core#94.
+        let a = MusicBrainzProvider::new("TestApp/1.0");
+        let b = MusicBrainzProvider::new("TestApp/1.0");
+        assert!(Arc::ptr_eq(&a.limiter, &b.limiter));
+        assert!(Arc::ptr_eq(&a.limiter, &default_limiter_for("isrc")));
+    }
+
+    #[test]
+    fn with_rate_limiter_replaces_the_default() {
+        let custom = Arc::new(ProviderRateLimiter::new("test-mirror", 600));
+        let p = MusicBrainzProvider::new("TestApp/1.0").with_rate_limiter(Arc::clone(&custom));
+        assert!(Arc::ptr_eq(&p.limiter, &custom));
+        assert!(!Arc::ptr_eq(
+            &p.limiter,
+            &default_limiter_for("musicbrainz")
+        ));
     }
 }
