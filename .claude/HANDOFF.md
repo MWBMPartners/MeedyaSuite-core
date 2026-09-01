@@ -352,7 +352,46 @@ as genuinely done.
 
 ---
 
-## 11. Top recommendations (awaiting your decision)
+## 11. IN PROGRESS — five fixes (#78, #79, #80, #81, #94)
+
+Owner selected these on 2026-09-01. **One commit per issue**, all on
+`feature/work-in-progress`. Status is updated in this table as each lands.
+
+| Issue | Subject | Status |
+|---|---|---|
+| #78 | year byte-slice panic in 11 provider parsers | ⏳ planned |
+| #79 | insert-then-unwrap panic on unsupported tag type | ⏳ planned |
+| #80 | API keys leak via reqwest error Display | ⏳ planned |
+| #81 | ReplayGain subprocess has no timeout | ⏳ planned |
+| #94 | rate limiter wired to nothing | ⏳ planned |
+
+### Facts verified directly (do not re-derive)
+
+- **#78**: exactly **11** sites, all `crates/meedya-providers/src/providers/*.rs`, all the
+  expression `d[..4.min(d.len())].parse::<u32>()`. `4.min(len)` clamps *length* but not
+  char boundaries, so a date like `"20€25"` (byte 4 lands inside the 3-byte `€`) panics.
+- **#79**: lofty 0.22.4 `insert_tag` returns `None` and **does nothing** when
+  `!supports_tag_type` (`file/tagged_file.rs:388-399`). `primary_tag_type()` returns
+  `TagType` — **not** `Option` — and derives from the *file type*, so it is correct for
+  untagged files (`file/file_type.rs:51-64`: `Mp4 => Mp4Ilst`,
+  `Flac|Opus|Vorbis|Speex => VorbisComments`, `Aac|Aiff|Mpeg|Wav => Id3v2`). The fix is
+  therefore simply to use `primary_tag_type()` instead of `.unwrap_or(TagType::Id3v2)`.
+- **#80**: `reqwest::Error::without_url()` exists (`error.rs:88`); `Display` writes
+  `" for url ({url})"` at `error.rs:268`. **Constraint**: `meedya-fingerprint` is a leaf
+  crate and *cannot* import `meedya-providers`, so a single shared helper has no natural
+  home — see the design decision recorded with the implementation.
+- **#94**: `MetadataProvider::search` takes `&self`, so any limiter state must be behind
+  `Arc`. A limiter that is per-provider-instance is useless for batch work unless it can be
+  **shared across instances**.
+
+### Ordering constraint
+
+#78, #80 and #94 all touch `crates/meedya-providers/src/providers/*.rs`. They are done as
+separate commits but planned together so the same file is not edited three ways.
+
+---
+
+## 12. Remaining recommendations (not selected)
 
 Ranked by value-for-effort. Nothing here has been implemented — these are proposals.
 
