@@ -20,7 +20,7 @@ use crate::types::{ProviderResult, SearchQuery};
 
 // net_err lives in providers::mod (see MeedyaSuite-core#80): centralised
 // so every provider redacts a reqwest error's query string uniformly.
-use super::{leading_year, net_err};
+use super::{build_client, leading_year, net_err};
 
 fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
     ProviderError::Other(format!("parse error: {context}: {e}"))
@@ -56,7 +56,11 @@ impl EidrProvider {
         base_url: impl Into<String>,
     ) -> Self {
         Self {
-            client: Client::new(),
+            // No provider-specific User-Agent needed here (EIDR
+            // authenticates via basic auth, not User-Agent); build_client
+            // applies the crate's shared default plus its timeout
+            // (MeedyaSuite-core#76).
+            client: build_client(""),
             base_url: base_url.into(),
             username,
             password,

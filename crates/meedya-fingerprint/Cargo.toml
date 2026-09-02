@@ -36,3 +36,6 @@ default = []
 #
 # See MWBMPartners/MeedyaDL#353 Phase 3 for the consumer migration.
 chromaprint = ["dep:rusty-chromaprint", "dep:symphonia", "dep:base64"]
+
+[dev-dependencies]
+wiremock = { workspace = true }

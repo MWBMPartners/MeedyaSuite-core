@@ -1,0 +1,67 @@
+# Copyright (c) 2026 MeedyaSuite
+# Licensed under the MIT License. See LICENSE file in the project root.
+#
+# cargo-deny policy for MeedyaSuite-core (issue #84).
+#
+# Why this file exists: .claude/MEMORY.md asserted that "license compatibility
+# is checked at the Cargo.lock level by CI" — and no such check existed. The
+# team believed in a control that wasn't there. This makes the claim true.
+#
+# The licence policy matters concretely: MeedyaConverter and MeedyaDB are
+# App-Store-bound, so a GPL/AGPL dependency arriving transitively is a
+# shipping blocker, not a style question.
+#
+# Run locally with:  cargo deny check --all-features
+
+[graph]
+all-features = true
+
+[advisories]
+# Fail on any RUSTSEC advisory affecting a dependency in the graph. There are
+# 100+ transitive crates here and nothing was checking them.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# The permissive set stated as policy in .claude/MEMORY.md. Anything outside
+# it fails the build rather than being quietly accepted.
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "Unlicense",
+]
+confidence-threshold = 0.8
+
+[[licenses.exceptions]]
+# `ring` ships a bespoke licence file combining ISC/MIT/OpenSSL terms that
+# cargo-deny cannot classify by expression. It is permissive and ubiquitous
+# in the rustls stack that `reqwest` pulls in.
+name = "ring"
+allow = ["LicenseRef-ring"]
+
+[bans]
+# WARN, not deny, deliberately. The lockfile currently carries several
+# duplicate majors — most notably lofty 0.21 (pinned directly by
+# meedya-tags-extended) alongside lofty 0.22 (the workspace dependency used by
+# meedya-metadata and meedya-lyrics), which means every consumer compiles two
+# copies of the same tag parser.
+#
+# Escalate this to "deny" once the lofty unification lands; doing it now would
+# just block the build on a known, separately-tracked issue.
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all-duplicates"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

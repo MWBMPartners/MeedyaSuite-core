@@ -21,7 +21,7 @@ use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 // net_err lives in providers::mod (see MeedyaSuite-core#80): it strips the
 // query string before formatting a reqwest error, since this provider's
 // `api_key` query param would otherwise leak into the error text.
-use super::{leading_year, net_err};
+use super::{build_client, leading_year, net_err};
 
 fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
     ProviderError::Other(format!("parse error: {context}: {e}"))
@@ -46,7 +46,11 @@ impl TmdbProvider {
 
     pub fn with_base_url(api_key: Option<String>, base_url: impl Into<String>) -> Self {
         Self {
-            client: Client::new(),
+            // No provider-specific User-Agent needed here (TMDb
+            // authenticates via an API-key query parameter); build_client
+            // applies the crate's shared default plus its timeout
+            // (MeedyaSuite-core#76).
+            client: build_client(""),
             base_url: base_url.into(),
             api_key,
             limiter: default_limiter_for("tmdb"),

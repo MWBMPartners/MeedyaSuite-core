@@ -23,12 +23,20 @@ use crate::error::FingerprintError;
 /// carries first.
 ///
 /// `reqwest::Error`'s `Display` impl appends `" for url ({url})"` —
-/// including the full query string — and AcoustID lookups pass the API
-/// key as the `client` query parameter, so an unredacted error would leak
-/// it into logs and returned error text. `Error::url_mut` exists
-/// precisely for this (its own docs name "remove sensitive information
-/// from the URL … but do not want to remove the URL entirely" as the
-/// intended use); clearing only the query keeps the host for diagnostics.
+/// including the full query string — so any endpoint that carries
+/// secrets there would leak them into logs and returned error text.
+/// `Error::url_mut` exists precisely for this (its own docs name "remove
+/// sensitive information from the URL … but do not want to remove the
+/// URL entirely" as the intended use); clearing only the query keeps the
+/// host for diagnostics.
+///
+/// As of #87 the AcoustID `client` key travels in the POST body, not the
+/// URL, so `lookup`'s own request no longer has anything for this to
+/// strip — the key simply isn't in the URL at all, which is strictly
+/// better for the #80 leak class than redacting it after the fact. This
+/// stays in place as defense in depth (a future query parameter, or a
+/// redirect that echoes one, would still be caught) and is kept for any
+/// other request built against `ACOUSTID_API_URL` in this module.
 ///
 /// This is a deliberate duplicate of `meedya_providers::providers::net_err`
 /// rather than a shared dependency: `meedya-fingerprint` is a leaf crate
@@ -65,14 +73,24 @@ pub struct AcoustIdResult {
 /// Client for the AcoustID lookup API.
 pub struct AcoustIdClient {
     api_key: String,
+    base_url: String,
     http_client: reqwest::Client,
 }
 
 impl AcoustIdClient {
     /// Create a new AcoustID client with the given API key.
     pub fn new(api_key: String) -> Self {
+        Self::with_base_url(api_key, ACOUSTID_API_URL)
+    }
+
+    /// Create a client pointed at a caller-supplied lookup endpoint instead
+    /// of the real AcoustID API — useful for test mocking (e.g. against a
+    /// `wiremock` server). Mirrors the `with_base_url` convention used by
+    /// the providers in `meedya-providers`.
+    pub fn with_base_url(api_key: String, base_url: impl Into<String>) -> Self {
         Self {
             api_key,
+            base_url: base_url.into(),
             http_client: reqwest::Client::builder()
                 .user_agent("MeedyaSuite/1.0")
                 .timeout(Duration::from_secs(30))
@@ -92,17 +110,35 @@ impl AcoustIdClient {
         fingerprint: &str,
         duration_secs: u32,
     ) -> Result<AcoustIdResult, FingerprintError> {
+        let duration_str = duration_secs.to_string();
         let params = [
             ("client", self.api_key.as_str()),
             ("meta", "recordings"),
             ("fingerprint", fingerprint),
-            ("duration", &duration_secs.to_string()),
+            ("duration", duration_str.as_str()),
         ];
 
+        // POST with a form-encoded body rather than GET with a query
+        // string (#87). Chromaprint fingerprints scale with track
+        // duration — DJ mixes and continuous albums, core MeedyaSuite
+        // content, produce base64 blobs that reach several KB — and
+        // proxies/CDNs commonly cap URLs around 8KB. AcoustID's own docs
+        // direct clients to POST for fingerprint lookups. This also moves
+        // the API key out of the URL entirely (it now travels in the
+        // body, not the `client` query parameter), which is strictly
+        // better for the #80 leak class than a URL that gets logged,
+        // cached, or captured by an intermediary.
+        //
+        // `.form()` needs no extra reqwest feature/build flag: unlike
+        // `.json()` (behind the `json` feature), form encoding uses
+        // `serde_urlencoded`, an unconditional (non-optional) reqwest
+        // dependency — confirmed against this workspace's Cargo.lock
+        // rather than assumed. It sets `Content-Type:
+        // application/x-www-form-urlencoded` automatically.
         let response = self
             .http_client
-            .get(ACOUSTID_API_URL)
-            .query(&params)
+            .post(&self.base_url)
+            .form(&params)
             .send()
             .await
             .map_err(|e| FingerprintError::NetworkError(sanitized(e)))?;
@@ -171,6 +207,10 @@ impl AcoustIdClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::Method;
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn acoustid_result_serialization() {
@@ -219,5 +259,118 @@ mod tests {
             message.contains("127.0.0.1"),
             "sanitized should still name the host for diagnostics: {message}"
         );
+    }
+
+    // Regression for MeedyaSuite-core#87: a Chromaprint fingerprint scales
+    // with track duration, and DJ mixes / continuous albums (core
+    // MeedyaSuite content) can produce a base64 blob of several KB — well
+    // past the ~8KB URL length that proxies and CDNs commonly cap. This
+    // builds a fingerprint deliberately >= 8KB and asserts the request
+    // wiremock actually received is a POST carrying the fingerprint (and
+    // the API key) in the body, with neither in the URL.
+    #[tokio::test]
+    async fn lookup_sends_large_fingerprint_in_post_body_not_url() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v2/lookup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": "ok",
+                "results": [],
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Well over the 8KB threshold the issue cites. Plain ASCII so
+        // form-urlencoding leaves it unchanged, making the body/URL
+        // substring checks below unambiguous.
+        let big_fingerprint = "A".repeat(8 * 1024 + 1);
+        let api_key = "SUPERSECRET_CLIENT_KEY";
+
+        let client = AcoustIdClient::with_base_url(
+            api_key.to_string(),
+            format!("{}/v2/lookup", mock_server.uri()),
+        );
+
+        // NoMatch is expected (empty `results`) — this test is about
+        // transport, not the match outcome.
+        let result = client.lookup(&big_fingerprint, 5400).await;
+        assert!(matches!(result, Err(FingerprintError::NoMatch)));
+
+        let requests = mock_server
+            .received_requests()
+            .await
+            .expect("request recording is on by default");
+        assert_eq!(requests.len(), 1, "expected exactly one lookup request");
+        let request = &requests[0];
+
+        assert_eq!(request.method, Method::POST);
+
+        let url = request.url.to_string();
+        assert!(
+            request.url.query().is_none(),
+            "URL carried a query string, but the fingerprint must travel in \
+             the body: {url}"
+        );
+        assert!(
+            !url.contains(&big_fingerprint),
+            "fingerprint leaked into the request URL"
+        );
+        assert!(
+            !url.contains(api_key),
+            "API key leaked into the request URL"
+        );
+
+        let body = String::from_utf8_lossy(&request.body);
+        assert!(
+            body.contains(&big_fingerprint),
+            "fingerprint did not arrive in the POST body"
+        );
+        assert!(
+            body.contains(api_key),
+            "API key did not arrive in the POST body"
+        );
+    }
+
+    // Guards against the GET -> POST transport change (#87) altering
+    // response handling: a normal successful lookup must still parse to
+    // the same `AcoustIdResult` it did over GET.
+    #[tokio::test]
+    async fn lookup_parses_successful_response_identically_over_post() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v2/lookup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": "ok",
+                "results": [
+                    {
+                        "id": "abc-123",
+                        "score": 0.93,
+                        "recordings": [
+                            {"id": "mb-001"},
+                            {"id": "mb-002"},
+                        ],
+                    }
+                ],
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = AcoustIdClient::with_base_url(
+            "test-key".to_string(),
+            format!("{}/v2/lookup", mock_server.uri()),
+        );
+
+        let result = client
+            .lookup("AQAAsome-fingerprint", 240)
+            .await
+            .expect("mock server returned a match");
+
+        assert_eq!(result.acoustid, "abc-123");
+        assert_eq!(result.score, 0.93);
+        assert_eq!(result.recording_ids, vec!["mb-001", "mb-002"]);
+        assert_eq!(result.fingerprint, "AQAAsome-fingerprint");
+        assert_eq!(result.duration_secs, 240);
     }
 }

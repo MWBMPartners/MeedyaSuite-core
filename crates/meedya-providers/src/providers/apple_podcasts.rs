@@ -18,7 +18,7 @@ use crate::rate_limiter::{default_limiter_for, ProviderRateLimiter};
 use crate::traits::{MetadataProvider, ProviderCapabilities, ProviderError};
 use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
-use super::{leading_year, net_err};
+use super::{build_client, leading_year, net_err};
 
 /// Searches Apple Podcasts via the iTunes Search API.
 ///
@@ -45,7 +45,10 @@ impl ApplePodcastsProvider {
     /// Create a provider with a custom base URL (for test mocking).
     pub fn with_base_url(country: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self {
-            client: Client::new(),
+            // No provider-specific User-Agent needed here (iTunes Search
+            // requires none); build_client applies the crate's shared
+            // default plus its timeout (MeedyaSuite-core#76).
+            client: build_client(""),
             base_url: base_url.into(),
             enabled: true,
             country: country.into(),

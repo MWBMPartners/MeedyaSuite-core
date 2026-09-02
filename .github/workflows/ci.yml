@@ -49,6 +49,108 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  feature-matrix:
+    name: Feature matrix (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-featmatrix-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-featmatrix-
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+
+      # The `backend` job only ever compiles --all-features. Downstream apps
+      # consume DEFAULT features (meedya-providers ships zero providers by
+      # default; meedya-core selects individual crates), so a missing
+      # `#[cfg(feature = ...)]` guard or a feature-dependent import breaks a
+      # consumer while CI stays green. These legs close that gap.
+      - name: cargo build --workspace (default features)
+        run: cargo build --workspace --locked
+
+      - name: cargo test --workspace (default features)
+        run: cargo test --workspace --locked
+
+      # --each-feature compiles each feature on its own (plus none and all),
+      # which is what catches a module that only compiles when a sibling
+      # feature happens to be on. Scoped to the three crates with a real
+      # feature surface — the powerset of all 13 provider flags would be
+      # pointless minutes. --no-dev-deps keeps it to the shipping surface.
+      - name: cargo hack --each-feature (crates with feature surfaces)
+        run: |
+          cargo hack check --each-feature --no-dev-deps --locked \
+            -p meedya-core -p meedya-providers -p meedya-fingerprint
+
+  doc-counts:
+    name: Doc test-count guard (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-doccounts-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-doccounts-
+            ${{ runner.os }}-cargo-
+
+      # Doc-count drift is this repo's chronic failure mode: 248, 466, 533,
+      # 546, 601, 653 and 664 have all appeared in the docs and none matched
+      # the code. The counts are a contract signal partner apps read, so a
+      # silently wrong number is worse than no number. See issue #71.
+      #
+      # The suite is run here rather than reusing the `backend` job's run
+      # because jobs do not share a filesystem; the script takes the totals
+      # as arguments so it does not run anything a third time.
+      - name: Measure and compare documented test counts
+        run: |
+          sum() {
+            cargo test --workspace $1 --locked --no-fail-fast 2>&1 \
+              | grep -E '^test result' \
+              | awk -F'[ ;]' '{p += $4} END {print p + 0}'
+          }
+          ALL=$(sum --all-features)
+          DEFAULT=$(sum "")
+          echo "measured: $DEFAULT default-features, $ALL --all-features"
+          ./scripts/check-doc-test-counts.sh "$DEFAULT" "$ALL"
+
+  dependency-audit:
+    name: cargo-deny (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Advisories, licence allowlist and duplicate-version bans. Until this
+      # existed, .claude/MEMORY.md asserted licence compatibility "is checked
+      # at the Cargo.lock level by CI" — a control the team believed in that
+      # did not exist. See issue #84 and deny.toml for the policy.
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
   frontend:
     name: Frontend (ubuntu-latest)
     runs-on: ubuntu-latest

@@ -67,6 +67,10 @@ strum = { version = "0.26", features = ["derive"] }
 async-trait = "0.1"
 governor = "0.6"
 tempfile = "3"
+# HTTP mock server — DEV-ONLY (never reaches consumers). Needed to test the
+# provider request/response paths offline: the auth flow in `spotify`, and the
+# POST-body transport in `meedya-fingerprint`'s AcoustID client. MIT/Apache-2.0.
+wiremock = "0.6"
 which = "6"
 fuzzy-matcher = "0.3"
 

@@ -76,6 +76,208 @@ pub mod iswc;
 #[cfg(feature = "provider-iswc")]
 pub use iswc::IswcProvider;
 
+/// Feature gate shared by [`build_client`] and its tests: every provider
+/// module that builds its `reqwest::Client` through the shared constructor
+/// rather than its own bespoke `Client::builder()` chain. musicbrainz,
+/// isrc and iswc are deliberately absent — they already carry their own
+/// timeout (see MeedyaSuite-core#76) and their own MusicBrainz-specific
+/// User-Agent handling, so folding them into a shared helper would be
+/// pure churn with no behaviour change.
+#[cfg(any(
+    feature = "provider-spotify",
+    feature = "provider-apple-music",
+    feature = "provider-deezer",
+    feature = "provider-tmdb",
+    feature = "provider-thetvdb",
+    feature = "provider-omdb",
+    feature = "provider-apple-tv",
+    feature = "provider-itunes-store",
+    feature = "provider-eidr",
+    feature = "provider-apple-podcasts",
+))]
+use std::time::Duration;
+
+/// Total time budget for one request — DNS + connect + TLS + send + wait +
+/// receive, end to end. Without an explicit timeout reqwest waits
+/// indefinitely on a stalled or black-holed connection, hanging the
+/// caller's async task forever with no error and no recovery path (see
+/// MeedyaSuite-core#76). Matches the existing convention in
+/// `musicbrainz.rs` (and `isrc.rs` / `iswc.rs`).
+#[cfg(any(
+    feature = "provider-spotify",
+    feature = "provider-apple-music",
+    feature = "provider-deezer",
+    feature = "provider-tmdb",
+    feature = "provider-thetvdb",
+    feature = "provider-omdb",
+    feature = "provider-apple-tv",
+    feature = "provider-itunes-store",
+    feature = "provider-eidr",
+    feature = "provider-apple-podcasts",
+))]
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Time budget for establishing the TCP/TLS connection specifically, kept
+/// shorter than [`REQUEST_TIMEOUT`] so a dead or unreachable host fails
+/// fast instead of burning the entire request budget just to discover
+/// nothing is listening.
+#[cfg(any(
+    feature = "provider-spotify",
+    feature = "provider-apple-music",
+    feature = "provider-deezer",
+    feature = "provider-tmdb",
+    feature = "provider-thetvdb",
+    feature = "provider-omdb",
+    feature = "provider-apple-tv",
+    feature = "provider-itunes-store",
+    feature = "provider-eidr",
+    feature = "provider-apple-podcasts",
+))]
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Crate-wide fallback User-Agent, used whenever a caller has no
+/// meaningful one of its own to supply. Mirrors the fallback already used
+/// by `MusicBrainzProvider::with_base_url` (and the ISRC/ISWC providers).
+#[cfg(any(
+    feature = "provider-spotify",
+    feature = "provider-apple-music",
+    feature = "provider-deezer",
+    feature = "provider-tmdb",
+    feature = "provider-thetvdb",
+    feature = "provider-omdb",
+    feature = "provider-apple-tv",
+    feature = "provider-itunes-store",
+    feature = "provider-eidr",
+    feature = "provider-apple-podcasts",
+))]
+const DEFAULT_USER_AGENT: &str = "meedya-providers/0.1";
+
+/// Shared `reqwest::Client` constructor for the providers that have no
+/// bespoke client configuration of their own (see MeedyaSuite-core#76).
+/// Centralising construction here — rather than each provider calling
+/// `Client::new()` — means the *next* provider added to this workspace
+/// inherits a request timeout by construction, not by a reviewer
+/// remembering to add one.
+///
+/// `user_agent` follows the same empty-string fallback established by
+/// `MusicBrainzProvider::with_base_url`: pass `""` for a provider that has
+/// no user-agent concept of its own (all ten current callers do) and this
+/// substitutes [`DEFAULT_USER_AGENT`].
+#[cfg(any(
+    feature = "provider-spotify",
+    feature = "provider-apple-music",
+    feature = "provider-deezer",
+    feature = "provider-tmdb",
+    feature = "provider-thetvdb",
+    feature = "provider-omdb",
+    feature = "provider-apple-tv",
+    feature = "provider-itunes-store",
+    feature = "provider-eidr",
+    feature = "provider-apple-podcasts",
+))]
+pub(crate) fn build_client(user_agent: &str) -> reqwest::Client {
+    build_client_with_timeouts(user_agent, REQUEST_TIMEOUT, CONNECT_TIMEOUT)
+}
+
+/// [`build_client`]'s timeout-parameterised sibling. Exists so tests can
+/// exercise the *behaviour* of the timeout (reqwest doesn't expose a
+/// configured timeout for inspection) without waiting out the real 30s
+/// production budget — construct with millisecond-scale durations against
+/// a deliberate black hole instead.
+#[cfg(any(
+    feature = "provider-spotify",
+    feature = "provider-apple-music",
+    feature = "provider-deezer",
+    feature = "provider-tmdb",
+    feature = "provider-thetvdb",
+    feature = "provider-omdb",
+    feature = "provider-apple-tv",
+    feature = "provider-itunes-store",
+    feature = "provider-eidr",
+    feature = "provider-apple-podcasts",
+))]
+fn build_client_with_timeouts(
+    user_agent: &str,
+    request_timeout: Duration,
+    connect_timeout: Duration,
+) -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(if user_agent.is_empty() {
+            DEFAULT_USER_AGENT
+        } else {
+            user_agent
+        })
+        .timeout(request_timeout)
+        .connect_timeout(connect_timeout)
+        .build()
+        .expect("reqwest ClientBuilder failed — TLS initialisation error")
+}
+
+#[cfg(test)]
+#[cfg(any(
+    feature = "provider-spotify",
+    feature = "provider-apple-music",
+    feature = "provider-deezer",
+    feature = "provider-tmdb",
+    feature = "provider-thetvdb",
+    feature = "provider-omdb",
+    feature = "provider-apple-tv",
+    feature = "provider-itunes-store",
+    feature = "provider-eidr",
+    feature = "provider-apple-podcasts",
+))]
+mod build_client_tests {
+    use super::{build_client, build_client_with_timeouts, Duration};
+    use tokio::net::TcpListener;
+
+    #[test]
+    fn build_client_falls_back_to_default_user_agent() {
+        // Smoke test that the empty-string fallback doesn't panic and
+        // produces a usable client; the interesting behaviour (the
+        // timeout actually firing) is covered below since reqwest gives
+        // no way to inspect a configured User-Agent either.
+        let _ = build_client("");
+        let _ = build_client("some-provider/1.0");
+    }
+
+    /// Points a client at a listener that accepts the TCP connection and
+    /// then goes silent forever — a deterministic, hermetic black hole
+    /// with no real network involved — and asserts the call fails with a
+    /// timeout well within the test's patience rather than hanging.
+    /// Uses `build_client_with_timeouts` with millisecond-scale durations
+    /// so the test stays fast; production code always goes through
+    /// `build_client`, which applies the real 30s/10s budget.
+    #[tokio::test]
+    async fn build_client_request_times_out_on_a_stalled_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binding an ephemeral port must succeed");
+        let addr = listener.local_addr().expect("bound listener has an addr");
+
+        // Accept the connection but never write a response — the request
+        // times out waiting on a reply, not on the connect step.
+        tokio::spawn(async move {
+            if let Ok((_socket, _peer)) = listener.accept().await {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
+
+        let client = build_client_with_timeouts(
+            "build-client-test/1.0",
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+        );
+
+        let result = client.get(format!("http://{addr}/")).send().await;
+
+        let err = result.expect_err("a stalled connection must time out, not hang");
+        assert!(
+            err.is_timeout(),
+            "expected a timeout error specifically, got: {err}"
+        );
+    }
+}
+
 /// Feature gate shared by [`net_err`] and its test: every provider module
 /// that captures a `reqwest::Error` into a `ProviderError::NetworkError`.
 /// (`provider-apple-podcasts` is deliberately absent — that provider maps

@@ -1,5 +1,7 @@
 //! LRCLIB (<https://lrclib.net>) client.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -33,6 +35,16 @@ impl LrclibProvider {
     pub fn with_base(base: impl Into<String>) -> Self {
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
+            // Without an explicit timeout reqwest waits indefinitely on a
+            // stalled or black-holed connection, hanging the caller's
+            // async task forever (MeedyaSuite-core#76). This duplicates
+            // `meedya_providers::providers::build_client`'s timeouts
+            // rather than depending on that crate: `meedya-lyrics` is a
+            // separate leaf crate and the dependency direction forbids
+            // it (same reasoning as the `sanitized` helpers duplicated in
+            // `acoustid.rs` and `meedya-db/client.rs`).
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
             .build()
             .expect("reqwest client builds with default settings");
         Self {

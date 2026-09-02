@@ -204,6 +204,19 @@ AcoustID API client with built-in rate limiting (3 requests/second per the Acous
 
 `AcoustIdClient` itself only performs the HTTP lookup — it takes an already-computed fingerprint string. Producing that fingerprint is a **separate, non-default** step: see `chromaprint` below.
 
+```rust
+impl AcoustIdClient {
+    pub fn new(api_key: String) -> Self;
+    pub fn with_base_url(api_key: String, base_url: impl Into<String>) -> Self;
+    pub async fn lookup(&self, fingerprint: &str, duration_secs: u32) -> Result<AcoustIdResult, FingerprintError>;
+    pub async fn rate_limit_delay();
+}
+```
+
+`with_base_url` points the client at a caller-supplied endpoint instead of the real `api.acoustid.org` — useful for test mocking (e.g. against a `wiremock` server). `new` is unchanged and delegates to it with the real API URL, mirroring the `with_base_url` convention used throughout `meedya-providers`.
+
+**Lookups are POST, not GET (#87).** `lookup` sends `client`, `meta`, `fingerprint` and `duration` as a form-encoded POST body, not as a GET query string. A compressed Chromaprint fingerprint scales with track duration, and DJ mixes / continuous albums — core MeedyaSuite content — routinely produce base64 blobs that reach several KB, well past the ~8KB URL length many proxies and CDNs cap. AcoustID's own docs direct clients to POST for fingerprint lookups. This also moves the API key out of the URL entirely (it now travels in the body, not a `client` query parameter), which is strictly better for the #80 leak class than a key sitting in a URL that gets logged, cached, or captured by an intermediary. Response parsing, `NoMatch` handling and score semantics are unchanged — this was a transport-only change.
+
 #### `chromaprint` — fingerprint generation (opt-in feature)
 
 Fingerprint generation is **not** compiled in by default (`meedya-fingerprint`'s `Cargo.toml` declares `default = []`). It is gated behind the `chromaprint` Cargo feature, which pulls in `rusty-chromaprint` (pure-Rust Chromaprint port) + `symphonia` (pure-Rust audio decode) + `base64` — a real compile-time and binary-size cost that consumers who only want the AcoustID HTTP client or the ReplayGain analyser shouldn't have to pay:

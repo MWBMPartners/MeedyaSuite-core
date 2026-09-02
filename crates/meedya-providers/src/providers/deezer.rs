@@ -20,7 +20,7 @@ use crate::types::{CoverArtInfo, ProviderResult, SearchQuery};
 
 // net_err lives in providers::mod (see MeedyaSuite-core#80): centralised
 // so every provider redacts a reqwest error's query string uniformly.
-use super::net_err;
+use super::{build_client, net_err};
 
 fn parse_err(context: &str, e: impl std::fmt::Display) -> ProviderError {
     ProviderError::Other(format!("parse error: {context}: {e}"))
@@ -62,7 +62,10 @@ impl DeezerProvider {
 
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
-            client: Client::new(),
+            // No provider-specific User-Agent needed here (Deezer's public
+            // API requires none); build_client applies the crate's shared
+            // default plus its timeout (MeedyaSuite-core#76).
+            client: build_client(""),
             base_url: base_url.into(),
             enabled: true,
             limiter: default_limiter_for("deezer"),
