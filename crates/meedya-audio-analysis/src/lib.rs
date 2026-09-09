@@ -61,7 +61,9 @@
 // only guarantee the two eventually drift out of sync with no compiler
 // error to catch it.
 
+pub mod chroma;
 mod error;
+pub mod key;
 pub mod onset;
 pub mod signal;
 pub mod stft;
@@ -70,6 +72,7 @@ pub mod tempo;
 mod test_signals;
 
 pub use error::AnalysisError;
+pub use key::{detect_key, KeyEstimate};
 pub use signal::MonoSignal;
 pub use tempo::{detect_tempo, TempoEstimate};
 

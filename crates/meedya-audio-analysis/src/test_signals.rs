@@ -19,6 +19,8 @@
 // being written in one shot up front, so nothing here ever sits unused
 // between commits.
 
+use meedya_tags_extended::{KeyMode, MusicalKey, Note};
+
 use crate::signal::Decimator;
 use crate::MonoSignal;
 
@@ -159,6 +161,166 @@ pub(crate) fn white_noise(seconds: f64, sample_rate: u32) -> Vec<f32> {
 /// `seconds` of digital silence at `sample_rate`.
 pub(crate) fn silence(seconds: f64, sample_rate: u32) -> Vec<f32> {
     vec![0.0f32; (seconds * sample_rate as f64).round() as usize]
+}
+
+/// Pitch class (0=C .. 11=B) of a [`Note`], matching the semitone
+/// ordering `meedya_tags_extended::Note` declares its variants in. A
+/// small local duplicate of the mapping `key.rs` also needs (there for
+/// real analysis, here for generating test fixtures) rather than a
+/// shared dependency — this module is test-only scaffolding and
+/// shouldn't reach into another module's internals just to save twelve
+/// match arms.
+fn pitch_class_of(note: Note) -> i32 {
+    match note {
+        Note::C => 0,
+        Note::CSharp => 1,
+        Note::D => 2,
+        Note::DSharp => 3,
+        Note::E => 4,
+        Note::F => 5,
+        Note::FSharp => 6,
+        Note::G => 7,
+        Note::GSharp => 8,
+        Note::A => 9,
+        Note::ASharp => 10,
+        Note::B => 11,
+    }
+}
+
+/// Convert a MIDI note number (69.0 = A4 = `reference_a_hz`) to a
+/// frequency in Hz, relative to an arbitrary tuning reference rather
+/// than always 440 Hz — [`chord_progression_tuned`] uses this to
+/// generate deliberately mistuned test audio (e.g. A=432).
+fn midi_to_freq(midi: f64, reference_a_hz: f64) -> f64 {
+    reference_a_hz * 2f64.powf((midi - 69.0) / 12.0)
+}
+
+/// Add a harmonically rich tone into `buf`: a fundamental at `freq`
+/// plus its 2nd, 3rd and 4th harmonics at -6/-12/-18 dB, scaled by
+/// `amplitude`.
+///
+/// Real instrument tones are never pure sines — they're a fundamental
+/// plus a falling series of harmonics — and that harmonic content
+/// matters for testing chroma folding specifically: a single pure sine
+/// folds into exactly one pitch class with nothing else to corroborate
+/// it, which is a much easier (and much less representative) case than
+/// real polyphonic, harmonically rich music.
+fn add_harmonic_tone(buf: &mut [f32], freq: f64, sample_rate: u32, amplitude: f32) {
+    // (harmonic multiple, linear amplitude relative to the fundamental)
+    let harmonics: [(f64, f32); 4] = [
+        (1.0, 1.0),
+        (2.0, 10f32.powf(-6.0 / 20.0)),
+        (3.0, 10f32.powf(-12.0 / 20.0)),
+        (4.0, 10f32.powf(-18.0 / 20.0)),
+    ];
+    for (i, sample) in buf.iter_mut().enumerate() {
+        let t = i as f64 / sample_rate as f64;
+        let mut s = 0.0f32;
+        for (mult, amp) in harmonics {
+            s += amp * (2.0 * std::f64::consts::PI * freq * mult * t).sin() as f32;
+        }
+        *sample += amplitude * s;
+    }
+}
+
+/// Generate a four-bar chord progression in `key`, `seconds` long, tuned
+/// to `reference_a_hz` (440.0 for standard tuning).
+///
+/// Bars: I-IV-V-I for a major key, i-iv-V-i for a minor key. The V
+/// (dominant) chord is a MAJOR triad in both cases — standard
+/// voice-leading practice (a minor key's dominant is usually borrowed
+/// from the harmonic/melodic minor precisely so it resolves strongly to
+/// the tonic), and also what makes the major/minor discrimination tests
+/// in key.rs meaningful: the leading tone the major-V chord introduces
+/// is NOT one of the seven natural-minor scale notes, so a minor-key
+/// progression built this way isn't secretly indistinguishable from its
+/// relative major.
+///
+/// Each chord voices three notes (root, third, fifth) as harmonically
+/// rich tones via [`add_harmonic_tone`], plus the chord's own root
+/// doubled an octave down (a bass-register reinforcement of the root,
+/// common in real arrangements) — so every bar has four sounding notes,
+/// two of them both being the root.
+pub(crate) fn chord_progression_tuned(
+    key: MusicalKey,
+    seconds: f64,
+    reference_a_hz: f64,
+    sample_rate: u32,
+) -> Vec<f32> {
+    let n = (seconds * sample_rate as f64).round() as usize;
+    let mut buf = vec![0.0f32; n];
+    let tonic_pc = pitch_class_of(key.tonic);
+
+    // Scale-degree offsets (semitones above the key tonic) for each
+    // chord in the progression.
+    let degrees: [[i32; 3]; 4] = match key.mode {
+        KeyMode::Major => [[0, 4, 7], [5, 9, 12], [7, 11, 14], [0, 4, 7]], // I IV V I
+        KeyMode::Minor => [[0, 3, 7], [5, 8, 12], [7, 11, 14], [0, 3, 7]], // i iv V i
+    };
+
+    let bar_samples = n / degrees.len();
+    // Keep enough headroom that summing 4 harmonically-rich voices (3
+    // chord tones + the doubled root, each with 4 harmonics) never gets
+    // anywhere near clipping.
+    let voice_amplitude = 0.12f32;
+
+    for (bar_idx, chord) in degrees.iter().enumerate() {
+        let start = bar_idx * bar_samples;
+        let len = bar_samples.min(n.saturating_sub(start));
+        if len == 0 {
+            continue;
+        }
+        let bar_buf = &mut buf[start..start + len];
+
+        for (voice_index, &degree) in chord.iter().enumerate() {
+            let midi = 60.0 + tonic_pc as f64 + degree as f64; // middle-C-ish register
+                                                               // `chord` is always laid out [root, third, fifth]. The THIRD
+                                                               // is the one note that says whether a chord (and by
+                                                               // extension the key) is major or minor -- root and fifth
+                                                               // are identical between a key and its parallel opposite
+                                                               // mode (A# minor and A# major share the same tonic AND the
+                                                               // same fifth; only the third differs). A root-fifth-fifth
+                                                               // voicing pattern across a I-IV-V-I skeleton means the root
+                                                               // and fifth pitch classes each recur in MULTIPLE chords
+                                                               // (the tonic is a chord tone of I and IV; the dominant's
+                                                               // root doubles as a passing fifth elsewhere), while the
+                                                               // third of the tonic chord specifically only ever appears
+                                                               // in the two tonic-chord bars. Left at equal amplitude, that
+                                                               // structural imbalance was diluting the very note that
+                                                               // distinguishes major from minor enough to blur some
+                                                               // parallel-mode pairs (e.g. A# minor vs A# major) under the
+                                                               // brief's confidence margin -- so the third is voiced 50%
+                                                               // louder than root/fifth, matching how a mixing engineer
+                                                               // would actually bring out a chord's defining note rather
+                                                               // than burying it.
+            let amplitude = if voice_index == 1 {
+                voice_amplitude * 1.5
+            } else {
+                voice_amplitude
+            };
+            add_harmonic_tone(
+                bar_buf,
+                midi_to_freq(midi, reference_a_hz),
+                sample_rate,
+                amplitude,
+            );
+        }
+        // Root, doubled an octave down.
+        let root_midi = 60.0 + tonic_pc as f64 + chord[0] as f64 - 12.0;
+        add_harmonic_tone(
+            bar_buf,
+            midi_to_freq(root_midi, reference_a_hz),
+            sample_rate,
+            voice_amplitude,
+        );
+    }
+
+    buf
+}
+
+/// [`chord_progression_tuned`] at standard A440 tuning, 44100 Hz.
+pub(crate) fn chord_progression(key: MusicalKey, seconds: f64) -> Vec<f32> {
+    chord_progression_tuned(key, seconds, 440.0, 44_100)
 }
 
 /// Run `native` (mono samples at `native_rate`) through the same
