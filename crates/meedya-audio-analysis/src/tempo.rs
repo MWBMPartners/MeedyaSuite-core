@@ -204,7 +204,19 @@ fn detect_tempo_from_envelope(
     let winner = pick_peak(&table, fps, winner_lo, winner_hi)?;
 
     let refined_tau = refine_tau(&table, winner.tau);
-    let bpm = tau_to_bpm(refined_tau, fps);
+    // Keep the answer inside the range the caller asked for.
+    //
+    // Two things push outward before this point: the search converts the
+    // requested tempo range into whole frames and rounds outward so a
+    // tempo sitting between two frames is not missed, and the refinement
+    // then fits a curve through the winning frame and its neighbours,
+    // which can land beyond it. Either can carry the result past the
+    // boundary.
+    //
+    // Without this, asking for 100 to 140 could hand back something
+    // outside that, which makes the setting a suggestion rather than a
+    // limit — and a caller who narrowed the range did so for a reason.
+    let bpm = tau_to_bpm(refined_tau, fps).clamp(min_bpm, max_bpm);
 
     // Prominence: how far the winner's RAW autocorrelation stands above
     // the average across the searched range.
@@ -221,7 +233,23 @@ fn detect_tempo_from_envelope(
     };
 
     let rival = find_rival(&table, &winner, winner_lo, winner_hi, fps);
-    let ambiguity = ambiguity_factor(winner.score, rival.as_ref());
+    // Judged on the RAW correlation, never the prior-weighted score.
+    //
+    // This is the rule this module states at the top, and it was being
+    // broken here. Comparing weighted scores lets the pull toward common
+    // tempos make a close call look decisive: two candidates the audio
+    // barely distinguishes come out far apart once one of them has been
+    // favoured for sitting near 120 beats per minute.
+    //
+    // The weighting exists to settle a tie the audio genuinely cannot —
+    // an exactly periodic signal really is both 70 and 140 — and settling
+    // it is all it may do. Letting it also decide how SURE we are means
+    // reporting confidence in a coin flip, which is the one outcome this
+    // whole design is meant to avoid.
+    //
+    // The weighted scores still choose the winner, and are still reported
+    // as diagnostics.
+    let ambiguity = ambiguity_factor(winner.r_hat, rival.as_ref());
 
     let segment_agreement_value = segment_agreement(envelope, fps, min_bpm, max_bpm, bpm);
 
@@ -438,11 +466,11 @@ fn find_rival(
 /// The ambiguity confidence factor: `clamp((1 - rival.score /
 /// winner.score) / AMBIGUITY_SPREAD, 0, 1)`, or `1.0` (no ambiguity) when
 /// there is no rival at all.
-fn ambiguity_factor(winner_score: f64, rival: Option<&PeakPick>) -> f64 {
+fn ambiguity_factor(winner_r_hat: f64, rival: Option<&PeakPick>) -> f64 {
     let Some(rival) = rival else {
         return 1.0;
     };
-    if winner_score.abs() < f64::EPSILON {
+    if winner_r_hat.abs() < f64::EPSILON {
         // The "winner" barely scored anything at all — there is nothing
         // for a rival's score to be meaningfully compared against.
         // Treating this as maximal ambiguity (rather than dividing by
@@ -451,7 +479,7 @@ fn ambiguity_factor(winner_score: f64, rival: Option<&PeakPick>) -> f64 {
         // it.
         return 0.0;
     }
-    ((1.0 - rival.score / winner_score) / AMBIGUITY_SPREAD).clamp(0.0, 1.0)
+    ((1.0 - rival.r_hat / winner_r_hat) / AMBIGUITY_SPREAD).clamp(0.0, 1.0)
 }
 
 /// Mean of `table`'s raw `r_hat` values over `[lo, hi]`.
@@ -798,5 +826,85 @@ mod tests {
             "expected symmetric weighting in log2 space"
         );
         assert!(below < at_centre);
+    }
+    // ── Two faults an independent review found, both now pinned ─────────
+    //
+    // Neither had a test, which is why both survived. These are written to
+    // fail if either comes back.
+
+    #[test]
+    fn the_tempo_preference_cannot_make_a_close_call_look_certain() {
+        // The rule this module states at the top: the pull toward common
+        // tempos settles a tie the audio cannot, and does nothing else. It
+        // must never decide how SURE we are.
+        //
+        // Here the audio barely separates two candidates — 0.80 against
+        // 0.78, a 2% gap — but the winner sits near 120 beats per minute
+        // and so carries a much better weighted score. Judged on the
+        // weighted scores this looks decisive; judged on the audio it is
+        // very nearly a coin flip, and the answer must reflect that.
+        let winner_r_hat = 0.80;
+        let rival = PeakPick {
+            tau: 40,
+            r_hat: 0.78,
+            // Weighted far below the winner, purely by the preference.
+            score: 0.40,
+        };
+
+        let honest = ambiguity_factor(winner_r_hat, Some(&rival));
+        assert!(
+            honest < 0.2,
+            "a 2% gap in the audio must read as ambiguous, got {honest}"
+        );
+
+        // What the fault produced: comparing the weighted scores instead.
+        let flattering = ((1.0 - rival.score / 0.95) / AMBIGUITY_SPREAD).clamp(0.0, 1.0);
+        assert!(
+            flattering > honest,
+            "this pins the difference — weighting made it look better than the audio warrants"
+        );
+    }
+
+    #[test]
+    fn no_rival_at_all_still_means_no_doubt() {
+        // The other side of the same function, so the fix above cannot
+        // have quietly made everything ambiguous.
+        assert_eq!(ambiguity_factor(0.9, None), 1.0);
+    }
+
+    #[test]
+    fn the_answer_stays_inside_the_range_that_was_asked_for() {
+        // Two things push outward before the answer is formed: the search
+        // rounds the requested range outward in whole frames so a tempo
+        // between two of them is not missed, and the refinement then fits
+        // a curve that can land beyond the winning frame. Either can carry
+        // the result past the boundary, which would make the setting a
+        // suggestion rather than a limit.
+        // These exact cases were found by trying many combinations with the
+        // limit removed, and every one of them escaped: the true tempo sits
+        // just OUTSIDE the requested range, the search still reaches it
+        // because the range was rounded outward into whole frames, and the
+        // refinement then lands the answer beyond the boundary. A 120 track
+        // asked for 121 to 200 came back as 120.06.
+        //
+        // Chosen deliberately rather than guessed. An earlier version of this
+        // test used ranges that happened not to trigger it, and so passed
+        // whether the limit was applied or not — proving nothing.
+        let sample_rate = 44_100;
+        for (bpm, lo, hi) in [
+            (120.0, 121.0, 200.0),
+            (120.0, 60.0, 119.0),
+            (90.0, 91.0, 96.0),
+            (128.0, 122.0, 127.0),
+        ] {
+            let signal = build_click_signal(bpm, 20.0, 4, 0.0, sample_rate);
+            if let Some(estimate) = detect_tempo(&signal, lo, hi) {
+                assert!(
+                    estimate.bpm >= lo && estimate.bpm <= hi,
+                    "asked for {lo}-{hi} on a {bpm} track and got {}",
+                    estimate.bpm
+                );
+            }
+        }
     }
 }
