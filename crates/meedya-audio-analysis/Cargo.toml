@@ -1,0 +1,33 @@
+[package]
+name = "meedya-audio-analysis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MeedyaSuite Core — tempo and musical key detection"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+rustfft = { workspace = true }
+meedya-tags-extended = { workspace = true }
+
+# Optional — gated behind the `decode` feature. Pulling `symphonia`
+# unconditionally would force every consumer that already has decoded
+# PCM in hand (e.g. because it reused the samples from another decode
+# pass) to pay the compile-time cost of the audio decode stack a second
+# time. On by default because the common case is "point me at a file".
+symphonia = { workspace = true, optional = true }
+
+[features]
+default = ["decode"]
+# Enables `analyse_file`, which decodes an audio file (via symphonia) and
+# runs the same analysis `analyse_samples` runs on caller-supplied PCM.
+# See meedya-fingerprint's `chromaprint` feature for the identical
+# reasoning — this crate mirrors that shape deliberately so the two
+# "heavy decode dependency, opt-out not opt-in" stories in this
+# workspace read the same way.
+decode = ["dep:symphonia"]

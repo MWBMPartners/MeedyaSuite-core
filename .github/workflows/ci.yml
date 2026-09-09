@@ -92,7 +92,7 @@ jobs:
       - name: cargo hack --each-feature (crates with feature surfaces)
         run: |
           cargo hack check --each-feature --no-dev-deps --locked \
-            -p meedya-core -p meedya-providers -p meedya-fingerprint
+            -p meedya-core -p meedya-providers -p meedya-fingerprint -p meedya-audio-analysis
 
   doc-counts:
     name: Doc test-count guard (ubuntu-latest)

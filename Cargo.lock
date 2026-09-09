@@ -1033,6 +1033,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
+name = "meedya-audio-analysis"
+version = "0.2.0"
+dependencies = [
+ "log",
+ "meedya-tags-extended",
+ "rustfft",
+ "serde",
+ "symphonia",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "meedya-codecs"
 version = "0.2.0"
 dependencies = [
