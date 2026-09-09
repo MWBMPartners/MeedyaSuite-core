@@ -77,7 +77,7 @@ Don't try to unify these. They serve genuinely different needs and unifying woul
   `export PATH="$HOME/.cargo/bin:$PATH"`. Toolchain: rustup stable (1.98.0 as of
   2026-09-01), which matches the version MeedyaDL pins.
 - **MSRV is `rust-version = "1.82"`**, declared on `[workspace.package]` and inherited by
-  all 9 member crates via `rust-version.workspace = true`. Driven by `Option::is_none_or`.
+  all 10 member crates via `rust-version.workspace = true`. Driven by `Option::is_none_or`.
   Member crates must opt in explicitly — inheriting `edition`/`authors` does not carry it.
 - **CI only triggers on `pull_request` and `push` to `main`.** A feature branch gets **no
   CI at all**, so local `cargo fmt --check` + `cargo test --workspace --all-features` is the

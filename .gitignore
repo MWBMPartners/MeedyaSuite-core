@@ -28,3 +28,6 @@ target
 # unique content on feat/60-syllable-schema-and-classifier, which is
 # otherwise fully merged into main.
 .claude/settings.local.json
+
+# Scratch space for working notes and plans — never committed.
+_temp/

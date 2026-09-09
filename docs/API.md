@@ -6,7 +6,7 @@
 >
 > **This is not a Swagger/OpenAPI spec.** `MeedyaSuite-core` is a Rust library workspace, not a web service. There are no HTTP endpoints. If you need an HTTP-shaped contract, build one in your downstream app on top of these crates.
 >
-> **Last refreshed**: 2026-09-02 (`feature/work-in-progress`: provider rate limiting wired up — #94 — on top of the #78/#79/#80/#81 hardening pass, plus the post-review hardening that followed — `apple_podcasts` routed through the shared `net_err` redaction helper, a sanitized-error-string helper + canary test added to `meedya-db`, and an untagged-Ogg regression fixture — test counts re-measured). See the [maintenance section](#maintenance) for how this stays in sync with the code.
+> **Last refreshed**: 2026-09-09 (`feature/work-in-progress`: new `meedya-audio-analysis` crate — tempo and musical key detection, issue #16 — wired into `meedya-core` behind a non-default `audio-analysis` feature; test counts re-measured). See the [maintenance section](#maintenance) for how this stays in sync with the code.
 
 ---
 
@@ -17,6 +17,7 @@
   - [`meedya-codecs`](#meedya-codecs)
   - [`meedya-core`](#meedya-core)
   - [`meedya-db`](#meedya-db)
+  - [`meedya-audio-analysis`](#meedya-audio-analysis)
   - [`meedya-fingerprint`](#meedya-fingerprint)
   - [`meedya-library-import`](#meedya-library-import)
   - [`meedya-lyrics`](#meedya-lyrics)
@@ -39,6 +40,7 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-codecs` | `audio_codec`, `channel_config`, `classify`, `container`, `ffprobe`, `hdr`, `mediainfo`, `registry`, `spatial`, `spatial_type`, `subtitle_codec`, `tool_path`, `video_codec` | 47 | Stable for partner-app consumption |
 | `meedya-core` | (facade re-exports only — `tags-extended` and `library-import` now included) | 0 | Stable |
 | `meedya-db` | `client`, `export`, `models` | 4 | Foundation stable; specific endpoints may evolve |
+| `meedya-audio-analysis` | `tempo`, `key`, `decode` (feature-gated, default-on) | 67 | Experimental |
 | `meedya-fingerprint` | `acoustid`, `chromaprint` (feature-gated, non-default), `replaygain` | 10 | Stable |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
 | `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 130 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
@@ -46,13 +48,13 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 59 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `ai_content`, `conflict_policy`, `genre_hierarchy`, `io`, `mik`, `model`, `play_history`, `quick_tag`, `sidecar_json`, `standard`, `stems` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 575 tests** with default features, **720** with `--all-features` (the CI configuration). All passing, 0 failing.
+**Total: 644 tests** with default features, **791** with `--all-features` (the CI configuration). All passing, 0 failing.
 
 > These are **measured** figures — `cargo test --workspace [--all-features]` run against `feature/work-in-progress` on 2026-09-02 — not carried forward from a previous edit. For reference, `main` measures 601 with `--all-features`.
 >
 > Earlier revisions of this file accumulated a long narrative of incremental count deltas (466 → 511 → 533 → 546 → 664 …) which had drifted from reality. That narration has been removed: the only trustworthy number is one you just measured. Guarding these counts automatically in CI is tracked in issue #71.
 
-Per-crate, `--all-features` (measured): `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 115 · `meedya-providers` 199 · `meedya-tags-extended` 180.
+Per-crate, `--all-features` (measured): `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 115 · `meedya-providers` 199 · `meedya-tags-extended` 180.
 
 ---
 
@@ -182,6 +184,78 @@ Export trait that downstream apps implement to persist `Track`/`Album`/`Artist` 
 - `Track`, `Album`, `Artist` — canonical record types shared across all apps.
 
 ---
+
+### `meedya-audio-analysis`
+
+Works out a track's tempo (beats per minute) and musical key by listening to the audio itself. Returns what it found and how sure it is — writing tags is the caller's job, as with `meedya-fingerprint`.
+
+**Stability: Experimental.** The confidence figures have been calibrated against generated test signals, not against a large body of real music, so the thresholds may move.
+
+#### The rule that shapes the whole crate
+
+**It refuses rather than guesses.** A wrong tempo written into somebody's music is worse than none at all: it is hard to notice, annoying to undo, and other software will simply trust it. So every answer comes with a confidence, and the caller is expected to write nothing below a threshold. Noise, silence, and a track that genuinely could be read as either 70 or 140 beats per minute all come back with low confidence by design.
+
+The caller should also **read any tempo already in the file first and skip the analysis entirely if one is present**. Somebody who beat-matched a track by hand has better information than any detector, and skipping saves the work as well.
+
+#### Public re-exports
+
+```rust
+pub use error::AnalysisError;
+pub use key::KeyEstimate;
+pub use signal::MonoSignal;
+pub use tempo::TempoEstimate;
+pub use {AudioAnalyser, AudioAnalysis, detect_key, detect_tempo};
+pub use {DEFAULT_MAX_ANALYSIS_SECONDS, DEFAULT_MAX_BPM, DEFAULT_MIN_BPM};
+```
+
+#### `AudioAnalyser`
+
+```rust
+impl AudioAnalyser {
+    pub fn new() -> Self;
+    pub fn with_max_duration(self, seconds: f64) -> Self;
+    pub fn with_tempo_range(self, min_bpm: f64, max_bpm: f64) -> Self;
+    pub fn with_tempo(self, enabled: bool) -> Self;
+    pub fn with_key(self, enabled: bool) -> Self;
+
+    #[cfg(feature = "decode")]
+    pub fn analyse_file(&self, path: &Path) -> Result<AudioAnalysis, AnalysisError>;
+    pub fn analyse_samples(&self, interleaved: &[f32], channels: u16, sample_rate: u32)
+        -> Result<AudioAnalysis, AnalysisError>;
+}
+```
+
+**These are ordinary functions, not `async`.** The work is entirely processor-bound and never waits for anything. An `async` function that computes without pausing blocks the worker thread it lands on for its whole duration, while its signature tells the caller it is cheap to await. Async callers should use `spawn_blocking`, exactly as they already do for `meedya-fingerprint`'s fingerprint generation.
+
+#### What comes back
+
+```rust
+pub struct AudioAnalysis {
+    pub tempo: Option<TempoEstimate>,
+    pub key: Option<KeyEstimate>,
+    pub analysed_seconds: f64,
+    pub truncated: bool,
+    pub working_sample_rate: u32,
+}
+```
+
+`None` means "could not work it out at all". `Some` with a low confidence means "worked something out, but do not trust it". They are deliberately not two separate optional fields, so a value without a confidence cannot be represented.
+
+`TempoEstimate` carries `bpm`, `confidence`, and three diagnostics — `prominence`, `segment_agreement`, and an optional `rival_bpm`/`rival_score`. The rival is the other tempo the audio could plausibly be, which is what makes an ambiguous track visibly ambiguous rather than silently halved.
+
+`KeyEstimate` carries a `MusicalKey` from `meedya-tags-extended` — not a string, so it round-trips traditional, Camelot and Open Key notation and matches what the tag writer takes. Plus `confidence`, the raw `correlation`, the `runner_up` key, and `tuning_cents` for recordings that are not at concert pitch.
+
+#### Honest expectations
+
+Key detection by this method is roughly **65 to 75% accurate on real polyphonic music**. Combined with the refusal rule, that means **a large share of real tracks will come back with no key**. That is correct behaviour, not a shortfall — but it does mean key should not be expected on most tracks.
+
+Tempo is considerably more reliable on music with clear percussion, and correspondingly less so on ballads, ambient and classical, where low confidence is the honest answer.
+
+#### Features
+
+`decode` (**on by default**) brings in the audio decoder so `analyse_file` works. Turn it off if you already have decoded samples in hand and only want `analyse_samples` — that skips compiling the decoding stack entirely.
+
+Note that the decoder has no Opus support, and high-efficiency AAC decodes as its core layer, so expect reduced bandwidth there. Neither affects the analysis, which only looks below 5 kHz.
 
 ### `meedya-fingerprint`
 

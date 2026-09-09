@@ -18,13 +18,19 @@ providers = ["dep:meedya-providers"]
 db = ["dep:meedya-db"]
 tags-extended = ["dep:meedya-tags-extended"]
 library-import = ["dep:meedya-library-import"]
+# Tempo and musical key detection. Deliberately NOT in `default`, for the same
+# reason `fingerprint`'s decoder is not: it pulls in the audio decoding stack
+# and the frequency-analysis library, which a consumer that only wants tags
+# should not have to compile.
+audio-analysis = ["dep:meedya-audio-analysis"]
 keyring = ["providers", "meedya-providers/keyring-credentials"]
-full = ["metadata", "codecs", "fingerprint", "lyrics", "providers", "db", "tags-extended", "library-import", "keyring"]
+full = ["metadata", "codecs", "fingerprint", "lyrics", "providers", "db", "tags-extended", "library-import", "keyring", "audio-analysis"]
 
 [dependencies]
 meedya-metadata = { workspace = true, optional = true }
 meedya-codecs = { workspace = true, optional = true }
 meedya-fingerprint = { workspace = true, optional = true }
+meedya-audio-analysis = { workspace = true, optional = true }
 meedya-lyrics = { workspace = true, optional = true }
 meedya-providers = { workspace = true, optional = true }
 meedya-db = { workspace = true, optional = true }

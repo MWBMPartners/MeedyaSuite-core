@@ -16,6 +16,9 @@
 //! - `codecs` — Audio/video/subtitle codec definitions, FFprobe/MediaInfo
 //!   detection, tool-path resolver (default)
 //! - `fingerprint` — AcoustID client, ReplayGain analyzer (default)
+//! - `audio-analysis` — tempo and musical key detection (opt-in: brings in
+//!   the audio decoder and frequency analysis, which a consumer that only
+//!   wants tags should not have to compile)
 //! - `lyrics` — LRCLIB client, LRC I/O, sidecar + tag-embed writes (default,
 //!   pulls in `metadata`)
 //! - `providers` — Provider traits, credentials, rate limiter, match scoring,
@@ -36,6 +39,9 @@ pub use meedya_codecs as codecs;
 
 #[cfg(feature = "fingerprint")]
 pub use meedya_fingerprint as fingerprint;
+
+#[cfg(feature = "audio-analysis")]
+pub use meedya_audio_analysis as audio_analysis;
 
 #[cfg(feature = "lyrics")]
 pub use meedya_lyrics as lyrics;
@@ -71,6 +77,11 @@ pub mod prelude {
 
     #[cfg(feature = "lyrics")]
     pub use meedya_lyrics::{Lyrics, LyricsProvider, SyncedLine, TrackQuery};
+
+    #[cfg(feature = "audio-analysis")]
+    pub use meedya_audio_analysis::{
+        AnalysisError, AudioAnalyser, AudioAnalysis, KeyEstimate, TempoEstimate,
+    };
 
     #[cfg(feature = "tags-extended")]
     pub use meedya_tags_extended::{

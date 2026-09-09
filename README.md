@@ -18,11 +18,12 @@ Written in Rust. Distributable to all Meedya apps via:
 | [`meedya-library-import`](crates/meedya-library-import) | Ingest playback bounds + metadata from external library DBs. `itunes_xml` parses Music.app exports; `cuesheet` is a full CUE parser at CD-frame precision. | Implemented | 30 |
 | [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar + ID3v2 SYLT tag-embed, Lyricsfile YAML canonical model with Apple Music TTML import (syllable-level timing) and LRC/Enhanced-LRC/SRT/WebVTT/ASS export. | Implemented | 130 |
 | [`meedya-providers`](crates/meedya-providers) | Metadata provider framework: traits, capabilities, registry, rate limiting, cover art helpers, match scoring, Lucene/Solr query escaping (`lucene`). | Implemented | 59 (199 with `--all-features`) |
+| [`meedya-audio-analysis`](crates/meedya-audio-analysis) | Tempo (BPM) and musical key detection from the audio itself. Refuses to answer rather than guess when it is not sure. | Implemented | 67 |
 | [`meedya-fingerprint`](crates/meedya-fingerprint) | AcoustID fingerprinting + ReplayGain/EBU R128 loudness analysis. | Implemented | 10 (15 with `--all-features`) |
 | [`meedya-db`](crates/meedya-db) | MeedyaDB API client, shared media models (Track/Album/Artist), database export trait. | Implemented | 4 |
 | [`meedya-core`](crates/meedya-core) | Unified facade crate re-exporting the implemented crates behind feature flags. | Implemented | — |
 
-**Total: 575 tests passing** (720 with `--all-features`, the CI configuration), workspace builds clean.
+**Total: 644 tests passing** (791 with `--all-features`, the CI configuration), workspace builds clean.
 
 ## Quick Start
 
@@ -30,7 +31,7 @@ Written in Rust. Distributable to all Meedya apps via:
 # Build all crates
 cargo build --workspace
 
-# Run the full test suite (575 tests; 720 with --all-features)
+# Run the full test suite (644 tests; 791 with --all-features)
 cargo test --workspace
 
 # Build a single crate
@@ -60,7 +61,7 @@ meedya-db            = { git = "https://github.com/MWBMPartners/MeedyaSuite-core
 meedya-core = { git = "https://github.com/MWBMPartners/MeedyaSuite-core", features = ["full"] }
 ```
 
-**MSRV**: Rust 1.82 (declared via `rust-version` on `[workspace.package]`, inherited by all 9 crates; driven by `Option::is_none_or`).
+**MSRV**: Rust 1.82 (declared via `rust-version` on `[workspace.package]`, inherited by all 10 crates; driven by `Option::is_none_or`).
 
 ## What's Shared
 

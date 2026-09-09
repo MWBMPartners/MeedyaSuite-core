@@ -25,15 +25,16 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | [meedya-library-import](../crates/meedya-library-import/) | External library ingestion: iTunes XML, CUE sheets. Emits normalized `LibraryEntry` records. | **Implemented** | 30 |
 | [meedya-lyrics](../crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O, plain-text and SYLT tag-embed. | **Implemented** | 130 |
 | [meedya-providers](../crates/meedya-providers/) | Provider framework: traits, capabilities, rate limiting, credentials, cover art, fuzzy match scoring, Lucene/Solr query escaping (`lucene`). In-repo `MetadataProvider` impls (feature-gated): MusicBrainz, Spotify, Apple Music, Deezer, TMDB, TheTVDB, OMDb, Apple TV, iTunes Store, Apple Podcasts, ISRC, EIDR, ISWC. | **Implemented** | 59 (199 all-features) |
+| [meedya-audio-analysis](../crates/meedya-audio-analysis/) | Tempo (BPM) and musical key detection from the audio itself. Refuses to answer rather than guess when it is not sure. Shares one decode pass between the two, then takes two different frequency analyses because tempo needs fine timing and key needs fine pitch. | **Implemented** | 67 |
 | [meedya-fingerprint](../crates/meedya-fingerprint/) | AcoustID client + ReplayGain EBU R128 analyser (bounded FFmpeg subprocess). Pure-Rust Chromaprint fingerprint generation (no fpcalc) behind the non-default `chromaprint` feature. | **Implemented** | 10 (15 all-features) |
 | [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 4 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 575 tests with default features, 720 with `--all-features`** (the CI configuration) on `feature/work-in-progress`. All passing, 0 failing. `main` measures **601** with `--all-features`.
+**Total: 644 tests with default features, 791 with `--all-features`** (the CI configuration) on `feature/work-in-progress`. All passing, 0 failing. `main` measures **601** with `--all-features`.
 
 > **Measured, not carried forward.** From `cargo test --workspace [--all-features]` run on 2026-09-02. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
 
-Per-crate, `--all-features`: `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 115 · `meedya-providers` 199 · `meedya-tags-extended` 180. `meedya-providers` measures 59 with default features (provider impls are feature-gated).
+Per-crate, `--all-features`: `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 115 · `meedya-providers` 199 · `meedya-tags-extended` 180. `meedya-providers` measures 59 with default features (provider impls are feature-gated).
 
 > **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 
@@ -123,9 +124,9 @@ Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `p
 ## Build / test
 
 ```bash
-cargo build --workspace          # all 9 crates
-cargo test  --workspace          # 575 tests
-cargo test  --workspace --all-features   # 720 tests (the CI configuration)
+cargo build --workspace          # all 10 crates
+cargo test  --workspace          # 644 tests
+cargo test  --workspace --all-features   # 791 tests (the CI configuration)
 cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```
