@@ -163,6 +163,57 @@ pub(crate) fn silence(seconds: f64, sample_rate: u32) -> Vec<f32> {
     vec![0.0f32; (seconds * sample_rate as f64).round() as usize]
 }
 
+/// Write `samples` (assumed to be in `[-1.0, 1.0]`) as a mono, 16-bit PCM
+/// WAV file at `sample_rate`.
+///
+/// Just enough of the WAV format to be readable by any decoder,
+/// including symphonia: a 44-byte canonical header (`RIFF`/`WAVE`, one
+/// `fmt ` chunk, one `data` chunk with no extra chunks in between) —
+/// nothing exotic that would need a bigger writer than this. Used by
+/// decode.rs's tests, which need real files on disk to exercise
+/// `decode_file`/`analyse_file` — everything else in this crate's test
+/// suite works directly on in-memory sample buffers. `decode.rs` only
+/// exists behind the `decode` feature, so this is gated the same way —
+/// without it, `cargo test --no-default-features` would otherwise flag
+/// it as dead code.
+#[cfg(feature = "decode")]
+pub(crate) fn write_pcm16_wav(
+    path: &std::path::Path,
+    samples: &[f32],
+    sample_rate: u32,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let bytes_per_sample = 2u32; // 16-bit mono
+    let byte_rate = sample_rate * bytes_per_sample;
+    let data_size = samples.len() as u32 * bytes_per_sample;
+    let riff_size = 36 + data_size; // 36 = header bytes after the RIFF size field
+
+    // A BufWriter matters here, not just as good practice: one test
+    // writes 15 minutes of audio (tens of millions of samples), and
+    // writing each 2-byte sample with its own syscall would make that
+    // test painfully slow.
+    let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+    w.write_all(b"RIFF")?;
+    w.write_all(&riff_size.to_le_bytes())?;
+    w.write_all(b"WAVE")?;
+    w.write_all(b"fmt ")?;
+    w.write_all(&16u32.to_le_bytes())?; // fmt chunk size
+    w.write_all(&1u16.to_le_bytes())?; // PCM
+    w.write_all(&1u16.to_le_bytes())?; // mono
+    w.write_all(&sample_rate.to_le_bytes())?;
+    w.write_all(&byte_rate.to_le_bytes())?;
+    w.write_all(&(bytes_per_sample as u16).to_le_bytes())?; // block align
+    w.write_all(&16u16.to_le_bytes())?; // bits per sample
+    w.write_all(b"data")?;
+    w.write_all(&data_size.to_le_bytes())?;
+    for &s in samples {
+        let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+        w.write_all(&v.to_le_bytes())?;
+    }
+    w.flush()
+}
+
 /// Pitch class (0=C .. 11=B) of a [`Note`], matching the semitone
 /// ordering `meedya_tags_extended::Note` declares its variants in. A
 /// small local duplicate of the mapping `key.rs` also needs (there for
