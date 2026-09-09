@@ -63,6 +63,7 @@
 
 mod error;
 pub mod signal;
+pub mod stft;
 
 pub use error::AnalysisError;
 pub use signal::MonoSignal;
