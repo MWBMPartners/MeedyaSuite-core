@@ -354,10 +354,10 @@ fn pick_peak(table: &AutocorrTable, fps: f64, lo: usize, hi: usize) -> Option<Pe
 /// evidence for a different tempo. Without this check, `find_rival`
 /// below would treat the winner's own shoulder as its own rival on
 /// almost every clean, unambiguous click track — which is exactly the
-/// failure this function exists to prevent (see the `debug_dump_90`
-/// investigation in this crate's history: a lag one frame away from a
-/// clean 90 BPM winner, itself no more than the winner's own shoulder,
-/// was crashing confidence from ~0.88 down to ~0.16).
+/// failure this function exists to prevent (found while calibrating the
+/// tempo tests: a lag one frame away from a clean 90 BPM winner, itself
+/// no more than the winner's own shoulder, was crashing confidence from
+/// ~0.88 down to ~0.16).
 fn is_local_score_maximum(table: &AutocorrTable, fps: f64, tau: usize) -> bool {
     let here = score_at(table, fps, tau);
     let left = if tau == 0 {
