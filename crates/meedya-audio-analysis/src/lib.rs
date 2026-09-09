@@ -62,8 +62,11 @@
 // error to catch it.
 
 mod error;
+pub mod onset;
 pub mod signal;
 pub mod stft;
+#[cfg(test)]
+mod test_signals;
 
 pub use error::AnalysisError;
 pub use signal::MonoSignal;
