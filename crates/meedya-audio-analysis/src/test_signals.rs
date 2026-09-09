@@ -92,6 +92,22 @@ fn add_click(buf: &mut [f32], start_time: f64, sample_rate: u32, level: f32, rng
 /// beats — this is what the "offbeat ambiguity" tempo tests use to
 /// create a signal with real energy at DOUBLE the true tempo, the
 /// classic tempo-octave-confusion case.
+///
+/// `offbeat_level` is applied to the offbeat click's amplitude via its
+/// SQUARE, not directly. `onset.rs`'s spectral flux deliberately
+/// log-compresses magnitude (`ln(1 + 100*|X|)`) precisely so a quiet
+/// onset registers on the same scale as a loud one — which means a
+/// linear amplitude fraction does NOT correspond to a proportional flux
+/// contribution: at the magnitude range a 5ms noise burst actually
+/// produces, log compression is deep enough into its saturating region
+/// that even a "quiet" 15%-amplitude offbeat would otherwise show up as
+/// a nearly-as-strong onset in flux terms, defeating the point of
+/// calling it "light". Squaring keeps 0.0 and 1.0 meaning what they
+/// already mean (no offbeat / equal to a main beat) while making the
+/// parameter's qualitative meaning honest in between: 0.15 reads as
+/// genuinely subtle, 0.5 reads as genuinely comparable — which is what
+/// every test that calls this with those two values is actually
+/// checking for.
 pub(crate) fn click_track(
     bpm: f64,
     seconds: f64,
@@ -114,7 +130,13 @@ pub(crate) fn click_track(
         if offbeat_level > 0.0 {
             let offbeat_t = t + beat_interval / 2.0;
             if offbeat_t < seconds {
-                add_click(&mut buf, offbeat_t, sample_rate, offbeat_level, &mut rng);
+                add_click(
+                    &mut buf,
+                    offbeat_t,
+                    sample_rate,
+                    offbeat_level * offbeat_level,
+                    &mut rng,
+                );
             }
         }
 

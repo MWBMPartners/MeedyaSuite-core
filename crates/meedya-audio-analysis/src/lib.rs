@@ -65,11 +65,13 @@ mod error;
 pub mod onset;
 pub mod signal;
 pub mod stft;
+pub mod tempo;
 #[cfg(test)]
 mod test_signals;
 
 pub use error::AnalysisError;
 pub use signal::MonoSignal;
+pub use tempo::{detect_tempo, TempoEstimate};
 
 /// Default lower bound of the tempo search range, in beats per minute.
 ///
