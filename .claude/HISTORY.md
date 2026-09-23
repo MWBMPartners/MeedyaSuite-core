@@ -627,3 +627,45 @@ All 27 findings fixed. Every markdown relative link in the repo now resolves.
 
 Measured after: **575** default-features / **720** `--all-features`, 0 failing; fmt clean;
 clippy clean and enforcing.
+
+## 2026-09-09 — `meedya-audio-analysis`: tempo and musical key detection (#16)
+
+*Entry added retrospectively on 2026-09-23 — the 09-09 session recorded its work in issue #16's
+comments and in CONTEXT/API/README, but did not append here.*
+
+New tenth crate, nine commits `6ce005a`…`aad49c7`. Decisions (full reasoning in #16's comments):
+written in-house on `symphonia` + `rustfft` rather than `bpm-analyzer` (unproven), `aubio`
+(stale C wrapper) or a Python/essentia subprocess (no external runtimes on Raspberry Pi);
+synchronous not `async` (pure computation would block async workers); key returned as the
+existing `MusicalKey` type, not a string; one `Option<TempoEstimate>` rather than parallel
+value/confidence options. Core rule: **refuse rather than guess** — low confidence is returned
+and consuming apps write nothing; never overwrite a tempo already in the file.
+
+Tests caught three logic bugs (rival peaks counted the winner's own shoulder; pitch classes
+summed instead of averaged, so noise read as A minor; flat-result floor far too low). Claude's
+independent review caught two more (tempo preference inflated confidence; the requested range
+was not a hard limit), both fixed with tests proven to fail without the fix. Wired into
+`meedya-core` behind non-default `audio-analysis` feature. Measured 644 default / 791
+all-features. Follow-ups listed in HANDOFF §0.2.
+
+## 2026-09-23 — Working rules re-issued; handoff brought up to date
+
+No code change. The owner re-issued the project's working rules ahead of a planned Codex
+review and a possible session restart. Recorded as "Standing rules" 1–12 in CLAUDE.md: plain
+English; handoff kept current as work lands; Opus agents in sequence for planning, Sonnet/Haiku
+for building; cross-AI review with Codex, looped until clean; per-task commit + issue update +
+memory/context/handoff refresh; no PR stacking; autonomy with questions asked up front;
+progress tables; and an AI-fallback rule (hand over when a service runs out, return and do a
+full review). Created `.OpenAI/` (Codex memory + context), root `AGENTS.md` (Codex entry
+point) and `.claude/DEVICE-RULES.md` (rule text for the owner to paste into per-machine
+settings, since a cloud session cannot reach the owner's computer).
+
+HANDOFF gained a §0 "current position" — it had stopped at 2026-09-02 and did not mention the
+tempo/key crate or the owner's `bcb7766`. Re-measured: 791 / 644, 0 failing; fmt, clippy and
+the doc-count guard all clean. MEMORY.md's claim that no licence check exists was stale
+(`bcb7766` added cargo-deny) and was corrected. Found that #76, #84 and #71 look fixed by
+`bcb7766` but are still open — queued for verification.
+
+Open questions put to the owner: PR target `alpha` vs `main` (CI only runs for `main`); the
+device-wide rule needs pasting on the owner's machine; Codex and `dev-team-plugins` are not
+available in the cloud container.

@@ -48,6 +48,95 @@ Rust workspace, 10 crates, 644 tests passing (791 with `--all-features`). Two co
 7. **Two tag-I/O foundations coexist intentionally** — `mp4ameta` for the sandbox-safe Apple Music flow, `lofty` for multi-format DJ-metadata and pass-through. Do not try to unify them.
 8. **Fixture-based testing for proprietary format parsers** — don't reverse-engineer Serato/Rekordbox/Traktor formats from memory. Require real tagged sample files.
 
+## Standing rules — how we work (owner-set, revised 2026-09-23)
+
+These apply to every session. Where one of them is ambiguous, ask the owner rather than guess.
+Open questions about them are listed in [HANDOFF.md](HANDOFF.md) §0.
+
+### 1. Plain English
+
+When reporting back or explaining anything, use plain, everyday English. Avoid technical
+jargon — it confuses even technically strong readers. If a technical term is unavoidable,
+say what it means in the same sentence. Short sentences, concrete examples, the "so what"
+first.
+
+### 2. Keep the handoff current, as you go
+
+Update [HANDOFF.md](HANDOFF.md) *as each piece of work lands* — not at the end of the
+session. It must always be good enough for a brand-new session, with no chat history, to
+pick up exactly where we left off. (Detail: see the standing task below.)
+
+### 3. Thinking, planning and who does the work
+
+- Think hard about the work before starting (ultrathink). Use workflows to plan and do it.
+- **Deep analysis and deep planning**: Opus agents, run **one after another, not in
+  parallel**. (Owner's reasoning at the time of writing: the latest Opus is cheaper and at
+  least as good as the latest Fable.)
+- **Implementation**: Sonnet or Haiku, whichever fits the job. Complex implementation: Opus.
+- Aim: spend tokens and usage credits carefully, but produce correct, top-quality code.
+  **GIRFT — Get It Right First Time.**
+
+### 4. Use plugins, and use a *different* AI to check the work
+
+Use the `dev-team-plugins` functionality freely — for the work itself and for suggesting
+fixes, tweaks, enhancements and new features. Use it to cross-check across AI systems: work
+planned and built with Claude Code is reviewed with Codex, and vice versa.
+
+### 5. Code review loop
+
+All code goes through review with Codex. Issues it finds are fixed automatically, then Codex
+reviews again — **repeat until a review finds nothing**. Only then is the work "done".
+
+### 6. After each piece of work
+
+1. Commit and push it to the working branch (`feature/work-in-progress` — the single branch
+   that will eventually be merged, see rule 8), and update its GitHub issue(s) — **each task
+   updated individually**, not one bulk comment.
+2. Update the Claude memory and context files in `.claude/` (MEMORY.md, CONTEXT.md).
+3. Update the OpenAI/Codex memory and context files in `.OpenAI/`.
+4. Update [HANDOFF.md](HANDOFF.md).
+
+### 7. Thorough documentation updates
+
+When asked for (and at natural milestones), update *all* documentation: every `.md` file,
+any in-app help and guides, and everything in `.claude/` and `.OpenAI/`. If the project
+offers a web API, update its OpenAPI/Swagger description too, and if there is no browsable
+Swagger UI, add one that works on plain shared hosting (no Docker).
+*This repo today:* it is a library with **no web API**, so OpenAPI/Swagger does not apply
+(owner decision 2026-09-01, still true 2026-09-23). The partner-app contract is
+[`docs/API.md`](../docs/API.md).
+
+### 8. No PR stacking
+
+One working branch, one eventual pull request. Do not open multiple PRs — it invites
+merge race conditions. Everything goes to `feature/work-in-progress`; the PR is created
+later, when the owner asks. (Target branch: see HANDOFF.md §0 — currently an open question.)
+
+### 9. Be efficient
+
+Re-order and bundle tasks where that is smarter. The list order is not a strict sequence.
+
+### 10. Work autonomously; ask up front
+
+Work through the whole queue without stopping. Pause only for a decision that genuinely
+needs the owner's explicit approval — and then say, as simply as possible, exactly what is
+needed and why. **Collect such questions at the start**, not as they come up, then carry on
+with everything that is not blocked by them.
+
+### 11. Progress updates
+
+Give frequent progress updates as a table of the queued tasks and each one's status.
+
+### 12. If an AI service runs out, hand over — then come back
+
+If an AI service (Claude Code, Codex, or any other) or its agents become unavailable or run
+out of usage, hand the work to another suitable one — provided that can be done without
+losing context or progress. Switch back to the main service as soon as it is available
+again, and when it is, run a **full** review of what was done in its absence. The cross-AI
+reviews (rule 5) catch differences in approach between services, which is what makes this
+safe. It is also why the handoff must be up to the minute at all times (rule 2): it is what
+the stand-in service reads. This rule is not tied to any named tool.
+
 ## Standing tasks
 
 ### Keep `docs/API.md` in sync with public API changes
@@ -168,12 +257,18 @@ docs/
   PROMPTS.md                        # Reusable task prompts
   ProjectBrief_Chat.claude          # High-level project brief (non-technical audience)
   agents/                           # Claude Code subagent configs (deep-architect, quick-edits)
+.OpenAI/                            # Codex/OpenAI memory, context + handoff pointer (mirrors .claude/)
+AGENTS.md                           # Entry point Codex reads automatically; points to .OpenAI/ and .claude/
 ```
 
 ## Git workflow
 
 - `main` — stable, reviewed code. Branch protection: required status checks (Backend + Frontend CI), no approval required as of 2026-05-18.
 - Feature branches: `feature/<description>` or `claude/<task-id>`
+- **Current working branch: `feature/work-in-progress`** — the single branch all work goes to
+  (standing rule 8). Eventual PR target: see [HANDOFF.md](HANDOFF.md) §0.
+- CI (`.github/workflows/ci.yml`) only runs on pushes/PRs to `main`, so the working branch gets
+  **no CI** — local fmt/clippy/test is the only gate until the PR opens.
 - Commit messages: conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`)
 - Run `cargo test --workspace` before pushing
 - For substantial public API changes, update `docs/API.md` in the same commit (see standing task above)

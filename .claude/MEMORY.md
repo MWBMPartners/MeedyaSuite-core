@@ -69,7 +69,7 @@ Don't try to unify these. They serve genuinely different needs and unifying woul
 ## License obligations
 
 - MIT license on all source files (header above).
-- Third-party Rust crates: license compatibility is currently a **manual review obligation** — no CI check exists yet (`ci.yml` runs fmt/build/test/clippy only; there is no cargo-deny/cargo-about job, and no `deny.toml`/`about.toml` in the repo). Dependencies must be MIT, Apache-2.0, BSD, MPL-2.0, or similarly permissive. Avoid GPL/AGPL. Adding a `cargo-deny` CI job to make this an enforced check is tracked in issue #84.
+- Third-party Rust crates: dependencies must be MIT, Apache-2.0, BSD, MPL-2.0, or similarly permissive. Avoid GPL/AGPL. **Enforced by CI** since `bcb7766` (2026-09-02): a `cargo-deny` job in `ci.yml` checks advisories, the licence allowlist and duplicate versions against [`deny.toml`](../deny.toml) (issue #84). Known snag: an older locally-installed `cargo-deny` rejects `highlight = "all-duplicates"` in `deny.toml`, so the check may only run in CI.
 
 ## Development environment
 
@@ -169,3 +169,14 @@ read-only supported for FLAC/APE/MPC, so those pass the check and then fail at `
 **running**. `.kill_on_drop(true)` is required for the dropped future to SIGKILL it. Every
 subprocess call in this workspace (ReplayGain's ffmpeg, codecs' ffprobe and mediainfo) sets
 both. Note `kill_on_drop` is a hard SIGKILL — no cleanup runs.
+
+## How the owner wants us to work (see CLAUDE.md "Standing rules")
+
+- **Plain English** in every report or explanation — no jargon.
+- **Handoff updated as work lands** — it is what a fresh session (or a stand-in AI) reads.
+- **One working branch, one eventual PR** (`feature/work-in-progress`). No PR stacking.
+- **Cross-AI review**: build with Claude, review with Codex (and vice versa); loop until clean.
+- **Planning** with Opus agents in sequence; **implementation** with Sonnet/Haiku (Opus if complex).
+- **AI fallback**: if one AI service runs out, hand over via the handoff, return to the main one
+  as soon as possible, then do a full review.
+- Codex/OpenAI mirror of these notes lives in `.OpenAI/`; `AGENTS.md` at the root points Codex there.

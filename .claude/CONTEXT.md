@@ -1,7 +1,7 @@
 # MeedyaSuite-core — Project Context
 
 > Snapshot maintained for Claude Code sessions. Reflects the actual state of `main`, not aspirational state.
-> Last updated: 2026-09-01 — **branch-consolidation pass**. The four in-flight WIP branches were audited by full file content and merged into a single branch, `feature/work-in-progress` (based on `main`, eventual PR target `main`). This file describes that branch. See [HANDOFF.md](HANDOFF.md) for in-flight state and [HISTORY.md](HISTORY.md) for the narrative.
+> Last updated: 2026-09-23 — standing rules re-issued (see CLAUDE.md); no code change since 2026-09-09, when the **`meedya-audio-analysis`** crate (tempo + key, #16) landed. Earlier: 2026-09-01 branch-consolidation pass — four WIP branches merged into `feature/work-in-progress`. This file describes that branch. See [HANDOFF.md](HANDOFF.md) §0 for in-flight state and [HISTORY.md](HISTORY.md) for the narrative.
 
 ## What this repo is
 

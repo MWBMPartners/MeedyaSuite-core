@@ -1,16 +1,108 @@
 # MeedyaSuite-core — Session Handoff
 
 > **Purpose**: pick up exactly where the last session left off, without re-deriving anything.
-> **Read order at session start**: [CLAUDE.md](CLAUDE.md) → this file → [CONTEXT.md](CONTEXT.md).
+> **Read order at session start**: [CLAUDE.md](CLAUDE.md) (especially "Standing rules") → **§0 of this file** → [CONTEXT.md](CONTEXT.md).
 > **Update rule**: amend this file *as work lands*, not at the end. If a session is interrupted, this file is the only thing that survives.
+> Codex / other AIs: start at [`../AGENTS.md`](../AGENTS.md), which points here.
 
-**Last updated**: 2026-09-02
-**Active branch**: `feature/work-in-progress`
-**Eventual PR target**: `main` (owner-confirmed 2026-09-01)
+**Last updated**: 2026-09-23 (evening, UK)
+**Active branch**: `feature/work-in-progress` — the one and only working branch
+**Eventual PR target**: ⚠️ open question — see §0.3
+**Open PR**: none
 
 ---
 
-## 1. Ground truth (measured, not asserted)
+## 0. CURRENT POSITION — read this first
+
+### 0.1 In one paragraph
+
+All work is on `feature/work-in-progress`, pushed, nothing uncommitted. The most recent
+feature is the new **tempo and musical key detection crate** (`meedya-audio-analysis`,
+issue #16), built and reviewed by Claude on 2026-09-09 and pushed as `aad49c7`. On
+2026-09-23 the owner re-issued the project's working rules; they are now written into
+[CLAUDE.md → Standing rules](CLAUDE.md), with a Codex mirror in [`../.OpenAI/`](../.OpenAI/)
+and [`../AGENTS.md`](../AGENTS.md). **The next step is the Codex review of the branch**,
+which the owner has lined up for 00:08 (the night of 23→24 Sept). The owner may restart the
+session before then to update Claude Code — this file is written so that is safe.
+
+### 0.2 Status board
+
+| # | Task | State |
+|---|---|---|
+| 1 | Branch consolidation, MusicBrainz Solr-10 hardening, issue sweep (2026-09-01) | ✅ Done — details §2–§4, §10 |
+| 2 | Five selected fixes #78 #79 #80 #81 #94 + review follow-ups (2026-09-02) | ✅ Done — §11 |
+| 3 | Owner commit `bcb7766` (2026-09-02): AcoustID lookups sent by POST (fingerprint no longer in the URL), `wiremock` test server, shared `build_client` with timeouts for providers, `deny.toml` + cargo-deny CI job, doc test-count guard script `scripts/check-doc-test-counts.sh` + CI job | ✅ Landed — **not yet reviewed by anyone other than its author** |
+| 4 | `meedya-audio-analysis` crate — tempo + key detection (#16), 9 commits `6ce005a`…`aad49c7` (2026-09-09) | ✅ Built, Claude-reviewed, 2 review faults fixed, docs updated, pushed. #16 still **open** |
+| 5 | Standing rules re-issued and recorded (CLAUDE.md, MEMORY.md, `.OpenAI/`, `AGENTS.md`, `DEVICE-RULES.md`) (2026-09-23) | ✅ Done this session |
+| 6 | **Codex review of the whole branch** (focus: items 3 and 4), fix → re-review until clean | ⏳ **NEXT** — owner scheduled 00:08 |
+| 7 | Thorough documentation pass (all `.md`, `.claude/`, `.OpenAI/`) | ⏳ Queued, after the review loop so docs describe reviewed code |
+| 8 | Open follow-up issues from #16's last comment: extra key profiles; better chroma; sampling several windows of long files; validating confidence thresholds on a real library; fix `deny.toml` so local `cargo-deny` accepts it | ⏳ Queued — **not yet opened as issues** (standing task says they must be) |
+| 9 | MeedyaDL consumes the tempo/key crate and deletes its 266-line silence-counting estimator | ⏳ Separate work in the MeedyaDL repo |
+| 9b | Issues **#76** (HTTP timeouts), **#84** (cargo-deny) and **#71** (doc test-count guard) look fixed by `bcb7766` but are still open. Confirm each against its acceptance criteria during the review, then close individually | ⏳ Queued |
+| 10 | Open the single PR for this branch | ⏸ Waits for owner's say-so and the target-branch answer (§0.3) |
+| — | OpenAPI / Swagger UI | ⛔ Not applicable — this is a library with no web API (owner decision 2026-09-01, re-checked 2026-09-23) |
+
+### 0.3 Open questions for the owner (asked 2026-09-23, not yet answered)
+
+1. **Which branch should the eventual PR go into — `alpha` or `main`?** The new rules say
+   "the branch that will eventually be merged to `alpha`". The decision recorded on
+   2026-09-01 was `main`. Two things matter here: `alpha` is currently **75 commits behind
+   `main`** (an old release marker), and the automated checks (CI) **only run for `main`** —
+   a PR into `alpha` would get no automatic checks unless CI is changed. Until answered,
+   nothing changes: work continues on `feature/work-in-progress` either way.
+2. **Rule "all on this device"**: a cloud session cannot change the owner's own computer.
+   The rule text is ready to paste in [DEVICE-RULES.md](DEVICE-RULES.md) — the owner needs
+   to copy it into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` on their Mac.
+3. **Codex availability**: this cloud container has no Codex installed and no
+   `dev-team-plugins` plugin. The Codex review loop (standing rule 5) has to run where Codex
+   is set up — the owner's machine — or the plugin needs adding to this environment.
+
+### 0.4 Measured state (2026-09-23, this container)
+
+All measured on 2026-09-23 at commit `aad49c7` (Rust 1.94.1 in the cloud container; the
+owner's Mac uses 1.98.0 — MSRV is 1.82, so both are fine):
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace --all-features --locked` | **791 passed, 0 failed** |
+| `cargo test --workspace --locked` (default features) | **644 passed, 0 failed** |
+| `cargo fmt --all -- --check` | clean |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | clean |
+| `scripts/check-doc-test-counts.sh 644 791` | OK — docs match |
+| Workspace crates | 10 |
+| `alpha` vs `main` | `alpha` is 75 commits behind `main`, 0 of its own (re-checked with full history) |
+
+Note for cloud sessions: the clone starts **shallow** (partial history), which makes
+branch comparisons lie. Run `git fetch --unshallow origin` before comparing branches.
+
+### 0.5 How to resume cold
+
+On the owner's Mac:
+
+```bash
+cd "/Users/lance.manasse/Projects/Coding & Development/MWBM Partners Ltd/GitHub/MeedyaSuite/MeedyaSuite-core"
+export PATH="$HOME/.cargo/bin:$PATH"
+git checkout feature/work-in-progress && git pull
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features --locked   # compare with §0.4
+```
+
+In a cloud session the repo is already cloned at `/home/user/MeedyaSuite-core`; same commands.
+
+Then: answer/check §0.3, and start task 6 (Codex review). Kick-off prompt for Codex:
+
+> Review every commit on `feature/work-in-progress` since `d6f7224` (i.e. `bcb7766` and the
+> nine `meedya-audio-analysis` commits). Read `AGENTS.md` and `.claude/MEMORY.md` first —
+> several things that look wrong are deliberate. Report real bugs, with a failing case for
+> each. Plain English.
+
+---
+
+> **Sections below are the history of how we got here.** They are accurate for their dates;
+> where they conflict with §0, §0 wins.
+
+## 1. Ground truth as of 2026-09-02 (superseded by §0.4)
 
 Numbers here were **measured by running cargo**, not copied from docs. Docs across the repo
 have historically disagreed (248 / 466 / 653 / 664 all appear somewhere and are all wrong).
@@ -218,7 +310,8 @@ These were found while reading the code and are **not** covered by the consolida
 1. ~~**`rate_limiter.rs` is dead code.**~~ **Fixed by #94** — `ProviderRateLimiter` is now
    wired across all 13 providers (see §11). No longer outstanding.
 
-2. **10+ providers have no HTTP timeout.** These use bare `Client::new()`:
+2. **Likely fixed by `bcb7766`** (shared `build_client` with timeouts; #76 still open — verify then close).
+   Original finding: **10+ providers have no HTTP timeout.** These use bare `Client::new()`:
    `tmdb`, `spotify`, `deezer`, `omdb`, `apple_music`, `itunes_store`, `apple_tv`,
    `apple_podcasts`, `thetvdb`, `eidr`. Issue #15 covers only AcoustID — the gap is
    workspace-wide. (`musicbrainz`, `isrc`, `iswc` now have 30s timeouts via this merge.)
@@ -285,7 +378,7 @@ All fixed in `68a638d`, and every markdown relative link in the repo now resolve
 
 ---
 
-## 7. Status board
+## 7. Status board (as of 2026-09-02 — superseded by §0.2)
 
 | Task | State |
 |---|---|
@@ -327,7 +420,7 @@ fd2a7c5 feat(metadata): identifier-types registry + CommonTag expansion (#65)
 
 ---
 
-## 9. If you are resuming cold
+## 9. If you are resuming cold (2026-09-02 version — use §0.5)
 
 ```bash
 cd "/Users/lance.manasse/Projects/Coding & Development/MWBM Partners Ltd/GitHub/MeedyaSuite/MeedyaSuite-core"
