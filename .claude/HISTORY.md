@@ -669,3 +669,6 @@ the doc-count guard all clean. MEMORY.md's claim that no licence check exists wa
 Open questions put to the owner: PR target `alpha` vs `main` (CI only runs for `main`); the
 device-wide rule needs pasting on the owner's machine; Codex and `dev-team-plugins` are not
 available in the cloud container.
+
+**Addendum (same day):** owner answered the first open question — the eventual PR targets
+**`main`**, not `alpha`. Recorded in CLAUDE.md rule 8, HANDOFF §0, AGENTS.md and `.OpenAI/CONTEXT.md`.

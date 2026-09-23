@@ -90,7 +90,7 @@ reviews again — **repeat until a review finds nothing**. Only then is the work
 ### 6. After each piece of work
 
 1. Commit and push it to the working branch (`feature/work-in-progress` — the single branch
-   that will eventually be merged, see rule 8), and update its GitHub issue(s) — **each task
+   that will eventually be merged into `main`, see rule 8), and update its GitHub issue(s) — **each task
    updated individually**, not one bulk comment.
 2. Update the Claude memory and context files in `.claude/` (MEMORY.md, CONTEXT.md).
 3. Update the OpenAI/Codex memory and context files in `.OpenAI/`.
@@ -110,7 +110,7 @@ Swagger UI, add one that works on plain shared hosting (no Docker).
 
 One working branch, one eventual pull request. Do not open multiple PRs — it invites
 merge race conditions. Everything goes to `feature/work-in-progress`; the PR is created
-later, when the owner asks. (Target branch: see HANDOFF.md §0 — currently an open question.)
+later, when the owner asks. The PR targets **`main`** (owner-confirmed 2026-09-23).
 
 ### 9. Be efficient
 
@@ -266,7 +266,7 @@ AGENTS.md                           # Entry point Codex reads automatically; poi
 - `main` — stable, reviewed code. Branch protection: required status checks (Backend + Frontend CI), no approval required as of 2026-05-18.
 - Feature branches: `feature/<description>` or `claude/<task-id>`
 - **Current working branch: `feature/work-in-progress`** — the single branch all work goes to
-  (standing rule 8). Eventual PR target: see [HANDOFF.md](HANDOFF.md) §0.
+  (standing rule 8). Eventual PR target: **`main`** (owner-confirmed 2026-09-23).
 - CI (`.github/workflows/ci.yml`) only runs on pushes/PRs to `main`, so the working branch gets
   **no CI** — local fmt/clippy/test is the only gate until the PR opens.
 - Commit messages: conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`)

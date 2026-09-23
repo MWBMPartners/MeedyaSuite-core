@@ -12,7 +12,7 @@ use it as a code dependency. Its contract with those apps is [`docs/API.md`](../
 
 ## Where things stand (2026-09-23)
 
-- Working branch `feature/work-in-progress`, well ahead of `main`, **no PR open yet**.
+- Working branch `feature/work-in-progress`, well ahead of `main`, **no PR open yet**. The PR will target `main` (owner-confirmed 2026-09-23).
 - Latest work: new crate `meedya-audio-analysis` (tempo and musical key detection, issue #16),
   built and reviewed by Claude on 2026-09-09. **A Codex review of that work is the next step.**
 - Full status board and open questions: `.claude/HANDOFF.md` §0.

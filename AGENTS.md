@@ -11,7 +11,7 @@ this file points every other agent at the same rules so the two never drift.
 
 **The essentials, in case you read nothing else:**
 
-- Work only on branch `feature/work-in-progress`. One branch, one eventual PR. Never open extra PRs.
+- Work only on branch `feature/work-in-progress`. One branch, one eventual PR, into `main`. Never open extra PRs.
 - `export PATH="$HOME/.cargo/bin:$PATH"` then `cargo fmt --all -- --check`,
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
   `cargo test --workspace --all-features --locked`. The branch gets **no CI**; these are the gate.

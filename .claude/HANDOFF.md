@@ -7,7 +7,7 @@
 
 **Last updated**: 2026-09-23 (evening, UK)
 **Active branch**: `feature/work-in-progress` — the one and only working branch
-**Eventual PR target**: ⚠️ open question — see §0.3
+**Eventual PR target**: `main` (owner re-confirmed 2026-09-23)
 **Open PR**: none
 
 ---
@@ -39,17 +39,15 @@ session before then to update Claude Code — this file is written so that is sa
 | 8 | Open follow-up issues from #16's last comment: extra key profiles; better chroma; sampling several windows of long files; validating confidence thresholds on a real library; fix `deny.toml` so local `cargo-deny` accepts it | ⏳ Queued — **not yet opened as issues** (standing task says they must be) |
 | 9 | MeedyaDL consumes the tempo/key crate and deletes its 266-line silence-counting estimator | ⏳ Separate work in the MeedyaDL repo |
 | 9b | Issues **#76** (HTTP timeouts), **#84** (cargo-deny) and **#71** (doc test-count guard) look fixed by `bcb7766` but are still open. Confirm each against its acceptance criteria during the review, then close individually | ⏳ Queued |
-| 10 | Open the single PR for this branch | ⏸ Waits for owner's say-so and the target-branch answer (§0.3) |
+| 10 | Open the single PR for this branch | ⏸ Waits for owner's say-so. Target: `main` (decided 2026-09-23) |
 | — | OpenAPI / Swagger UI | ⛔ Not applicable — this is a library with no web API (owner decision 2026-09-01, re-checked 2026-09-23) |
 
-### 0.3 Open questions for the owner (asked 2026-09-23, not yet answered)
+### 0.3 Questions for the owner (asked 2026-09-23)
 
-1. **Which branch should the eventual PR go into — `alpha` or `main`?** The new rules say
-   "the branch that will eventually be merged to `alpha`". The decision recorded on
-   2026-09-01 was `main`. Two things matter here: `alpha` is currently **75 commits behind
-   `main`** (an old release marker), and the automated checks (CI) **only run for `main`** —
-   a PR into `alpha` would get no automatic checks unless CI is changed. Until answered,
-   nothing changes: work continues on `feature/work-in-progress` either way.
+1. ~~Which branch should the eventual PR go into — `alpha` or `main`?~~ **ANSWERED
+   2026-09-23: `main`.** (The re-issued rules had said `alpha`; the owner confirmed `main`,
+   matching the 2026-09-01 decision. CI already runs for `main`, so no CI change is needed.
+   `alpha`/`beta` stay untouched — they are old markers, 75 commits behind `main`.)
 2. **Rule "all on this device"**: a cloud session cannot change the owner's own computer.
    The rule text is ready to paste in [DEVICE-RULES.md](DEVICE-RULES.md) — the owner needs
    to copy it into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` on their Mac.
@@ -90,7 +88,7 @@ cargo test --workspace --all-features --locked   # compare with §0.4
 
 In a cloud session the repo is already cloned at `/home/user/MeedyaSuite-core`; same commands.
 
-Then: answer/check §0.3, and start task 6 (Codex review). Kick-off prompt for Codex:
+Then: check §0.3 for anything still open, and start task 6 (Codex review). Kick-off prompt for Codex:
 
 > Review every commit on `feature/work-in-progress` since `d6f7224` (i.e. `bcb7766` and the
 > nine `meedya-audio-analysis` commits). Read `AGENTS.md` and `.claude/MEMORY.md` first —
