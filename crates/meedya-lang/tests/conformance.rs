@@ -43,6 +43,15 @@
 //   the schema forbids passed unnoticed here. Every other wrong TYPE (a
 //   number where a string belongs, `roles: null`, a fraction where a whole
 //   number belongs) serde already refuses, because each field is typed.
+// * Every struct this runner builds from a JSON object — each case, and
+//   every object nested inside one (a track, an item, an `expected`
+//   object, `accessibility`) — is read through `object`, `objects` or
+//   `object_or_null`, which refuse anything but a JSON object. serde reads
+//   a struct from a JSON LIST as well (its fields in order), so until the
+//   stand-in review of revision 5 `accessibility: []` passed as "no
+//   preferences" and `expected: ["eng", "eng"]` as `{b, t}`. Maps
+//   (`display_names`, `role_names`, `collation_keys`) and lists already
+//   refused the wrong kind of container.
 // * The file's own top-level fields are checked too: `policy` and
 //   `policy_version` exactly, `fixtures_version` as three dot-separated
 //   numbers, `data_version` against the data this crate embeds, and
@@ -91,7 +100,7 @@ fn parse_section<T: DeserializeOwned>(top: &Map<String, Value>, section: &str) -
         .iter()
         .enumerate()
         .map(|(index, case)| {
-            serde_json::from_value(case.clone()).unwrap_or_else(|e| {
+            from_object(case.clone()).unwrap_or_else(|e| {
                 panic!(
                     "{}: fixture case does not match the schema — {e}. Policy 8.1: a harness \
                      must fail, not quietly default or ignore, when a case lacks a field the \
@@ -129,6 +138,60 @@ where
         None => Err(D::Error::custom(
             "a field is null, which the schema does not allow here - leave it out instead",
         )),
+    }
+}
+
+/// Reads `value` into `T` only when it is a JSON object. serde reads a
+/// struct from a JSON list too (its fields in order), which the schema
+/// never allows — see the header comment.
+fn from_object<T: DeserializeOwned>(value: Value) -> Result<T, String> {
+    let kind = match &value {
+        Value::Object(_) => return serde_json::from_value(value).map_err(|e| e.to_string()),
+        Value::Array(_) => "a list",
+        Value::Null => "null",
+        Value::Bool(_) => "true/false",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+    };
+    Err(format!("a JSON object belongs here, but this is {kind}"))
+}
+
+/// For a struct-typed field: the value must be a JSON object.
+fn object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    from_object(Value::deserialize(deserializer)?).map_err(D::Error::custom)
+}
+
+/// For a list of structs: every item must be a JSON object. (The message
+/// does not number the item: serde's own messages for a wrong field inside
+/// an item do not either, and this runner's refusal tests match those
+/// messages as they are.)
+fn objects<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    Vec::<Value>::deserialize(deserializer)?
+        .into_iter()
+        .map(|item| from_object(item).map_err(D::Error::custom))
+        .collect()
+}
+
+/// For a struct-typed field the schema requires but allows to be `null`:
+/// `null` is `None`, anything else must be a JSON object. (Like
+/// `Option::deserialize`, a missing key is still an error, because the
+/// field carries no `default`.)
+fn object_or_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    match Option::<Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(value) => from_object(value).map(Some).map_err(D::Error::custom),
     }
 }
 
@@ -231,6 +294,7 @@ struct Iso639WriteCase {
     #[serde(default, deserialize_with = "present_not_null")]
     description: Option<String>,
     input: String,
+    #[serde(deserialize_with = "object")]
     expected: Iso639WriteExpected,
 }
 
@@ -284,7 +348,7 @@ enum SidecarCase {
         rules: Vec<String>,
         stem: String,
         filename: String,
-        #[serde(deserialize_with = "Option::deserialize")]
+        #[serde(deserialize_with = "object_or_null")]
         expected: Option<SidecarExpected>,
     },
 }
@@ -307,6 +371,7 @@ struct OrderCase {
     rules: Vec<String>,
     #[allow(dead_code)]
     description: String,
+    #[serde(deserialize_with = "objects")]
     items: Vec<OrderItem>,
     expected: Vec<String>,
 }
@@ -331,6 +396,7 @@ struct TrackOrderCase {
     rules: Vec<String>,
     #[allow(dead_code)]
     description: String,
+    #[serde(deserialize_with = "objects")]
     tracks: Vec<TrackDef>,
     expected: Vec<String>,
 }
@@ -379,6 +445,7 @@ struct PresentationCase {
     #[allow(dead_code)]
     description: String,
     preferences: Vec<String>,
+    #[serde(deserialize_with = "object")]
     accessibility: AccessibilityDef,
     /// Present only to show that selection changes nothing (UI-050); the
     /// ordering function takes no selection input, so it is never read.
@@ -388,6 +455,7 @@ struct PresentationCase {
     #[allow(dead_code)]
     display_names: HashMap<String, String>,
     collation_keys: HashMap<String, String>,
+    #[serde(deserialize_with = "objects")]
     items: Vec<PresentationItemDef>,
     expected: Vec<String>,
 }
@@ -429,6 +497,7 @@ struct MatchCase {
     description: Option<String>,
     preference: String,
     candidate: String,
+    #[serde(deserialize_with = "object")]
     expected: MatchExpected,
 }
 
@@ -457,7 +526,9 @@ struct AutoAudioCase {
     #[allow(dead_code)]
     description: String,
     preferences: Vec<String>,
+    #[serde(deserialize_with = "object")]
     accessibility: AccessibilityDef,
+    #[serde(deserialize_with = "objects")]
     tracks: Vec<SelectTrackDef>,
     #[serde(deserialize_with = "Option::deserialize")]
     expected: Option<String>,
@@ -475,9 +546,11 @@ struct AutoSubtitleCase {
     description: String,
     mode: String,
     preferences: Vec<String>,
+    #[serde(deserialize_with = "object")]
     accessibility: AccessibilityDef,
     #[serde(deserialize_with = "Option::deserialize")]
     audio: Option<String>,
+    #[serde(deserialize_with = "objects")]
     tracks: Vec<SelectTrackDef>,
     #[serde(deserialize_with = "Option::deserialize")]
     expected: Option<String>,
@@ -1797,6 +1870,149 @@ mod harness_refuses {
                     Value::Null,
                 ),
                 "is null, which the schema does not allow here",
+            ),
+        ]);
+    }
+
+    // -----------------------------------------------------------------
+    // A list where the schema wants an object, and the other way round
+    // (stand-in review of revision 5)
+    //
+    // serde reads a struct from a JSON list as well as from an object, so
+    // `accessibility: []` passed here as "no preferences", and
+    // `expected: ["eng", "eng"]` as a write case's `{b, t}`. (The PHP
+    // runner could not tell `{}` from `[]` at all; the reviewer's four
+    // inputs are the first four rows.) Every struct is now read through
+    // `object`, `objects` or `object_or_null`.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn lists_where_objects_belong_and_objects_where_lists_belong_are_refused() {
+        use serde_json::json;
+        /// The real case file with the value at `pointer` inside case `id`
+        /// replaced by `value`.
+        fn replace(section: &str, id: &str, pointer: &str, value: Value) -> String {
+            with_case(section, id, |c| {
+                *c.pointer_mut(pointer)
+                    .unwrap_or_else(|| panic!("no {pointer} in {section}/{id}")) = value;
+            })
+        }
+        let not_an_object = "a JSON object belongs here, but this is a list";
+        let first_case_as_a_list = with_top(|top| {
+            let case = top["canonicalise"][0].clone();
+            let values: Vec<Value> = case.as_object().unwrap().values().cloned().collect();
+            top["canonicalise"][0] = Value::Array(values);
+        });
+        check_refusals(vec![
+            (
+                "accessibility is an empty list (the reviewer's input)",
+                replace("auto_select_audio", "audio-01", "/accessibility", json!([])),
+                not_an_object,
+            ),
+            (
+                "display_names is an empty list (the reviewer's input)",
+                replace(
+                    "presentation_order",
+                    "present-01",
+                    "/display_names",
+                    json!([]),
+                ),
+                "invalid type: sequence, expected a map",
+            ),
+            (
+                "a selection track's roles is an empty object (the reviewer's input)",
+                replace(
+                    "auto_select_audio",
+                    "audio-07",
+                    "/tracks/0/roles",
+                    json!({}),
+                ),
+                "invalid type: map, expected a sequence",
+            ),
+            (
+                "rules is an empty object (the reviewer's input)",
+                replace("canonicalise", "canon-01", "/rules", json!({})),
+                "invalid type: map, expected a sequence",
+            ),
+            (
+                "accessibility is a list of two values",
+                replace(
+                    "auto_select_subtitle",
+                    "subs-01",
+                    "/accessibility",
+                    json!([true, false]),
+                ),
+                not_an_object,
+            ),
+            (
+                "accessibility is a list in a presentation case",
+                replace("subtitle_menu", "submenu-01", "/accessibility", json!([])),
+                not_an_object,
+            ),
+            (
+                "a write case's expected answer is a list",
+                replace(
+                    "iso639_2_write",
+                    "write-01",
+                    "/expected",
+                    json!(["eng", "eng"]),
+                ),
+                not_an_object,
+            ),
+            (
+                "a match case's expected answer is a list",
+                replace("match", "match-01", "/expected", json!(["exact", 0])),
+                not_an_object,
+            ),
+            (
+                "a sidecar parse case's expected answer is a list",
+                replace(
+                    "sidecar_name",
+                    "sidecar-07",
+                    "/expected",
+                    json!(["en", null, [], null, "srt"]),
+                ),
+                not_an_object,
+            ),
+            (
+                "an order item is a list",
+                replace("canonical_order", "order-01", "/items/0", json!(["en"])),
+                not_an_object,
+            ),
+            (
+                "a track is a list",
+                replace(
+                    "track_order",
+                    "tracks-01",
+                    "/tracks/0",
+                    json!(["v1", "video", "und", []]),
+                ),
+                not_an_object,
+            ),
+            (
+                "a presentation item is a list",
+                replace(
+                    "presentation_order",
+                    "present-01",
+                    "/items/0",
+                    json!(["a", "en"]),
+                ),
+                not_an_object,
+            ),
+            (
+                "a selection track is a list",
+                replace(
+                    "auto_select_subtitle",
+                    "subs-01",
+                    "/tracks/0",
+                    json!(["s1", "en", []]),
+                ),
+                not_an_object,
+            ),
+            (
+                "a whole case is a list of its values",
+                first_case_as_a_list,
+                not_an_object,
             ),
         ]);
     }

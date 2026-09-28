@@ -254,10 +254,18 @@ the schema's shape: a missing required field (including inside a nested
 not allow (so an `"error": true` in a section that has no refusal cases is
 refused, not ignored), a value of the wrong type (a number where a string
 belongs, a string where true/false belongs, a fraction where a whole number
-belongs, a list holding something other than strings — and `null` anywhere
-the schema does not allow it, so `"roles": null` is refused rather than
-read as "no roles"), or an `error` flag that is not `true` or sits on a
-case that does not expect `null`. Each refusal names the case and the field.
+belongs, a list holding something other than strings, a list where an
+object belongs or an object where a list belongs — `"accessibility": []`
+and `"roles": {}` are refused, even though PHP's usual way of reading JSON
+turns both into the same empty array — and `null` anywhere the schema does
+not allow it, so `"roles": null` is refused rather than read as "no
+roles"), a word the schema does not allow (a role, a track type, a
+subtitle mode, a match level or a tag kind that is not on its list), or an
+`error` flag that is not `true` or sits on a case that does not expect
+`null`. Each refusal names the case and the field. Any other error while a
+case runs — the library refusing a case that expects an answer, say — stops
+the run with a message naming the case and exit code `1`, never PHP's own
+exit code `255`.
 
 Needing no PHP extension applies here too — `php -n` (every extension
 disabled) runs this file exactly the same as an ordinary `php`.
