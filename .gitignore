@@ -31,3 +31,7 @@ target
 
 # Scratch space for working notes and plans — never committed.
 _temp/
+
+# Python bytecode caches (scripts/media-lang tests create these when run)
+__pycache__/
+*.pyc
