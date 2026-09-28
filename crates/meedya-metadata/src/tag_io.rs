@@ -36,6 +36,17 @@
 //   MP4 type (`Mp4File` and its `Ilst`), and the language atom is read and
 //   written there, whole; everything else still goes through the
 //   format-neutral `Tag`, exactly as before.
+//
+// Which tag a language is compared against (the stand-in review of
+// revision 6): `read_tags` reads a file's main tag, or failing that any
+// tag it has — so for a WAV file holding only a RIFF INFO list, or an MP3
+// holding only an APE tag, it reports THAT tag's language. But a write goes
+// into the main tag, which such a file does not have yet (ID3v2 for both).
+// "Is the caller's language unchanged?" used to be answered against the
+// tag `read_tags` read, so writing the same language back was skipped as
+// unchanged, the new main tag got none, and from then on `read_tags` read
+// the main tag and reported no language at all. It is now answered against
+// the tag the write goes into (see `write_tags`).
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -113,6 +124,13 @@ fn read_source(tagged_file: &TaggedFile) -> Option<&Tag> {
     tagged_file
         .primary_tag()
         .or_else(|| tagged_file.first_tag())
+}
+
+/// Every language value `tag` holds, in order, as `read_tags` returns them.
+fn languages_in(tag: &Tag) -> Vec<String> {
+    tag.get_strings(&ItemKey::Language)
+        .map(str::to_string)
+        .collect()
 }
 
 /// Every `CommonTag` value in `tag`, added to `result`.
@@ -262,15 +280,28 @@ fn collect_common_tags(tag: &Tag, result: &mut TagMap) {
 ///   revision 5 each entry replaced the one before, so only the last
 ///   survived.)
 /// - **An unchanged value is left alone.** When the call's languages,
-///   joined with null characters, are exactly what the file already holds
-///   (`read_tags`' `Language` values joined the same way), the language
-///   field is not touched at all — not checked, not converted, not
-///   rewritten — exactly as if no `Language` entry had been given. This is
-///   what lets a caller read a file, change its title, and write every
-///   field back: a file whose `LANGUAGE` another tool set to `English`
-///   used to have that whole save refused. (The same rule MeedyaManager
-///   adopted, COMPAT-030.) An empty value given for a file that holds no
-///   language is likewise unchanged.
+///   joined with null characters, are exactly what the tag this write goes
+///   into already holds (its language values joined the same way), the
+///   language field is not touched at all — not checked, not converted,
+///   not rewritten — exactly as if no `Language` entry had been given.
+///   This is what lets a caller read a file, change its title, and write
+///   every field back: a file whose `LANGUAGE` another tool set to
+///   `English` used to have that whole save refused. (The same rule
+///   MeedyaManager adopted, COMPAT-030.) An empty value given for a file
+///   that holds no language is likewise unchanged.
+/// - **A value `read_tags` found in ANOTHER tag is copied, not refused.**
+///   `read_tags` reads the file's main tag, or failing that any tag it has,
+///   but every write goes into the main tag. So for a WAV file holding
+///   only a RIFF INFO list, or an MP3 holding only an APE tag, `read_tags`
+///   reports that other tag's language, and the main tag (ID3v2, for
+///   both) does not hold it yet. When the caller writes back exactly what
+///   `read_tags` returned, the value is written into the main tag if this
+///   crate recognises it, and skipped — neither written nor refused — if
+///   it does not: the caller did not choose it, it only carried it back.
+///   (Until the stand-in review of revision 6 the comparison was made
+///   against the tag `read_tags` read, so such a value counted as
+///   unchanged, the new main tag got no language, and `read_tags` then
+///   reported none.) The other tag keeps its language as it was.
 /// - **A changed value this crate does not recognise refuses the WHOLE
 ///   call** with [`MetadataError::UnrecognisedLanguage`], before anything
 ///   is saved, so the file is left exactly as it was — none of the other
@@ -298,11 +329,23 @@ pub fn write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<(), Metad
                 write_common_tag_to_lofty(tag, *common_tag, value)?;
             }
         }
-        if !language_entries.is_empty()
-            && language_entries.join("\0") != languages.current.join("\0")
-        {
-            languages.replacement =
-                Some(language_values_to_write(&language_entries, tag.tag_type())?);
+        if language_entries.is_empty() {
+            return Ok(());
+        }
+        let given = language_entries.join("\0");
+        if given == languages.current.join("\0") {
+            // Unchanged: the tag being written already holds it.
+            return Ok(());
+        }
+        match language_values_to_write(&language_entries, tag.tag_type()) {
+            Ok(values) => languages.replacement = Some(values),
+            // Not a value the caller chose: `read_tags` returned it from
+            // another tag of this file, and the caller only carried it
+            // back. There is nothing to refuse, and nothing that can be
+            // written, so the language is left alone (see the doc comment).
+            Err(MetadataError::UnrecognisedLanguage { .. })
+                if given == languages.as_read.join("\0") => {}
+            Err(refusal) => return Err(refusal),
         }
         Ok(())
     })
@@ -481,9 +524,15 @@ fn open_file(path: &Path) -> Result<OpenedFile, MetadataError> {
 
 /// A file's language field while a write is being prepared.
 struct LanguageField {
-    /// Every language value the file holds now, exactly as `read_tags`
-    /// returns them.
+    /// Every language value the tag being written holds now — the tag the
+    /// edit goes into, which is not always the tag `read_tags` reads (see
+    /// `as_read`). What "unchanged" is measured against.
     current: Vec<String>,
+    /// Every language value `read_tags` returns for the file: the main
+    /// tag's, or when the file has no main tag yet, another tag's (a WAV
+    /// file's RIFF INFO list, an MP3's APE tag). The same as `current`
+    /// whenever the file has a main tag, and always on MP4.
+    as_read: Vec<String>,
     /// The values to store instead, already in the form this tag stores
     /// (see `language_values_to_write`), or `None` to leave the field
     /// exactly as it is.
@@ -515,8 +564,10 @@ fn edit_and_save<T>(
         OpenedFile::Mp4(mut mp4) => {
             let mut ilst = mp4.remove_ilst().unwrap_or_default();
             let held = take_mp4_languages(&mut ilst);
+            let current = mp4_language_texts(&held);
             let mut languages = LanguageField {
-                current: mp4_language_texts(&held),
+                as_read: current.clone(),
+                current,
                 replacement: None,
             };
             let (remainder, mut tag) = ilst.split_tag();
@@ -538,12 +589,8 @@ fn edit_and_save<T>(
             Ok(out)
         }
         OpenedFile::Other(mut tagged_file) => {
-            let current = read_source(&tagged_file)
-                .map(|tag| {
-                    tag.get_strings(&ItemKey::Language)
-                        .map(str::to_string)
-                        .collect()
-                })
+            let as_read = read_source(&tagged_file)
+                .map(languages_in)
                 .unwrap_or_default();
 
             // #79 — an untagged file has no `primary_tag()`, and the old
@@ -563,6 +610,14 @@ fn edit_and_save<T>(
                 .map(Tag::tag_type)
                 .unwrap_or_else(|| tagged_file.primary_tag_type());
 
+            // The languages of the tag the edit goes INTO — none when the
+            // file does not have that tag yet, whatever another tag holds
+            // (see `write_tags`, and the top of this file).
+            let current = tagged_file
+                .tag(tag_type)
+                .map(languages_in)
+                .unwrap_or_default();
+
             // Ensure the tag exists before borrowing mutably
             if tagged_file.tag(tag_type).is_none() {
                 tagged_file.insert_tag(Tag::new(tag_type));
@@ -580,6 +635,7 @@ fn edit_and_save<T>(
 
             let mut languages = LanguageField {
                 current,
+                as_read,
                 replacement: None,
             };
             let out = edit(tag, &mut languages)?;
@@ -951,8 +1007,10 @@ fn write_common_tag_to_lofty(
 /// ID3v2. Special values are recognised and written normally: `und`
 /// (not known), `mul`, `zxx`, `mis`, the local-use range `qaa`–`qtz`,
 /// private-use tags (`x-…`) and grandfathered tags. (`write_tags` refuses
-/// only a CHANGED value: one identical to what the file already holds is
-/// left alone before it ever gets here — see its doc comment.)
+/// only a CHANGED value: one identical to what the tag being written
+/// already holds is left alone before it ever gets here, and one that
+/// `read_tags` found in another tag of the file is skipped instead of
+/// refused — see its doc comment.)
 fn write_language(tag: &mut Tag, value: &str) -> Result<(), MetadataError> {
     let values = language_values_to_write(&[value], tag.tag_type())?;
     put_languages(tag, values);
@@ -2563,5 +2621,148 @@ mod tests {
             read_tags(&path).expect("read").get(&CommonTag::Language),
             None
         );
+    }
+
+    // ------------------------------------------------------------------
+    // A language `read_tags` found in ANOTHER tag (stand-in review of
+    // revision 6). A WAV file holding only a RIFF INFO list, or an MP3
+    // holding only an APE tag, has no main (ID3v2) tag; `read_tags` reports
+    // the other tag's language, but a write goes into a new ID3v2 tag.
+    // Writing the same language back used to count as "unchanged", so the
+    // new tag got none and `read_tags` then reported none. Reproduced on the
+    // reviewer's real files (`ffmpeg -metadata language=eng` for the WAV)
+    // before the fix.
+    // ------------------------------------------------------------------
+
+    /// A WAV file whose only tag is a RIFF INFO list naming `language`
+    /// (the `ILNG` field ffmpeg writes for `-metadata language=…`).
+    fn riff_info_only_wav(dir: &Path, language: &str) -> std::path::PathBuf {
+        let path = dir.join("riff.wav");
+        std::fs::write(&path, minimal_untagged_wav()).expect("write fixture");
+        let mut tag = Tag::new(TagType::RiffInfo);
+        tag.set_title("Orig".into());
+        tag.insert(TagItem::new(
+            ItemKey::Language,
+            ItemValue::Text(language.into()),
+        ));
+        tag.save_to_path(&path, WriteOptions::default())
+            .expect("save");
+        path
+    }
+
+    /// An MP3 file whose only tag is an APE tag naming `language`.
+    fn ape_only_mp3(dir: &Path, language: &str) -> std::path::PathBuf {
+        let path = dir.join("ape.mp3");
+        std::fs::write(&path, minimal_untagged_mp3()).expect("write fixture");
+        let mut tag = Tag::new(TagType::Ape);
+        tag.set_title("Orig".into());
+        tag.insert(TagItem::new(
+            ItemKey::Language,
+            ItemValue::Text(language.into()),
+        ));
+        tag.save_to_path(&path, WriteOptions::default())
+            .expect("save");
+        path
+    }
+
+    /// The language values of the file's tag of type `tag_type`, read
+    /// with lofty directly.
+    fn languages_of(path: &Path, tag_type: TagType) -> Vec<String> {
+        let tagged_file = Probe::open(path).expect("open").read().expect("read");
+        tagged_file
+            .tag(tag_type)
+            .map(languages_in)
+            .unwrap_or_default()
+    }
+
+    /// Read, change the title, write every field back — the round trip a
+    /// tag editor makes.
+    fn change_title_and_write_back(path: &Path) -> Result<(), MetadataError> {
+        let read_back = read_tags(path).expect("read");
+        let language = read_back
+            .get(&CommonTag::Language)
+            .expect("a language to carry back")
+            .join("\0");
+        write_tags(
+            path,
+            &[
+                (CommonTag::Title, "New Title".into()),
+                (CommonTag::Language, language),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_language_read_from_another_tag_is_written_into_the_main_tag() {
+        type Build = fn(&Path, &str) -> std::path::PathBuf;
+        let files: [(&str, Build, TagType); 2] = [
+            ("RIFF-INFO-only WAV", riff_info_only_wav, TagType::RiffInfo),
+            ("APE-only MP3", ape_only_mp3, TagType::Ape),
+        ];
+        for (name, build, other_tag) in files {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = build(dir.path(), "eng");
+            assert_eq!(
+                read_tags(&path).expect("read")[&CommonTag::Language],
+                ["eng"],
+                "{name}: read from the only tag there is"
+            );
+
+            change_title_and_write_back(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+
+            let after = read_tags(&path).expect("read");
+            assert_eq!(after[&CommonTag::Title], ["New Title"], "{name}");
+            assert_eq!(
+                after.get(&CommonTag::Language).map(Vec::as_slice),
+                Some(["eng".to_string()].as_slice()),
+                "{name}: the language must still be reported"
+            );
+            // Written into the new ID3v2 tag, as one TLAN frame…
+            assert_eq!(languages_of(&path, TagType::Id3v2), ["eng"], "{name}");
+            assert_eq!(
+                occurrences(&std::fs::read(&path).expect("read"), b"TLAN"),
+                1,
+                "{name}"
+            );
+            // …and the other tag keeps its own.
+            assert_eq!(languages_of(&path, other_tag), ["eng"], "{name}");
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_language_read_from_another_tag_is_skipped_not_refused() {
+        // `English` (a language name) in the RIFF INFO list: carrying it
+        // back is not the caller choosing it, so the write goes ahead; it
+        // cannot be written into the ID3v2 tag, so it is not.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = riff_info_only_wav(dir.path(), "English");
+        change_title_and_write_back(&path).expect("not refused");
+        assert_eq!(
+            read_tags(&path).expect("read")[&CommonTag::Title],
+            ["New Title"]
+        );
+        assert!(languages_of(&path, TagType::Id3v2).is_empty());
+        assert_eq!(
+            occurrences(&std::fs::read(&path).expect("read"), b"TLAN"),
+            0
+        );
+        assert_eq!(languages_of(&path, TagType::RiffInfo), ["English"]);
+
+        // A CHANGED unrecognised value is still refused, file untouched.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = riff_info_only_wav(dir.path(), "English");
+        let before = std::fs::read(&path).expect("read");
+        let result = write_tags(
+            &path,
+            &[
+                (CommonTag::Title, "New Title".into()),
+                (CommonTag::Language, "Englisch".into()),
+            ],
+        );
+        assert!(
+            matches!(result, Err(MetadataError::UnrecognisedLanguage { .. })),
+            "{result:?}"
+        );
+        assert_eq!(std::fs::read(&path).expect("read"), before);
     }
 }
