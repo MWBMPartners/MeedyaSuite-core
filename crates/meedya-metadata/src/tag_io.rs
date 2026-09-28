@@ -75,7 +75,7 @@ use std::path::Path;
 
 use lofty::config::{ParseOptions, WriteOptions};
 use lofty::file::{FileType, TaggedFile};
-use lofty::mp4::{Atom, AtomData, AtomIdent, Ilst, Mp4File};
+use lofty::mp4::{Atom, AtomData, AtomIdent, DataType, Ilst, Mp4File};
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem, TagType};
@@ -436,6 +436,20 @@ pub fn write_acoustid_tags(
 /// the converted values to the file's freeform atoms.
 ///
 /// Returns the number of tags successfully written.
+///
+/// **On an M4A file this refuses, rather than reporting a tag "written"
+/// that is not** (issue #103, interim guard). Each atom is written under
+/// the key `namespace:name` (`MeedyaMeta:ISRC`), but an MP4 freeform atom
+/// needs the form `----:mean:name`, and lofty silently leaves out any key
+/// not in that form when it saves an M4A file — so the call used to return
+/// `Ok(1)` for a file that gained nothing (Codex's review of revisions 5–7,
+/// and the stand-in review of revision 6; measured on a real M4A). Now, when
+/// a key that would be written cannot be stored as a proper freeform atom,
+/// the whole call fails with [`MetadataError::WriteError`], naming the key,
+/// and nothing is saved. With the keys this function builds today, that is
+/// every registry write to an M4A file that has a value to write; storing
+/// them properly is the real fix, still open in #103. Other formats are
+/// unchanged.
 pub fn write_registry_tags(
     path: &Path,
     registry: &TagRegistry,
@@ -466,7 +480,21 @@ pub fn write_registry_tags(
 
             for atom in &def.atoms {
                 // Write as a custom/freeform item with the full namespace
-                let key = ItemKey::Unknown(format!("{}:{}", atom.namespace, atom.name));
+                let key_text = format!("{}:{}", atom.namespace, atom.name);
+                if tag.tag_type() == TagType::Mp4Ilst && !is_mp4_freeform_key(&key_text) {
+                    // #103 (interim guard): lofty would leave this key out
+                    // of the saved file without a word. Refusing here
+                    // returns before `edit_and_save` saves anything.
+                    return Err(MetadataError::WriteError(format!(
+                        "cannot write the registry tag {:?} to this M4A file: its key {key_text:?} \
+                         is not in the form an MP4 freeform atom needs (----:mean:name), so \
+                         saving would silently leave it out. Nothing was written. (Issue #103: \
+                         until registry keys are stored as proper freeform atoms, such a write \
+                         is refused rather than reported as written.)",
+                        def.id
+                    )));
+                }
+                let key = ItemKey::Unknown(key_text);
                 // #65 — insert_unchecked: lofty's insert() rejects ItemKey::Unknown (re_map allow_unknown=false), silently dropping freeform atoms; insert_unchecked is lofty's documented API for Unknown keys.
                 tag.insert_unchecked(TagItem::new(key, ItemValue::Text(string_val.clone())));
             }
@@ -475,6 +503,22 @@ pub fn write_registry_tags(
 
         Ok(count)
     })
+}
+
+/// Whether lofty stores an item with the key `key_text` in an M4A file as
+/// a proper MP4 freeform atom — `----:mean:name`, with the name kept whole —
+/// when it saves the file (lofty 0.22.4, `mp4/atom_info.rs`: a key is
+/// turned into an atom only when it starts with `----` and splits at its
+/// colons into a mean and a name, or when it is exactly four characters,
+/// which makes an ordinary four-letter atom instead; any other key is left
+/// out of the saved file). The key must also come back exactly, so a name
+/// holding a colon, which that split would cut short, does not count.
+fn is_mp4_freeform_key(key_text: &str) -> bool {
+    let key = ItemKey::Unknown(key_text.to_string());
+    match AtomIdent::try_from(&key) {
+        Ok(AtomIdent::Freeform { mean, name }) => format!("----:{mean}:{name}") == key_text,
+        _ => false,
+    }
 }
 
 // ------------------------------------------------------------
@@ -685,6 +729,15 @@ fn edit_and_save<T>(
         OpenedFile::Mp4(mut mp4) => {
             let mut ilst = mp4.remove_ilst().unwrap_or_default();
             let held = take_mp4_languages(&mut ilst);
+            // #102 (interim guard): refuse, before anything is changed or
+            // saved, a file the route below would lose part of.
+            if let Some(loss) = what_an_mp4_save_would_lose(&ilst) {
+                return Err(MetadataError::WriteError(format!(
+                    "this M4A file cannot be saved through this library without losing \
+                     metadata: {loss}. Nothing was written. (Issue #102: until the M4A save \
+                     route keeps every value, a write that would lose one is refused.)"
+                )));
+            }
             let current = mp4_language_texts(&held);
             let mut languages = LanguageField {
                 as_read: current.clone(),
@@ -773,6 +826,110 @@ fn edit_and_save<T>(
             tagged_file.save_to_path(path, WriteOptions::default())?;
             Ok(out)
         }
+    }
+}
+
+/// What saving `ilst` would lose, in plain words — or `None` when it would
+/// lose nothing. The interim guard for issue #102, run by `edit_and_save`
+/// on every M4A write before anything is changed.
+///
+/// Every M4A write here (the language atom apart, which is taken out
+/// first and handled whole) goes through lofty's format-neutral `Tag`:
+/// `split_tag` takes every atom whose first value is text, a picture, a
+/// flag, or a track or disc number into the `Tag`, and `merge_tag` writes
+/// them back. That route keeps only the FIRST value of each such atom
+/// (lofty 0.22.4, `mp4/ilst/mod.rs`, `split_tag`), and it rebuilds a
+/// freeform atom's name by splitting `----:mean:name` at every colon. So a
+/// write — even a title-only one — used to:
+///
+/// - keep only the first image of a `covr` atom holding several (Codex's
+///   review of revisions 5–7, and the stand-in review of revision 6);
+/// - keep only the first value of a text atom holding several — two
+///   artists in `©ART`, or in `----:com.apple.iTunes:ARTISTS`;
+/// - keep only the first value of an advisory-rating (`rtng`) atom, or of
+///   several `rtng` atoms;
+/// - cut a freeform atom's name short at a colon —
+///   `----:com.apple.iTunes:Meedya:Mood` came back as
+///   `----:com.apple.iTunes:Meedya` (found while building this guard, on a
+///   real file written by mutagen).
+///
+/// All four were measured on real M4A files written by mutagen, before the
+/// guard. Each now refuses the write. What this does NOT cover: the route
+/// also rewrites some atoms at a different size (`tmpo`, `rtng`) and in a
+/// different order — the values are kept, so those are left to #102
+/// itself. Refusing is the interim step; keeping every value is the real
+/// fix, still open in #102.
+fn what_an_mp4_save_would_lose(ilst: &Ilst) -> Option<String> {
+    for atom in ilst {
+        let mut data = atom.data();
+        let Some(first) = data.next() else {
+            continue;
+        };
+        let values = 1 + data.count();
+        // Exactly the atoms `split_tag` takes into the format-neutral tag.
+        let taken = match first {
+            AtomData::UTF8(_) | AtomData::UTF16(_) | AtomData::Picture(_) | AtomData::Bool(_) => {
+                true
+            }
+            AtomData::Unknown {
+                code: DataType::Reserved,
+                data,
+            } => {
+                let numbers = [AtomIdent::Fourcc(*b"trkn"), AtomIdent::Fourcc(*b"disk")];
+                data.len() >= 6 && numbers.contains(atom.ident())
+            }
+            _ => false,
+        };
+        if !taken {
+            continue;
+        }
+        let name = atom_name(atom.ident());
+        if values > 1 {
+            return Some(if matches!(first, AtomData::Picture(_)) {
+                format!(
+                    "its cover art ({name}) holds {values} images, and saving would keep only \
+                     the first"
+                )
+            } else {
+                format!(
+                    "its {name} atom holds {values} values, and saving would keep only the first"
+                )
+            });
+        }
+        if let AtomIdent::Freeform { mean, name: short } = atom.ident() {
+            if mean.contains(':') || short.contains(':') {
+                return Some(format!(
+                    "its {name} atom has a colon inside its name, and saving would cut the name \
+                     short at that colon"
+                ));
+            }
+        }
+    }
+    // The advisory rating is taken out separately: the first readable value
+    // of the first `rtng` atom is kept, and every `rtng` atom removed.
+    let rating = AtomIdent::Fourcc(*b"rtng");
+    if ilst.advisory_rating().is_some() {
+        let values: usize = ilst
+            .into_iter()
+            .filter(|atom| atom.ident() == &rating)
+            .map(|atom| atom.data().count())
+            .sum();
+        if values > 1 {
+            return Some(format!(
+                "its advisory rating (rtng) holds {values} values, and saving would keep only \
+                 one"
+            ));
+        }
+    }
+    None
+}
+
+/// An MP4 atom's name as a person reads it: `©ART`, or
+/// `----:com.apple.iTunes:ARTISTS` for a freeform atom.
+fn atom_name(ident: &AtomIdent<'_>) -> String {
+    match ident {
+        AtomIdent::Fourcc(fourcc) => fourcc.iter().map(|byte| char::from(*byte)).collect(),
+        AtomIdent::Freeform { mean, name } => format!("----:{mean}:{name}"),
     }
 }
 
@@ -2430,7 +2587,28 @@ mod tests {
 
     #[test]
     fn mp4_languages_survive_every_later_write() {
-        for (write_name, unrelated_write) in unrelated_writes() {
+        // The registry write in `unrelated_writes` uses a `MeedyaMeta:`
+        // key, which an M4A file cannot store and which is therefore
+        // refused there (#103); an M4A file gets a registry write with a
+        // proper freeform key instead.
+        fn freeform_registry(path: &Path) {
+            let written = write_registry_tags(
+                path,
+                &freeform_registry_of_mood(),
+                &serde_json::json!({ "mood": "calm" }),
+                TagScope::Track,
+            )
+            .expect("registry write");
+            assert_eq!(written, 1);
+        }
+        let writes = unrelated_writes().map(|(name, write)| {
+            if name == "write_registry_tags" {
+                (name, freeform_registry as FileWrite)
+            } else {
+                (name, write)
+            }
+        });
+        for (write_name, unrelated_write) in writes {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("f.m4a");
             std::fs::write(&path, minimal_untagged_m4a()).expect("write fixture");
@@ -2442,6 +2620,196 @@ mod tests {
                 "after {write_name}"
             );
         }
+    }
+
+    /// A registry of one track tag, `Mood`, written under a key an M4A
+    /// file can store as a freeform atom: `----:com.apple.iTunes:Mood`.
+    fn freeform_registry_of_mood() -> TagRegistry {
+        TagRegistry::from_toml(
+            "[track.Mood]\njson_path = \"mood\"\nvalue_type = \"string\"\n\
+             atoms = [{ namespace = \"----:com.apple.iTunes\", name = \"Mood\" }]\n",
+        )
+        .expect("registry")
+    }
+
+    // ------------------------------------------------------------------
+    // #102 and #103, the interim guards (Codex's review of revisions 5–7):
+    // an M4A write that would lose a value, or report a registry tag
+    // written that is not, refuses instead, and saves nothing.
+    // ------------------------------------------------------------------
+
+    /// An M4A file holding `atoms` (saved through lofty's own `Ilst`, the
+    /// shape mutagen writes), in `dir`.
+    fn m4a_with_atoms(dir: &Path, atoms: Vec<Atom<'static>>) -> std::path::PathBuf {
+        let path = dir.join("f.m4a");
+        std::fs::write(&path, minimal_untagged_m4a()).expect("write fixture");
+        let mut ilst = Ilst::new();
+        for atom in atoms {
+            ilst.insert(atom);
+        }
+        ilst.save_to_path(&path, WriteOptions::default())
+            .expect("save");
+        path
+    }
+
+    /// A tiny PNG-looking picture, `tail` telling two apart.
+    fn picture(tail: u8) -> AtomData {
+        let mut data = b"\x89PNG\r\n\x1a\n".to_vec();
+        data.push(tail);
+        AtomData::Picture(lofty::picture::Picture::new_unchecked(
+            lofty::picture::PictureType::CoverFront,
+            Some(lofty::picture::MimeType::Png),
+            None,
+            data,
+        ))
+    }
+
+    fn freeform(name: &str) -> AtomIdent<'static> {
+        AtomIdent::Freeform {
+            mean: Cow::Borrowed("com.apple.iTunes"),
+            name: Cow::Owned(name.to_string()),
+        }
+    }
+
+    fn text(value: &str) -> AtomData {
+        AtomData::UTF8(value.to_string())
+    }
+
+    #[test]
+    fn an_m4a_write_that_would_drop_a_value_is_refused_and_saves_nothing() {
+        // Each measured on a real M4A file (written by mutagen) before
+        // the guard: a title-only write kept the first image, the first
+        // artist, and cut `Meedya:Mood` to `Meedya`.
+        let artist = AtomIdent::Fourcc(*b"\xa9ART");
+        let cases: [(&str, Atom<'static>, &str); 5] = [
+            (
+                "two cover images",
+                Atom::from_collection(AtomIdent::Fourcc(*b"covr"), vec![picture(1), picture(2)])
+                    .expect("two"),
+                "cover art (covr) holds 2 images",
+            ),
+            (
+                "two artists in \u{a9}ART",
+                Atom::from_collection(artist, vec![text("Alice"), text("Bob")]).expect("two"),
+                "\u{a9}ART atom holds 2 values",
+            ),
+            (
+                "two artists in a freeform ARTISTS atom",
+                Atom::from_collection(freeform("ARTISTS"), vec![text("Alice"), text("Bob")])
+                    .expect("two"),
+                "----:com.apple.iTunes:ARTISTS atom holds 2 values",
+            ),
+            (
+                "a colon inside a freeform name",
+                Atom::new(freeform("Meedya:Mood"), text("calm")),
+                "has a colon inside its name",
+            ),
+            (
+                "two advisory ratings",
+                Atom::from_collection(
+                    AtomIdent::Fourcc(*b"rtng"),
+                    vec![AtomData::SignedInteger(1), AtomData::SignedInteger(2)],
+                )
+                .expect("two"),
+                "advisory rating (rtng) holds 2 values",
+            ),
+        ];
+        for (what, atom, expected) in cases {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = m4a_with_atoms(dir.path(), vec![atom]);
+            let before = std::fs::read(&path).expect("read");
+            let message = match write_tags(&path, &[(CommonTag::Title, "T".into())]) {
+                Err(MetadataError::WriteError(message)) => message,
+                other => panic!("{what}: expected a refusal, got {other:?}"),
+            };
+            assert!(message.contains(expected), "{what}: {message}");
+            assert!(message.contains("#102"), "{what}: {message}");
+            assert!(message.contains("Nothing was written"), "{what}: {message}");
+            assert_eq!(std::fs::read(&path).expect("read"), before, "{what}");
+        }
+    }
+
+    #[test]
+    fn an_m4a_whose_atoms_hold_one_value_each_is_written_as_before() {
+        // The guard refuses only what would be lost: one image, one
+        // artist and a colon-free freeform name are written as before.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = m4a_with_atoms(
+            dir.path(),
+            vec![
+                Atom::new(AtomIdent::Fourcc(*b"covr"), picture(1)),
+                Atom::new(AtomIdent::Fourcc(*b"\xa9ART"), text("Alice")),
+                Atom::new(freeform("MOOD"), text("calm")),
+            ],
+        );
+        write_tags(&path, &[(CommonTag::Title, "Changed Title".into())]).expect("title");
+        let after = read_tags(&path).expect("read");
+        assert_eq!(after[&CommonTag::Title], ["Changed Title"]);
+        assert_eq!(after[&CommonTag::Artist], ["Alice"]);
+        let mut file = std::fs::File::open(&path).expect("open");
+        let mp4 = Mp4File::read_from(&mut file, ParseOptions::default()).expect("mp4");
+        let ilst = mp4.ilst().expect("an ilst");
+        assert_eq!(
+            ilst.get(&AtomIdent::Fourcc(*b"covr"))
+                .map(|a| a.data().count()),
+            Some(1)
+        );
+        assert!(ilst.get(&freeform("MOOD")).is_some());
+    }
+
+    #[test]
+    fn a_registry_tag_an_m4a_cannot_store_is_refused_not_reported_written() {
+        // #103: `MeedyaMeta:ISRC` is not an MP4 freeform key
+        // (`----:mean:name`), and lofty used to leave it out of the saved
+        // file while the call returned `Ok(1)`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.m4a");
+        std::fs::write(&path, minimal_untagged_m4a()).expect("write fixture");
+        let before = std::fs::read(&path).expect("read");
+        let registry = TagRegistry::from_toml(
+            "[track.ISRC]\njson_path = \"isrc\"\nvalue_type = \"string\"\n\
+             atoms = [{ namespace = \"meedya\", name = \"ISRC\" }]\n",
+        )
+        .expect("registry");
+        let json = serde_json::json!({ "isrc": "GBAAA0000001" });
+        let message = match write_registry_tags(&path, &registry, &json, TagScope::Track) {
+            Err(MetadataError::WriteError(message)) => message,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(message.contains("\"MeedyaMeta:ISRC\""), "{message}");
+        assert!(message.contains("#103"), "{message}");
+        assert!(message.contains("Nothing was written"), "{message}");
+        assert_eq!(std::fs::read(&path).expect("read"), before);
+
+        // A key in the freeform form is stored, and reported written.
+        let written = write_registry_tags(
+            &path,
+            &freeform_registry_of_mood(),
+            &serde_json::json!({ "mood": "calm" }),
+            TagScope::Track,
+        )
+        .expect("a proper freeform key");
+        assert_eq!(written, 1);
+        let mut file = std::fs::File::open(&path).expect("open");
+        let mp4 = Mp4File::read_from(&mut file, ParseOptions::default()).expect("mp4");
+        let stored = mp4.ilst().and_then(|ilst| ilst.get(&freeform("Mood")));
+        assert_eq!(
+            stored.and_then(|atom| atom.data().next()),
+            Some(&AtomData::UTF8("calm".into()))
+        );
+    }
+
+    #[test]
+    fn which_registry_keys_an_m4a_can_store() {
+        assert!(is_mp4_freeform_key("----:com.apple.iTunes:ISRC"));
+        assert!(is_mp4_freeform_key("----:MeedyaMeta:AppleRecordLabel"));
+        // The form registry keys have today: no `----` in front.
+        assert!(!is_mp4_freeform_key("MeedyaMeta:ISRC"));
+        assert!(!is_mp4_freeform_key("com.apple.iTunes:AlbumArtistSort"));
+        // Four characters make an ordinary atom, not a freeform one.
+        assert!(!is_mp4_freeform_key("a:bc"));
+        // A colon inside the name would be cut off.
+        assert!(!is_mp4_freeform_key("----:com.apple.iTunes:Meedya:ISRC"));
     }
 
     #[test]
