@@ -74,7 +74,7 @@ pub mod lyricsfile_ttml_classify;
 pub mod provider;
 pub mod sidecar;
 
-pub use embed::{embed, embed_synced, DEFAULT_LANGUAGE};
+pub use embed::{embed, embed_synced, id3_language, DEFAULT_LANGUAGE};
 pub use error::{Error, Result};
 pub use lyrics::{Lyrics, SyncedLine};
 pub use lyricsfile::{

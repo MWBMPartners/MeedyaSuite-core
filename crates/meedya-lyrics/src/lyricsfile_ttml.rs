@@ -365,8 +365,20 @@ impl Lyricsfile {
             buf.clear();
         }
 
-        if document_language.is_some() {
-            lf.metadata.language = document_language;
+        if let Some(raw) = document_language {
+            // LANG-002: a raw `xml:lang`/`lang` attribute value might be a
+            // full BCP 47 tag already, or an old three-letter code some
+            // TTML producers still write. Read it through the shared
+            // reader rather than storing whatever text was found as-is.
+            // A value the reader recognises is stored in canonical form
+            // (`EN-gb` -> `en-GB`, `eng` -> `en`); a value it does not
+            // recognise is kept exactly as found — never replaced with
+            // `und` or a guess (LANG-026, COMPAT-040) — so nothing the
+            // document said is lost.
+            lf.metadata.language = Some(match meedya_lang::from_legacy_three_letter(&raw) {
+                Some(tag) => tag.tag,
+                None => raw,
+            });
         }
         if lyric_offset_ms.is_some() {
             lf.metadata.offset_ms = lyric_offset_ms;
@@ -747,6 +759,56 @@ mod tests {
         </div></body></tt>"#;
         let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
         assert_eq!(lf.metadata.language, Some("ja".into()));
+    }
+
+    // ------------------------------------------------------------
+    // `xml:lang` read through the LANG-002 reader (policy
+    // MWBM-MEDIA-LANG). Three cases: recognised (canonicalised),
+    // unrecognised/malformed (kept exactly as found), and absent (stays
+    // absent).
+    // ------------------------------------------------------------
+
+    #[test]
+    fn xml_lang_recognised_value_is_stored_in_canonical_form() {
+        // `EN-gb` is recognised (it is a well-formed BCP 47 tag, just not
+        // in canonical case) and must be stored canonicalised.
+        let ttml = r#"<tt xml:lang="EN-gb"><body><div>
+            <p begin="00:00:01.000">hi</p>
+        </div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        assert_eq!(lf.metadata.language, Some("en-GB".into()));
+    }
+
+    #[test]
+    fn xml_lang_old_three_letter_code_is_stored_in_canonical_form() {
+        // `eng` is an old ISO 639-2 code (LANG-002); the canonical BCP 47
+        // form is the two-letter `en`.
+        let ttml = r#"<tt xml:lang="eng"><body><div>
+            <p begin="00:00:01.000">hi</p>
+        </div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        assert_eq!(lf.metadata.language, Some("en".into()));
+    }
+
+    #[test]
+    fn xml_lang_unrecognised_value_is_kept_exactly_as_found() {
+        // Not a BCP 47 tag, not an old three-letter code, not a locale
+        // name — LANG-026 / COMPAT-040 say to keep the original text
+        // rather than replace it with `und` or a guess.
+        let ttml = r#"<tt xml:lang="not a real language"><body><div>
+            <p begin="00:00:01.000">hi</p>
+        </div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        assert_eq!(lf.metadata.language, Some("not a real language".into()));
+    }
+
+    #[test]
+    fn xml_lang_absent_stays_absent() {
+        let ttml = r#"<tt><body><div>
+            <p begin="00:00:01.000">hi</p>
+        </div></body></tt>"#;
+        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
+        assert_eq!(lf.metadata.language, None);
     }
 
     // ------------------------------------------------------------

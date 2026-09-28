@@ -108,7 +108,14 @@ pub struct LyricsfileMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset_ms: Option<i64>,
 
-    /// ISO-639 language code (e.g., `"en"`, `"ja"`, `"zh-Hans"`).
+    /// BCP 47 language tag in canonical form (e.g., `"en"`, `"ja"`,
+    /// `"zh-Hans"`) — see policy MWBM-MEDIA-LANG
+    /// (`docs/standards/media-language-bcp47-policy.md`). `zh-Hans` is a
+    /// BCP 47 tag (a language plus a script subtag), not an ISO 639 code
+    /// on its own — ISO 639 only ever supplies the first part of a tag.
+    /// A value read from `xml:lang` that this reader could not turn into
+    /// a canonical tag is kept exactly as found (LANG-026, COMPAT-040)
+    /// rather than replaced with `und` or a guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 

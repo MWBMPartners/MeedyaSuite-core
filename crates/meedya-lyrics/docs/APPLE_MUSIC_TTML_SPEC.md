@@ -233,7 +233,7 @@ providers (lyric-provider portals submitting to Apple):
 | `xmlns:itunes` | URI | yes | `http://music.apple.com/lyric-ttml-internal` | Apple namespace |
 | `xmlns:ttm` | URI | usually | `http://www.w3.org/ns/ttml#metadata` | TTML metadata namespace |
 | `itunes:timing` | enum | usually | `Word`, `None` | See section 5 |
-| `xml:lang` | ISO 639 code | usually | `en`, `ja`, `zh-Hans` | Document language hint |
+| `xml:lang` | BCP 47 tag | usually | `en`, `ja`, `zh-Hans` | Document language hint |
 
 ### `itunes:timing` values
 

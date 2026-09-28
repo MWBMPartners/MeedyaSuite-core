@@ -19,7 +19,10 @@
 //! let _plain = meedya_lyrics::embed(&path, &lyrics)?;
 //! if lyrics.synced.is_some() {
 //!     // Only succeeds on ID3v2 containers; otherwise ignore the error.
-//!     let _ = meedya_lyrics::embed_synced(&path, &lyrics, b"eng".to_owned());
+//!     // Use `id3_language` if you know the lyrics' language; otherwise
+//!     // `DEFAULT_LANGUAGE` says, honestly, that it is not known.
+//!     let lang = meedya_lyrics::embed::id3_language("en-GB");
+//!     let _ = meedya_lyrics::embed_synced(&path, &lyrics, lang);
 //! }
 //! ```
 
@@ -39,9 +42,61 @@ use meedya_metadata::{tag_io, CommonTag};
 
 use crate::{Error, Lyrics, Result};
 
-/// ISO-639-2 language code, three lowercase ASCII letters. Used for SYLT
-/// frame headers when the source lyrics don't carry a language tag.
-pub const DEFAULT_LANGUAGE: [u8; 3] = *b"eng";
+/// The ID3v2 SYLT frame header's three-letter language field, for a
+/// caller with no known language for the lyrics it is embedding.
+///
+/// **This constant's value changed.** It used to be `*b"eng"` — silently
+/// claiming the lyrics were in English whenever the caller had not
+/// bothered to say otherwise. Policy MWBM-MEDIA-LANG's LANG-003 forbids
+/// that: an unknown language MUST be written as `und`, or the format's own
+/// "unknown" marker where one exists, and MUST NOT be filled in with a
+/// guess. ID3 defines exactly that marker — `XXX` — so this constant is
+/// now `*b"XXX"` (TRACK-070 explicitly allows ID3 to use it). The name is
+/// unchanged so existing callers still compile; only its meaning changed,
+/// from "assume English" to "say, honestly, that the language is not
+/// known."
+///
+/// A caller that DOES know the language should not reach for this
+/// constant at all — see [`id3_language`], which turns any BCP 47 tag or
+/// old three-letter code into the right three bytes for this same frame
+/// field, falling back to this same `XXX` marker only when the value it
+/// was given does not resolve to a real language.
+pub const DEFAULT_LANGUAGE: [u8; 3] = *b"XXX";
+
+/// Turns a language value — a BCP 47 tag (`en-GB`), an old three-letter
+/// code (`eng`, `fre`), or ID3's own `XXX` "not known" marker — into the
+/// three-letter ISO 639-2 **terminology** form the ID3v2 SYLT frame's
+/// language field wants (policy MWBM-MEDIA-LANG, TRACK-070's ID3 row).
+///
+/// `value` is read with the LANG-002 reader
+/// ([`meedya_lang::from_legacy_three_letter`]), which also accepts a
+/// value that is already a full BCP 47 tag, so passing `"en-GB"`,
+/// `"eng"`, or `"XXX"` all work. When the reader cannot make sense of
+/// `value` at all (empty, malformed, a language with no ISO 639-2 code),
+/// or the recognised language has no ISO 639-2 code of its own, this
+/// returns [`DEFAULT_LANGUAGE`] (`XXX`) — never a guess (LANG-003).
+///
+/// Use this instead of hand-building the three bytes [`embed_synced`]
+/// wants: it is the one place in this crate that turns "whatever language
+/// value the caller happens to have" into "the exact bytes ID3 needs",
+/// so every caller agrees on how an unknown or unusual language is
+/// represented.
+pub fn id3_language(value: &str) -> [u8; 3] {
+    let Some(tag) = meedya_lang::from_legacy_three_letter(value) else {
+        return DEFAULT_LANGUAGE;
+    };
+    let code = meedya_lang::iso639_2_code(&tag, meedya_lang::Iso639Form::Terminology);
+    if code == "und" {
+        return DEFAULT_LANGUAGE;
+    }
+    // `iso639_2_code` always returns exactly three ASCII letters for a
+    // recognised language (either a genuine ISO 639-2 code or an echoed
+    // `qaa`-`qtz` local-use code — see that function's doc comment), so
+    // this conversion cannot fail in practice. House style forbids
+    // unwrap/expect regardless: fall back to the same "not known" marker
+    // rather than assume the invariant holds forever.
+    code.into_bytes().try_into().unwrap_or(DEFAULT_LANGUAGE)
+}
 
 /// Embed the plain-text representation of `lyrics` into `media`'s tags.
 ///
@@ -58,9 +113,13 @@ pub fn embed(media: &Path, lyrics: &Lyrics) -> Result<bool> {
 
 /// Embed synchronised lyrics (ID3v2 SYLT frame) into `media`.
 ///
-/// `lang` is the ISO-639-2 three-letter language code; pass [`DEFAULT_LANGUAGE`]
-/// (`b"eng"`) if unknown. Encoding is UTF-16 with BOM for cross-player
-/// compatibility with non-ASCII text.
+/// `lang` is the ISO-639-2 three-letter language code the SYLT frame
+/// header wants. Build it with [`id3_language`] from whatever language
+/// value you actually have (a BCP 47 tag or an old three-letter code);
+/// pass [`DEFAULT_LANGUAGE`] (`b"XXX"`, ID3's own "language not known"
+/// marker) only when the language genuinely is not known — never a
+/// guessed language (policy MWBM-MEDIA-LANG, LANG-003). Encoding is
+/// UTF-16 with BOM for cross-player compatibility with non-ASCII text.
 ///
 /// Errors if the file is not an ID3v2 container or if `lyrics.synced` is
 /// `None` / empty. Replaces any existing SYLT frame.
@@ -347,6 +406,100 @@ mod tests {
         };
         let err = embed_synced(Path::new("/nonexistent/file.mp3"), &lyrics, *b"1ng").unwrap_err();
         assert!(matches!(err, Error::InvalidLanguageCode));
+    }
+
+    #[test]
+    fn embed_synced_accepts_default_language_xxx() {
+        // DEFAULT_LANGUAGE is now `XXX` (ID3's "language not known"
+        // marker, LANG-003 / TRACK-070) rather than the old `eng` guess.
+        // It must pass the same three-ASCII-letters validation any other
+        // language code does. Using a nonexistent file so the failure
+        // comes from the later file-read step, not language validation —
+        // proving `XXX` cleared that check.
+        let lyrics = Lyrics {
+            plain: None,
+            synced: Some(vec![SyncedLine {
+                at: Duration::from_millis(0),
+                text: "hi".into(),
+            }]),
+        };
+        let err = embed_synced(
+            Path::new("/nonexistent/file.mp3"),
+            &lyrics,
+            DEFAULT_LANGUAGE,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::Metadata(_)),
+            "expected the file-read error, got {err:?} — DEFAULT_LANGUAGE (XXX) should have \
+             passed language validation"
+        );
+    }
+
+    // ------------------------------------------------------------
+    // id3_language (policy MWBM-MEDIA-LANG, TRACK-070's ID3 row)
+    // ------------------------------------------------------------
+
+    #[test]
+    fn id3_language_recognised_bcp47_tag_writes_terminology_code() {
+        assert_eq!(&id3_language("en-GB"), b"eng");
+    }
+
+    #[test]
+    fn id3_language_bare_language_writes_terminology_not_bibliographic() {
+        // German's bibliographic code is `ger`; TRACK-070 wants the
+        // terminology form (`deu`) for ID3.
+        assert_eq!(&id3_language("de"), b"deu");
+    }
+
+    #[test]
+    fn id3_language_old_bibliographic_three_letter_code_reads_and_rewrites() {
+        // `fre` is French's bibliographic ISO 639-2 code (LANG-002 reads
+        // it as `fr`); TRACK-070 wants the terminology form back out.
+        assert_eq!(&id3_language("fre"), b"fra");
+    }
+
+    #[test]
+    fn id3_language_full_tag_with_region_writes_primary_languages_code() {
+        assert_eq!(&id3_language("pt-BR"), b"por");
+    }
+
+    #[test]
+    fn id3_language_tag_with_script_writes_primary_languages_code() {
+        assert_eq!(&id3_language("zh-Hant"), b"zho");
+    }
+
+    #[test]
+    fn id3_language_local_use_code_is_written_as_itself() {
+        // `qaa`-`qtz` are reserved for local use; nobody but the two
+        // parties using one knows what a registered replacement would
+        // even mean, so TRACK-070 says write it as itself.
+        assert_eq!(&id3_language("qaa"), b"qaa");
+    }
+
+    #[test]
+    fn id3_language_und_is_xxx() {
+        assert_eq!(id3_language("und"), DEFAULT_LANGUAGE);
+    }
+
+    #[test]
+    fn id3_language_empty_is_xxx() {
+        assert_eq!(id3_language(""), DEFAULT_LANGUAGE);
+    }
+
+    #[test]
+    fn id3_language_unrecognised_three_letters_is_xxx() {
+        // `zzz` is not a legacy ISO 639-2 code, not a registered ISO
+        // 639-3 subtag, and not in the qaa-qtz local-use range — LANG-002
+        // step 5 calls this unrecognised, and LANG-003 forbids guessing.
+        assert_eq!(id3_language("zzz"), DEFAULT_LANGUAGE);
+    }
+
+    #[test]
+    fn id3_language_private_use_only_tag_is_xxx() {
+        // A tag that is nothing but private-use subtags has no primary
+        // language to look an ISO 639-2 code up under.
+        assert_eq!(id3_language("x-private"), DEFAULT_LANGUAGE);
     }
 
     #[test]
