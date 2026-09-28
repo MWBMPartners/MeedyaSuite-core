@@ -449,6 +449,16 @@
       "expected": "gsg",
       "kind": "ordinary",
       "note": "Steps 4 and 5 repeat until stable: sgn-DD -> sgn-DE (region replaced) -> gsg (redundant tag replaced)."
+    },
+    {
+      "id": "canon-49",
+      "rules": [
+        "LANG-001"
+      ],
+      "input": "en-x-foo\n-bar",
+      "expected": null,
+      "kind": "malformed",
+      "note": "A line break inside the value is not trimmed; it makes the value malformed (a regular expression whose end anchor matches before a final line break would wrongly accept each part)."
     }
   ],
   "legacy_three_letter": [
@@ -1363,6 +1373,22 @@
         "unrecognised": null,
         "roles": [],
         "number": 3,
+        "extension": "srt"
+      }
+    },
+    {
+      "id": "sidecar-20",
+      "rules": [
+        "TEXT-030"
+      ],
+      "mode": "parse",
+      "stem": "Film",
+      "filename": "Film.en.9999999999.srt",
+      "expected": {
+        "tag": "en",
+        "unrecognised": null,
+        "roles": [],
+        "number": null,
         "extension": "srt"
       }
     }
@@ -3306,6 +3332,39 @@
         "en",
         "x-bar"
       ]
+    },
+    {
+      "id": "present-22",
+      "rules": [
+        "LANG-026",
+        "UI-040"
+      ],
+      "description": "Malformed entries keep the order they were found in; roles and original flags do not reorder them",
+      "preferences": [],
+      "accessibility": {},
+      "display_names": {},
+      "collation_keys": {},
+      "items": [
+        {
+          "id": "a",
+          "tag": "bad_value",
+          "type": "audio",
+          "roles": [
+            "commentary"
+          ]
+        },
+        {
+          "id": "b",
+          "tag": "bad_value",
+          "type": "audio",
+          "roles": [],
+          "original": true
+        }
+      ],
+      "expected": [
+        "a",
+        "b"
+      ]
     }
   ],
   "subtitle_menu": [
@@ -4257,6 +4316,84 @@
         }
       ],
       "expected": "t1"
+    },
+    {
+      "id": "audio-17",
+      "rules": [
+        "AUTO-020",
+        "TRACK-050"
+      ],
+      "description": "Role rank uses the placing role: alternate + audio description is placed as audio description",
+      "preferences": [
+        "en-GB"
+      ],
+      "accessibility": {},
+      "tracks": [
+        {
+          "id": "a",
+          "tag": "en-GB",
+          "roles": [
+            "alternate",
+            "audio_description"
+          ]
+        },
+        {
+          "id": "b",
+          "tag": "en",
+          "roles": [
+            "alternate"
+          ]
+        }
+      ],
+      "expected": "b"
+    },
+    {
+      "id": "audio-18",
+      "rules": [
+        "AUTO-010"
+      ],
+      "description": "Digits-only identifiers compare as numbers: 9 before 10",
+      "preferences": [
+        "en"
+      ],
+      "accessibility": {},
+      "tracks": [
+        {
+          "id": "10",
+          "tag": "en",
+          "roles": []
+        },
+        {
+          "id": "9",
+          "tag": "en",
+          "roles": []
+        }
+      ],
+      "expected": "9"
+    },
+    {
+      "id": "audio-19",
+      "rules": [
+        "AUTO-010"
+      ],
+      "description": "Equal as numbers, then plain text: 01 before 1",
+      "preferences": [
+        "en"
+      ],
+      "accessibility": {},
+      "tracks": [
+        {
+          "id": "1",
+          "tag": "en",
+          "roles": []
+        },
+        {
+          "id": "01",
+          "tag": "en",
+          "roles": []
+        }
+      ],
+      "expected": "01"
     }
   ],
   "auto_select_subtitle": [
@@ -4747,6 +4884,38 @@
         }
       ],
       "expected": null
+    },
+    {
+      "id": "subs-19",
+      "rules": [
+        "AUTO-030",
+        "TRACK-050"
+      ],
+      "description": "Captions asked for: a forced SDH track is placed as forced and is never full subtitles",
+      "mode": "always",
+      "preferences": [
+        "en"
+      ],
+      "accessibility": {
+        "captions": true
+      },
+      "audio": "ja",
+      "tracks": [
+        {
+          "id": "s1",
+          "tag": "en",
+          "roles": [
+            "forced",
+            "sdh"
+          ]
+        },
+        {
+          "id": "s2",
+          "tag": "en",
+          "roles": []
+        }
+      ],
+      "expected": "s2"
     }
   ]
 }

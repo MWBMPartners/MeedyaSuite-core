@@ -393,7 +393,10 @@ canonical tag: `x-bar` and `x-foo` are two groups, not one.
 A value that is not a well-formed tag MUST NOT be silently dropped,
 "repaired" into a guess, or sorted as though it were a language. It keeps
 its text, is reported, and goes after everything else, in the order it was
-found.
+found — in stored order and in a menu alike: roles, original flags and
+preferences do not reorder malformed entries among themselves (UI-045 does
+not apply to them). Automatic selection breaks their ties by identifier
+instead (AUTO-010).
 
 ### LANG-027 — Ties keep their order
 
@@ -467,6 +470,7 @@ then by LANG-027:
   else.
 
 A track with more than one role is placed by the one latest in its list.
+A role an implementation does not recognise counts as **other**.
 
 ### TRACK-060 — Each track type is ordered on its own
 
@@ -664,8 +668,15 @@ Choosing which track plays is a different job from ordering the menu. The
 selection MUST NOT be "whatever is first in the menu", and MUST give the
 same answer whatever order the tracks are listed in: where the tie-breaks
 below leave two tracks level, the **track identifier** decides (the number
-or ID the file gives the track — compared as numbers when both are numbers,
-otherwise as plain text), never its position in a list. Wherever the rules
+or ID the file gives the track), never its position in a list.
+Identifiers are put in one fixed order: those made only of ASCII digits
+come first, ordered as numbers (`9` before `10`) and, when equal as
+numbers, as plain text (`01` before `1`); every other identifier comes
+after them, in plain-text order. (Comparing a digits-only pair as numbers
+but a mixed pair as text would not be a consistent order — `2` < `10` <
+`1a` < `2` — so the digits-only identifiers are kept together.) Identifiers MUST be unique
+within one selection: an implementation given two tracks with the same
+identifier refuses with an error rather than guess. Wherever the rules
 below say "canonical order", ties that canonical order would leave to list
 position (LANG-026 for malformed values, LANG-027 for equal tags) are
 broken by the identifier instead. It MAY use:
@@ -676,12 +687,15 @@ forced, roles, accessibility settings, playback context and saved choices.
 
 1. Tracks placed (TRACK-050) as **commentary** or **other** are never
    chosen automatically unless every audio track is one. Alternate mixes and
-   audio description can be chosen, but rank after the main programme
-   (audio description ranks first when the user has asked for it).
+   audio description can be chosen, but rank after the main programme.
+   **Role rank** here uses each track's placing role (TRACK-050): main
+   programme, then alternate, then audio description — or, when the user
+   has asked for audio description, audio description, then main
+   programme, then alternate. A track with both `alternate` and
+   `audio_description` is placed as audio description.
 2. For each preference, in order: find the tracks that match it (MATCH,
    related or better). If any do, choose the best of them by, in order:
-   role (main first; audio description first when the user has asked for
-   it), match strength, fewer removed or extra subtags, default flag,
+   role rank, match strength, fewer removed or extra subtags, default flag,
    original flag, canonical order (TRACK-050), track identifier. Stop.
 3. If no preference matched: the original track(s), best by role, default
    flag, canonical order, identifier.
@@ -761,7 +775,8 @@ shape:
   reader also accepts `cc` and `hi` as `sdh`, because other tools write
   them.
 - **A number** (`.2`, `.3` …) is added only when two sidecars would
-  otherwise get the same name, numbering from the second.
+  otherwise get the same name, numbering from the second. A builder refuses
+  any other number (0, 1, a negative number).
 - **Reading one back:** take the stem from the media file the sidecar
   belongs to — never guess where the stem ends — so `Mr. Robot.en.sdh.srt`
   beside `Mr. Robot.mkv` reads as tag `en`, role `sdh`. Because the tag is
@@ -770,9 +785,10 @@ shape:
   read with LANG-002's reader, so `Film.eng.srt` reads as `en`; an
   unrecognised first part reads as `und`, with the original text kept. Of
   the parts after it, role words are read as roles (each once), a part of
-  ASCII digits is the number (if there are several, the last counts), and
-  any other part is ignored and SHOULD be reported: `Film.en.sdh.backup.srt`
-  reads as tag `en`, role `sdh`.
+  one to nine ASCII digits is the number (if there are several, the last
+  counts; a longer run of digits is not a number, so it is never silently
+  changed into a different one), and any other part is ignored and SHOULD
+  be reported: `Film.en.sdh.backup.srt` reads as tag `en`, role `sdh`.
 
 ### TEXT-040 — Presentation follows Part B
 
@@ -863,7 +879,11 @@ data; the cases check the *rules*, not the names.
 
 An implementation MUST pass every case in every section its profile needs,
 and its CI MUST run those cases on every change (a failure fails the
-build).
+build). A test harness MUST also fail, rather than report success, when
+the case file has a section it does not know, a section it needs is
+missing or empty, or a case lacks a field the schema requires — a harness
+that quietly runs fewer checks than the file holds is how a broken
+implementation passes.
 
 ### 8.2 The reference data
 

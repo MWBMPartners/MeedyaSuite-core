@@ -94,7 +94,8 @@
             "description": "Why this case exists, where that is not obvious."
           }
         }
-      }
+      },
+      "minItems": 1
     },
     "legacy_three_letter": {
       "type": "array",
@@ -127,7 +128,8 @@
             "description": "The canonical BCP 47 tag, or null for 'unrecognised' (the caller then stores 'und' and keeps the raw text)."
           }
         }
-      }
+      },
+      "minItems": 1
     },
     "iso639_2_write": {
       "type": "array",
@@ -173,7 +175,8 @@
             }
           }
         }
-      }
+      },
+      "minItems": 1
     },
     "posix_locale": {
       "type": "array",
@@ -206,7 +209,8 @@
             "description": "The canonical tag, or null when the locale names no language ('C', 'POSIX') or cannot be converted."
           }
         }
-      }
+      },
+      "minItems": 1
     },
     "sidecar_name": {
       "type": "array",
@@ -361,7 +365,8 @@
             }
           }
         ]
-      }
+      },
+      "minItems": 1
     },
     "canonical_order": {
       "type": "array",
@@ -416,7 +421,8 @@
             "$ref": "#/$defs/idList"
           }
         }
-      }
+      },
+      "minItems": 1
     },
     "track_order": {
       "type": "array",
@@ -453,21 +459,24 @@
             "$ref": "#/$defs/idList"
           }
         }
-      }
+      },
+      "minItems": 1
     },
     "presentation_order": {
       "type": "array",
       "description": "Part B menu order (UI-020 to UI-050). Names and sorting keys are supplied in the case so the answer does not depend on the platform's locale data: the implementation's test harness MUST name groups with display_names and sort them by comparing collation_keys as plain strings, in place of real locale data.",
       "items": {
         "$ref": "#/$defs/presentationCase"
-      }
+      },
+      "minItems": 1
     },
     "subtitle_menu": {
       "type": "array",
       "description": "UI-060: a subtitle menu is 'off' followed by the subtitle tracks in presentation order.",
       "items": {
         "$ref": "#/$defs/presentationCase"
-      }
+      },
+      "minItems": 1
     },
     "label": {
       "type": "array",
@@ -529,7 +538,8 @@
             "description": "The label, parts joined with ' — ' (space, U+2014 em dash, space)."
           }
         }
-      }
+      },
+      "minItems": 1
     },
     "match": {
       "type": "array",
@@ -585,7 +595,8 @@
             }
           }
         }
-      }
+      },
+      "minItems": 1
     },
     "auto_select_audio": {
       "type": "array",
@@ -631,7 +642,8 @@
             "description": "Identifier of the track chosen."
           }
         }
-      }
+      },
+      "minItems": 1
     },
     "auto_select_subtitle": {
       "type": "array",
@@ -698,7 +710,8 @@
             "description": "Identifier of the subtitle track chosen, or null for none."
           }
         }
-      }
+      },
+      "minItems": 1
     }
   },
   "$defs": {
@@ -807,7 +820,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "Track identifier; the final tie-break (AUTO-010), compared as a plain string in these cases."
+          "description": "Track identifier; the final tie-break (AUTO-010): identifiers of ASCII digits only come first, ordered as numbers and then as plain text; all others follow in plain-text order. Identifiers are unique within a case."
         },
         "tag": {
           "type": "string",
