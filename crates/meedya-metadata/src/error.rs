@@ -4,7 +4,17 @@
 use thiserror::Error;
 
 /// Errors that can occur in metadata operations.
+///
+/// **`#[non_exhaustive]`** (from the stand-in review of revision 5,
+/// policy MWBM-MEDIA-LANG): a `match` on this enum in another crate needs
+/// a `_ =>` arm. Marked now because the enum was already changing — the
+/// `UnrecognisedLanguage` variant was added after Codex's review r7, which
+/// on its own broke any caller that matched every variant — so callers
+/// take one break, not one per future variant: from here on, adding a
+/// variant does not break them. (Matches inside this crate are not
+/// affected by the attribute.)
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum MetadataError {
     #[error("failed to parse tag registry TOML: {0}")]
     RegistryParseError(String),
