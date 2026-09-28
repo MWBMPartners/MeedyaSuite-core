@@ -41,6 +41,7 @@ were active). So this is a deliberate, owner-approved exception to "one branch o
   of being passed straight through. +20 tests (736 / 883 measured, doc-count guard passes). Not
   yet independently reviewed. Does not reach MeedyaDL, which pins `meedya-lyrics` from `main`.
 - **Policy revision 4** (28 Sept 2026, `813f4e4`…docs): six rules settled + 20 cases (288, no old answer changed); Rust review findings fixed (+`RoleItem`, serde — API break for implementers), PHP updated, both runners refuse damaged case files, copy checker needs all three PHP files; Rust and PHP agree on every one of 210,736 random comparisons plus 217,219 aimed at whitespace (the one gap, the text a whitespace-only malformed value keeps, since settled as the trimmed text in LANG-026, in the commit after the docs commits); 780 / 927 tests. Not reviewed, not pushed.
+- **Codex review r7 acted on** (28 Sept 2026, `1162b06`…docs): all six findings fixed — a language field writes every language it lists and refuses an unrecognised one (new `MetadataError::UnrecognisedLanguage`); an unrecognised `xml:lang` is `und` with the text in the new `LyricsfileMetadata::language_original`; both runners check top-level fields and every field's type (40 damaged copies refused); the copy checker needs all three PHP files per copy; the CI count step fails on a failing test run; empty label parts dropped in Rust as in PHP (+2 cases, 290, no old answer changed); Rust and PHP agree on 60,000 fresh random comparisons; 796 / 943 tests. Not reviewed, not pushed.
 
 
 ### 0.1 In one paragraph
