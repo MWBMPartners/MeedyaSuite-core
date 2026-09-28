@@ -30,8 +30,11 @@ mod error;
 // Private: reads a file's ID3v2 language (`TLAN`) frames straight from
 // its bytes, for `tag_io` (see that file's top comment for why).
 mod id3v2_language_frames;
+// Private: checks an M4A save atom by atom, on a temporary copy, before it
+// replaces the file (issue #102; see that file's top comment for why).
 pub mod identifier_types;
 pub mod json_path;
+mod mp4_save_check;
 pub mod playback_bounds;
 pub mod registry;
 pub mod tag_io;

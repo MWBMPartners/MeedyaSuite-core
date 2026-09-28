@@ -68,6 +68,19 @@
 // unchanged, the new main tag got none, and from then on `read_tags` read
 // the main tag and reported no language at all. It is now answered against
 // the tag the write goes into (see `write_tags`).
+//
+// Every M4A save is CHECKED before it replaces the file (issue #102; the
+// stand-in review of revision 8). lofty's route for M4A tags changes atoms
+// nobody asked it to change — a number flag rewritten as text, a freeform
+// atom renamed to lofty's spelling, cover art with an unusual data type
+// dropped, a second value cut off — and revision 8's list of such cases
+// missed some. So `edit_and_save` now saves an M4A file to a temporary
+// copy, and `mp4_save_check` compares the copy's atoms with the original's,
+// read straight from both files' bytes: an atom the write did not ask to
+// change must be byte for byte as it was, and an atom it did ask to change
+// must hold exactly what was asked. Only then does the copy replace the
+// original; otherwise the write is refused and the original is untouched.
+// The real fix — a route that keeps those atoms — is still open in #102.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -75,7 +88,7 @@ use std::path::Path;
 
 use lofty::config::{ParseOptions, WriteOptions};
 use lofty::file::{FileType, TaggedFile};
-use lofty::mp4::{Atom, AtomData, AtomIdent, DataType, Ilst, Mp4File};
+use lofty::mp4::{Atom, AtomData, AtomIdent, Ilst, Mp4File};
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem, TagType};
@@ -84,6 +97,7 @@ use crate::common_tags::CommonTag;
 use crate::error::MetadataError;
 use crate::id3v2_language_frames::{read_tlan_frames, TlanFrames};
 use crate::json_path;
+use crate::mp4_save_check::{self, Expected, RawAtom, RawKey, RawValue, TempCopy};
 use crate::tag_registry::{TagRegistry, TagScope};
 
 /// A map of common tags to their values (supports multi-value fields).
@@ -342,6 +356,20 @@ fn collect_common_tags(tag: &Tag, result: &mut TagMap) {
 ///   call** with [`MetadataError::UnrecognisedLanguage`], before anything
 ///   is saved, so the file is left exactly as it was — none of the other
 ///   tags in `tags` are written either.
+///
+/// **On an M4A file every write is checked before it replaces the file**
+/// (issue #102): it is saved to a temporary copy, and the copy replaces the
+/// original only when every atom the call did not ask to change is byte for
+/// byte as it was and every atom it asked to change holds exactly what was
+/// asked. Otherwise the call fails with [`MetadataError::WriteError`],
+/// naming each atom that would have changed and how, and the file is left
+/// exactly as it was. Writing a field replaces its whole atom on purpose —
+/// writing the artist on a file whose `©ART` holds two artists is allowed —
+/// but lofty's route rewrites some atoms nobody asked for (1- and 2-byte
+/// numbers such as `stik`, `rtng`, `tmpo` as 4 bytes, a 6-byte `disk` as 8,
+/// the `pgap`/`hdvd`/`shwm` flags as text, freeform names in its own
+/// spelling), so a write to a file holding any of those — as iTunes and
+/// Apple Music files typically do — is refused until the real fix in #102.
 pub fn write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<(), MetadataError> {
     if !path.exists() {
         return Err(MetadataError::FileNotFound(path.display().to_string()));
@@ -355,13 +383,16 @@ pub fn write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<(), Metad
         .map(|(_, value)| value.as_str())
         .collect();
 
-    edit_and_save(path, |tag, languages| {
+    edit_and_save(path, |tag, languages, asked| {
         // Every value is applied to the in-memory tag first; the file is
         // only saved once all of them have been accepted. A refused value
         // (only a language can be refused) therefore returns here with
         // the file untouched.
         for (common_tag, value) in tags {
             if *common_tag != CommonTag::Language {
+                // Recorded even when the value is the one already there:
+                // writing it is still asking for it (see `edit_and_save`).
+                asked.extend(keys_written(tag.tag_type(), *common_tag, value));
                 write_common_tag_to_lofty(tag, *common_tag, value)?;
             }
         }
@@ -438,7 +469,12 @@ pub fn write_acoustid_tags(
 /// Returns the number of tags successfully written.
 ///
 /// **On an M4A file this refuses, rather than reporting a tag "written"
-/// that is not** (issue #103, interim guard). Each atom is written under
+/// that is not** (issue #103, interim guard). Like every M4A write, the
+/// save is also checked atom by atom on a temporary copy before it replaces
+/// the file (see [`write_tags`]): a value that would be left beside an
+/// older atom of the same name, or put back over by the file's own
+/// languages, refuses the call too (the stand-in review of revision 8), and
+/// nothing is written. Each atom is written under
 /// the key `namespace:name` (`MeedyaMeta:ISRC`), but an MP4 freeform atom
 /// needs the form `----:mean:name`, and lofty silently leaves out any key
 /// not in that form when it saves an M4A file — so the call used to return
@@ -467,7 +503,7 @@ pub fn write_registry_tags(
 
     // The file's languages are not touched here, but saving goes through
     // `edit_and_save` all the same, so they survive the save whole.
-    edit_and_save(path, |tag, _languages| {
+    edit_and_save(path, |tag, _languages, asked| {
         let mut count = 0;
 
         for def in defs {
@@ -495,6 +531,7 @@ pub fn write_registry_tags(
                     )));
                 }
                 let key = ItemKey::Unknown(key_text);
+                asked.push(key.clone());
                 // #65 — insert_unchecked: lofty's insert() rejects ItemKey::Unknown (re_map allow_unknown=false), silently dropping freeform atoms; insert_unchecked is lofty's documented API for Unknown keys.
                 tag.insert_unchecked(TagItem::new(key, ItemValue::Text(string_val.clone())));
             }
@@ -704,14 +741,30 @@ struct LanguageField {
 /// the file's languages whole (see the top of this file). Nothing is
 /// saved when `edit` returns an error.
 ///
+/// `edit` also records, in its third argument, the key of every item it
+/// writes — even one it writes with the value already there, because
+/// writing a value is asking for it. Only the MP4 save uses that list (see
+/// below); every other format ignores it.
+///
 /// - **MP4**: the language atom is taken out of the file's `Ilst` first
 ///   and held on one side; the rest is split into lofty's format-neutral
 ///   `Tag` for `edit` (`split_tag`), merged back (`merge_tag` — together,
 ///   exactly the conversion lofty's own `TaggedFile` save performs), and
 ///   the language atom is put back as ONE atom holding every value: the
 ///   replacement if `edit` asked for one, otherwise every `data` atom the
-///   file had. A file written before this fix, with one atom per
-///   language, is therefore rewritten in the usual one-atom form.
+///   file had. A file written before revision 6, with one atom per
+///   language, is therefore rewritten in the usual one-atom form — every
+///   value kept, in order, and checked to be.
+///
+///   That route changes atoms nobody asked it to change (issue #102; see
+///   `mp4_save_check`), so the save is made on a temporary copy of the file
+///   first, and the copy's atoms are compared with the original's, read
+///   straight from both files' bytes: every atom the edit did not ask to
+///   change must be byte for byte as it was, and every atom it did ask to
+///   change must hold exactly what was asked (see `atoms_asked_for`). Only
+///   then does the copy replace the original, in one rename. Otherwise the
+///   write fails with [`MetadataError::WriteError`], naming each atom that
+///   would have changed, and the original is not touched.
 /// - **Every other format**: a file holding its languages in several
 ///   `TLAN` frames has them all put back first, straight after reading and
 ///   before `edit` runs ([`recover_languages_after_reading`]; the whole
@@ -720,24 +773,24 @@ struct LanguageField {
 ///   language. Then `edit` gets the main tag (created if the file has
 ///   none), a replacement is stored with `put_languages`, and
 ///   [`gather_languages_before_saving`] runs just before the save — it
-///   does not read the file, so the replacement is what is saved.
+///   does not read the file, so the replacement is what is saved. These
+///   formats are saved in place by lofty, as before.
 fn edit_and_save<T>(
     path: &Path,
-    edit: impl FnOnce(&mut Tag, &mut LanguageField) -> Result<T, MetadataError>,
+    edit: impl FnOnce(&mut Tag, &mut LanguageField, &mut Vec<ItemKey>) -> Result<T, MetadataError>,
 ) -> Result<T, MetadataError> {
+    let mut asked = Vec::new();
     match open_file(path)? {
         OpenedFile::Mp4(mut mp4) => {
+            // The real file, not a link to it: the checked copy replaces
+            // whatever this names, so a symbolic link is followed first.
+            let real = std::fs::canonicalize(path)?;
+            // What the file holds now, read from its bytes before anything
+            // changes: what the saved copy is compared with.
+            let original = mp4_save_check::read_ilst_atoms(&real)?;
+
             let mut ilst = mp4.remove_ilst().unwrap_or_default();
             let held = take_mp4_languages(&mut ilst);
-            // #102 (interim guard): refuse, before anything is changed or
-            // saved, a file the route below would lose part of.
-            if let Some(loss) = what_an_mp4_save_would_lose(&ilst) {
-                return Err(MetadataError::WriteError(format!(
-                    "this M4A file cannot be saved through this library without losing \
-                     metadata: {loss}. Nothing was written. (Issue #102: until the M4A save \
-                     route keeps every value, a write that would lose one is refused.)"
-                )));
-            }
             let current = mp4_language_texts(&held);
             let mut languages = LanguageField {
                 as_read: current.clone(),
@@ -745,7 +798,10 @@ fn edit_and_save<T>(
                 replacement: None,
             };
             let (remainder, mut tag) = ilst.split_tag();
-            let out = edit(&mut tag, &mut languages)?;
+            let before = tag.clone();
+            let out = edit(&mut tag, &mut languages, &mut asked)?;
+            let expected = atoms_asked_for(&before, &tag, &asked, &languages, &original)?;
+
             let mut merged = remainder.merge_tag(tag);
             let data: Vec<AtomData> = match languages.replacement {
                 Some(values) => values.into_iter().map(AtomData::UTF8).collect(),
@@ -759,7 +815,7 @@ fn edit_and_save<T>(
                 Some(atom) => merged.replace_atom(atom),
                 None => merged.remove(&MP4_LANGUAGE).for_each(drop),
             }
-            merged.save_to_path(path, WriteOptions::default())?;
+            save_mp4_checked(&real, &merged, &original, &expected)?;
             Ok(out)
         }
         OpenedFile::Other(mut tagged_file) => {
@@ -817,7 +873,7 @@ fn edit_and_save<T>(
                 as_read,
                 replacement: None,
             };
-            let out = edit(tag, &mut languages)?;
+            let out = edit(tag, &mut languages, &mut asked)?;
             if let Some(values) = languages.replacement {
                 put_languages(tag, values);
             }
@@ -829,108 +885,225 @@ fn edit_and_save<T>(
     }
 }
 
-/// What saving `ilst` would lose, in plain words — or `None` when it would
-/// lose nothing. The interim guard for issue #102, run by `edit_and_save`
-/// on every M4A write before anything is changed.
+/// What an M4A save must store for every atom the edit asked to change:
+/// for each such atom's name, the atoms the saved file must hold under
+/// that name, each a list of values, in order (`mp4_save_check`). Every
+/// atom NOT named here must come out of the save byte for byte as
+/// `original` holds it.
 ///
-/// Every M4A write here (the language atom apart, which is taken out
-/// first and handled whole) goes through lofty's format-neutral `Tag`:
-/// `split_tag` takes every atom whose first value is text, a picture, a
-/// flag, or a track or disc number into the `Tag`, and `merge_tag` writes
-/// them back. That route keeps only the FIRST value of each such atom
-/// (lofty 0.22.4, `mp4/ilst/mod.rs`, `split_tag`), and it rebuilds a
-/// freeform atom's name by splitting `----:mean:name` at every colon. So a
-/// write — even a title-only one — used to:
+/// **Which atoms the edit asked to change**: those of every item key it
+/// recorded in `asked` — what `write_tags` and `write_registry_tags` write,
+/// even with the value already there; those of every item key whose values
+/// differ between `before` (the tag as read) and `after` (the tag as
+/// edited); `covr` when the pictures differ; and the language atom when
+/// the edit gave languages to store. So `write_tags(Artist, "Carol")` on a
+/// file whose `©ART` holds `Alice` and `Bob` asks for the whole `©ART` atom
+/// to hold `Carol`: a deliberate replacement, allowed, not a value lost
+/// (the stand-in review of revision 8, finding 5). A track or disc number
+/// and its total share one atom (`trkn`, `disk`), so asking for either
+/// asks for that atom, holding both.
 ///
-/// - keep only the first image of a `covr` atom holding several (Codex's
-///   review of revisions 5–7, and the stand-in review of revision 6);
-/// - keep only the first value of a text atom holding several — two
-///   artists in `©ART`, or in `----:com.apple.iTunes:ARTISTS`;
-/// - keep only the first value of an advisory-rating (`rtng`) atom, or of
-///   several `rtng` atoms;
-/// - cut a freeform atom's name short at a colon —
-///   `----:com.apple.iTunes:Meedya:Mood` came back as
-///   `----:com.apple.iTunes:Meedya` (found while building this guard, on a
-///   real file written by mutagen).
+/// **What each must hold**: exactly what lofty writes for the edited
+/// items of those keys ALONE — worked out with lofty's own conversion
+/// (`merge_tag`) on a tag holding nothing else — so a value left over
+/// beside it (a second ISRC atom), or put back over it (a registry write
+/// aimed at the language atom), shows up in the comparison.
 ///
-/// All four were measured on real M4A files written by mutagen, before the
-/// guard. Each now refuses the write. What this does NOT cover: the route
-/// also rewrites some atoms at a different size (`tmpo`, `rtng`) and in a
-/// different order — the values are kept, so those are left to #102
-/// itself. Refusing is the interim step; keeping every value is the real
-/// fix, still open in #102.
-fn what_an_mp4_save_would_lose(ilst: &Ilst) -> Option<String> {
-    for atom in ilst {
-        let mut data = atom.data();
-        let Some(first) = data.next() else {
-            continue;
-        };
-        let values = 1 + data.count();
-        // Exactly the atoms `split_tag` takes into the format-neutral tag.
-        let taken = match first {
-            AtomData::UTF8(_) | AtomData::UTF16(_) | AtomData::Picture(_) | AtomData::Bool(_) => {
-                true
-            }
-            AtomData::Unknown {
-                code: DataType::Reserved,
-                data,
-            } => {
-                let numbers = [AtomIdent::Fourcc(*b"trkn"), AtomIdent::Fourcc(*b"disk")];
-                data.len() >= 6 && numbers.contains(atom.ident())
-            }
-            _ => false,
-        };
-        if !taken {
-            continue;
+/// **Not checked**: a key that has no MP4 atom at all. lofty leaves such a
+/// key out of an M4A file without a word, as it always has — `Arranger`,
+/// `Producer` and `Engineer`, and the `Acoustid Id` and
+/// `REPLAYGAIN_REFERENCE_LOUDNESS` items `write_acoustid_tags` and
+/// `write_replaygain_tags` write — and there is no atom to compare.
+/// (`write_registry_tags` refuses such a key itself, #103.)
+///
+/// Fails, so the save is refused before anything is written, when a value
+/// asked for would not be stored at all (lofty drops a compilation flag of
+/// "yes", say), or when the written form of a value cannot be reproduced
+/// here (`mp4_save_check::raw_value`).
+fn atoms_asked_for(
+    before: &Tag,
+    after: &Tag,
+    asked: &[ItemKey],
+    languages: &LanguageField,
+    original: &[RawAtom],
+) -> Result<Expected, MetadataError> {
+    let refusal = |why: String| {
+        MetadataError::WriteError(format!(
+            "this M4A file could not be saved exactly as asked: {why}. Nothing was written. \
+             (Issue #102: every M4A save is checked atom by atom before it replaces the file.)"
+        ))
+    };
+
+    // Every key asked for, then every key the edit changed, once each.
+    let mut keys: Vec<ItemKey> = Vec::new();
+    fn values_of<'a>(tag: &'a Tag, key: &'a ItemKey) -> Vec<&'a ItemValue> {
+        tag.get_items(key).map(TagItem::value).collect()
+    }
+    for key in asked
+        .iter()
+        .chain(before.items().chain(after.items()).map(TagItem::key))
+    {
+        let changed = asked.contains(key) || values_of(before, key) != values_of(after, key);
+        if changed && !keys.contains(key) {
+            keys.push(key.clone());
         }
-        let name = atom_name(atom.ident());
-        if values > 1 {
-            return Some(if matches!(first, AtomData::Picture(_)) {
-                format!(
-                    "its cover art ({name}) holds {values} images, and saving would keep only \
-                     the first"
-                )
-            } else {
-                format!(
-                    "its {name} atom holds {values} values, and saving would keep only the first"
-                )
+    }
+    for pair in [
+        [ItemKey::TrackNumber, ItemKey::TrackTotal],
+        [ItemKey::DiscNumber, ItemKey::DiscTotal],
+    ] {
+        if pair.iter().any(|key| keys.contains(key)) {
+            for key in pair {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+    }
+    let pictures_changed = !before.pictures().eq(after.pictures());
+
+    // The atoms asked for, by name — and which of them were given a value.
+    let mut idents: Vec<AtomIdent<'static>> = Vec::new();
+    let mut given: Vec<AtomIdent<'static>> = Vec::new();
+    let mut requested = Tag::new(TagType::Mp4Ilst);
+    for key in &keys {
+        // A key with no MP4 atom: nothing to compare (see above).
+        if let Ok(ident) = AtomIdent::try_from(key.clone()) {
+            if !idents.contains(&ident) {
+                idents.push(ident);
+            }
+        }
+    }
+    for item in after.items().filter(|item| keys.contains(item.key())) {
+        if let Ok(ident) = AtomIdent::try_from(item.key().clone()) {
+            given.push(ident);
+        }
+        requested.push_unchecked(item.clone());
+    }
+    if pictures_changed {
+        let covr = AtomIdent::Fourcc(*b"covr");
+        idents.push(covr.clone());
+        for picture in after.pictures() {
+            given.push(covr.clone());
+            requested.push_picture(picture.clone());
+        }
+    }
+
+    // lofty's own conversion of those items alone: what it writes for them.
+    let (nothing, _) = Ilst::default().split_tag();
+    let stored = nothing.merge_tag(requested);
+
+    let mut expected = Expected::new();
+    for ident in idents {
+        let key = RawKey::of(&ident);
+        let mut atoms = Vec::new();
+        for atom in (&stored).into_iter().filter(|atom| atom.ident() == &ident) {
+            let values = atom
+                .data()
+                .map(mp4_save_check::raw_value)
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    refusal(format!(
+                        "the value given for {} is of a kind whose saved form cannot be checked",
+                        key.display()
+                    ))
+                })?;
+            atoms.push(values);
+        }
+        if atoms.is_empty() && given.contains(&ident) {
+            return Err(refusal(format!(
+                "the value given for {} cannot be stored in an M4A file (lofty would leave it \
+                 out)",
+                key.display()
+            )));
+        }
+        expected.insert(key, atoms);
+    }
+
+    let language = RawKey::of(&MP4_LANGUAGE);
+    match &languages.replacement {
+        Some(values) => {
+            let atom: Vec<RawValue> = values
+                .iter()
+                .filter_map(|value| mp4_save_check::raw_value(&AtomData::UTF8(value.clone())))
+                .collect();
+            // `or_insert`: when an item key asked for the language atom too,
+            // what it asked for stays expected, so the languages put back
+            // over it fail the comparison — refused, not lost.
+            expected.entry(language).or_insert_with(|| {
+                if atom.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![atom]
+                }
             });
         }
-        if let AtomIdent::Freeform { mean, name: short } = atom.ident() {
-            if mean.contains(':') || short.contains(':') {
-                return Some(format!(
-                    "its {name} atom has a colon inside its name, and saving would cut the name \
-                     short at that colon"
-                ));
+        None if !expected.contains_key(&language) => {
+            // Languages not asked for. A file with ONE language atom keeps
+            // it byte for byte, like any other atom. A file with several —
+            // one per language, as revision 5 of this crate and lofty's own
+            // format-neutral save write them — has them put into one atom
+            // holding every value in order (see `edit_and_save`): the one
+            // change made that nobody asked for, because it loses nothing.
+            // It is checked value by value — type, locale and bytes — so a
+            // value it would change still refuses the save.
+            let held: Vec<&RawAtom> = original.iter().filter(|a| a.key == language).collect();
+            if held.len() > 1 && held.iter().all(|atom| atom.other_parts == 0) {
+                let values = held.iter().flat_map(|atom| atom.values.clone()).collect();
+                expected.insert(language, vec![values]);
             }
         }
+        None => {}
     }
-    // The advisory rating is taken out separately: the first readable value
-    // of the first `rtng` atom is kept, and every `rtng` atom removed.
-    let rating = AtomIdent::Fourcc(*b"rtng");
-    if ilst.advisory_rating().is_some() {
-        let values: usize = ilst
-            .into_iter()
-            .filter(|atom| atom.ident() == &rating)
-            .map(|atom| atom.data().count())
-            .sum();
-        if values > 1 {
-            return Some(format!(
-                "its advisory rating (rtng) holds {values} values, and saving would keep only \
-                 one"
-            ));
-        }
-    }
-    None
+    Ok(expected)
 }
 
-/// An MP4 atom's name as a person reads it: `©ART`, or
-/// `----:com.apple.iTunes:ARTISTS` for a freeform atom.
-fn atom_name(ident: &AtomIdent<'_>) -> String {
-    match ident {
-        AtomIdent::Fourcc(fourcc) => fourcc.iter().map(|byte| char::from(*byte)).collect(),
-        AtomIdent::Freeform { mean, name } => format!("----:{mean}:{name}"),
+/// Saves `ilst` as the tags of the M4A file `real` (the real file, links
+/// already followed): on a temporary copy first, which replaces `real`
+/// only when every atom in it is as `expected`, or else byte for byte as in
+/// `original` (see `mp4_save_check`). Otherwise the copy is deleted, `real`
+/// is not touched, and the error names every atom that would have changed.
+fn save_mp4_checked(
+    real: &Path,
+    ilst: &Ilst,
+    original: &[RawAtom],
+    expected: &Expected,
+) -> Result<(), MetadataError> {
+    let copy = TempCopy::of(real)?;
+    ilst.save_to_path(copy.path(), WriteOptions::default())?;
+    let saved = mp4_save_check::read_ilst_atoms(copy.path())?;
+    let problems = mp4_save_check::differences(original, &saved, expected);
+    if !problems.is_empty() {
+        const LISTED: usize = 8;
+        let mut list = problems[..problems.len().min(LISTED)].join("; ");
+        if problems.len() > LISTED {
+            list.push_str(&format!("; and {} more", problems.len() - LISTED));
+        }
+        return Err(MetadataError::WriteError(format!(
+            "this M4A file could not be saved exactly as asked: {list}. Nothing was written: the \
+             save was made on a temporary copy, compared atom by atom with the original, and \
+             thrown away, so the file is exactly as it was. (Issue #102: the route this library \
+             saves M4A files through changes some atoms it was not asked to change; until it \
+             keeps them, such a save is refused.)"
+        )));
     }
+    copy.replace(real)
+}
+
+/// The item keys `write_common_tag_to_lofty` writes for `common_tag` and
+/// `value` into a tag of type `tag_type` — found by making that very write
+/// into an empty tag and looking, so this can never drift from what the
+/// write does. (An empty tag differs from the real one in one way: the year
+/// goes into an existing recording date when there is one. On MP4, the only
+/// format that uses these keys, that is the same key, `RecordingDate`,
+/// either way.)
+fn keys_written(tag_type: TagType, common_tag: CommonTag, value: &str) -> Vec<ItemKey> {
+    let mut scratch = Tag::new(tag_type);
+    // Only a language can be refused, and languages never come here.
+    if write_common_tag_to_lofty(&mut scratch, common_tag, value).is_err() {
+        return Vec::new();
+    }
+    scratch.items().map(|item| item.key().clone()).collect()
 }
 
 /// Takes every language atom out of `ilst` (a file written before the
@@ -2633,9 +2806,11 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // #102 and #103, the interim guards (Codex's review of revisions 5–7):
-    // an M4A write that would lose a value, or report a registry tag
-    // written that is not, refuses instead, and saves nothing.
+    // #102 and #103 (Codex's review of revisions 5–7, and the stand-in
+    // review of revision 8): every M4A save is made on a temporary copy
+    // and compared atom by atom with the original; a save that would change
+    // anything not asked for, or not store what was asked, is refused, and
+    // the original is left byte for byte as it was.
     // ------------------------------------------------------------------
 
     /// An M4A file holding `atoms` (saved through lofty's own `Ilst`, the
@@ -2678,31 +2853,36 @@ mod tests {
     #[test]
     fn an_m4a_write_that_would_drop_a_value_is_refused_and_saves_nothing() {
         // Each measured on a real M4A file (written by mutagen) before
-        // the guard: a title-only write kept the first image, the first
-        // artist, and cut `Meedya:Mood` to `Meedya`.
+        // revision 8's guard: a title-only write kept the first image, the
+        // first artist, and cut `Meedya:Mood` to `Meedya`. Now the
+        // comparison of the saved copy with the original finds each one —
+        // nothing here tells it what to look for.
         let artist = AtomIdent::Fourcc(*b"\xa9ART");
         let cases: [(&str, Atom<'static>, &str); 5] = [
             (
                 "two cover images",
                 Atom::from_collection(AtomIdent::Fourcc(*b"covr"), vec![picture(1), picture(2)])
                     .expect("two"),
-                "cover art (covr) holds 2 images",
+                "covr would change: now 2 values: a PNG image (9 bytes), a PNG image (9 bytes); \
+                 after saving, one value, a PNG image (9 bytes)",
             ),
             (
                 "two artists in \u{a9}ART",
                 Atom::from_collection(artist, vec![text("Alice"), text("Bob")]).expect("two"),
-                "\u{a9}ART atom holds 2 values",
+                "\u{a9}ART would change: now 2 values: the text \"Alice\", the text \"Bob\"; \
+                 after saving, one value, the text \"Alice\"",
             ),
             (
                 "two artists in a freeform ARTISTS atom",
                 Atom::from_collection(freeform("ARTISTS"), vec![text("Alice"), text("Bob")])
                     .expect("two"),
-                "----:com.apple.iTunes:ARTISTS atom holds 2 values",
+                "----:com.apple.iTunes:ARTISTS would change: now 2 values",
             ),
             (
                 "a colon inside a freeform name",
                 Atom::new(freeform("Meedya:Mood"), text("calm")),
-                "has a colon inside its name",
+                "----:com.apple.iTunes:Meedya:Mood would change: now one value, the text \
+                 \"calm\"; after saving, nothing",
             ),
             (
                 "two advisory ratings",
@@ -2711,7 +2891,8 @@ mod tests {
                     vec![AtomData::SignedInteger(1), AtomData::SignedInteger(2)],
                 )
                 .expect("two"),
-                "advisory rating (rtng) holds 2 values",
+                "rtng would change: now 2 values: the whole number 1 in 4 bytes, the whole \
+                 number 2 in 4 bytes; after saving, one value, the whole number 1 in 4 bytes",
             ),
         ];
         for (what, atom, expected) in cases {
@@ -2726,6 +2907,7 @@ mod tests {
             assert!(message.contains("#102"), "{what}: {message}");
             assert!(message.contains("Nothing was written"), "{what}: {message}");
             assert_eq!(std::fs::read(&path).expect("read"), before, "{what}");
+            assert_only_the_file_is_there(dir.path(), "f.m4a");
         }
     }
 
@@ -2810,6 +2992,400 @@ mod tests {
         assert!(!is_mp4_freeform_key("a:bc"));
         // A colon inside the name would be cut off.
         assert!(!is_mp4_freeform_key("----:com.apple.iTunes:Meedya:ISRC"));
+    }
+
+    // ------------------------------------------------------------------
+    // The same check on REAL files: small M4A files made by ffmpeg and
+    // tagged by mutagen, kept in `testdata/m4a/` (`make_m4a_fixtures.py`
+    // there makes them, and says how each was built). Every result below
+    // was also cross-checked with mutagen and ffprobe when this was written.
+    // ------------------------------------------------------------------
+
+    /// A copy of the real test file `name`, in `dir` (the file in
+    /// `testdata/m4a/` itself is never written to).
+    fn real_m4a(dir: &Path, name: &str) -> std::path::PathBuf {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/m4a")
+            .join(name);
+        let path = dir.join(name);
+        std::fs::copy(&source, &path).expect("copy the test file");
+        path
+    }
+
+    /// The `ilst` atoms of the M4A file at `path`, read from its bytes.
+    fn raw_atoms(path: &Path) -> Vec<RawAtom> {
+        mp4_save_check::read_ilst_atoms(path).expect("readable atoms")
+    }
+
+    /// The key of the atom named `fourcc`.
+    fn fourcc(fourcc: &[u8; 4]) -> RawKey {
+        RawKey::Fourcc(*fourcc)
+    }
+
+    /// Nothing is left in `dir` but `name`: no temporary copy stays behind,
+    /// whether the save went ahead or was refused.
+    fn assert_only_the_file_is_there(dir: &Path, name: &str) {
+        let names: Vec<String> = std::fs::read_dir(dir)
+            .expect("list")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, [name.to_string()]);
+    }
+
+    /// `write` on a copy of the real file `name` must be refused, leave the
+    /// file byte for byte as it was, and name everything in `named`.
+    /// Returns the refusal.
+    fn refused_on_real_file(
+        name: &str,
+        write: impl FnOnce(&Path) -> Result<(), MetadataError>,
+        named: &[&str],
+    ) -> String {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), name);
+        let before = std::fs::read(&path).expect("read");
+        let message = match write(&path) {
+            Err(MetadataError::WriteError(message)) => message,
+            other => panic!("{name}: expected a refusal, got {other:?}"),
+        };
+        for part in named {
+            assert!(message.contains(part), "{name}: {part:?} not in: {message}");
+        }
+        assert!(message.contains("Nothing was written"), "{message}");
+        assert!(message.contains("#102"), "{message}");
+        assert_eq!(
+            std::fs::read(&path).expect("read"),
+            before,
+            "{name}: untouched"
+        );
+        assert_only_the_file_is_there(dir.path(), name);
+        message
+    }
+
+    fn title_only(path: &Path) -> Result<(), MetadataError> {
+        write_tags(path, &[(CommonTag::Title, "Changed".into())])
+    }
+
+    #[test]
+    fn the_reviewers_flag_and_freeform_file_is_refused_and_left_untouched() {
+        // The stand-in review of revision 8's own file. A title-only write
+        // used to turn the flags into the text "0" (mutagen then read
+        // `pgap` as TRUE) and rename three freeform atoms to lofty's
+        // spelling; revision 8's list of checks caught none of it.
+        refused_on_real_file(
+            "flags-and-freeform.m4a",
+            title_only,
+            &[
+                "pgap would change: now one value, the whole number 0 in 1 byte; after saving, \
+                 one value, the text \"0\"",
+                "hdvd would change",
+                "shwm would change",
+                "----:com.apple.iTunes:Mood would change: now one value, the text \"calm\"; \
+                 after saving, nothing",
+                "----:com.apple.iTunes:isrc would change",
+                "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN would change",
+                "----:com.apple.iTunes:MOOD would change: now nothing; after saving, one value, \
+                 the text \"calm\"",
+            ],
+        );
+    }
+
+    #[test]
+    fn cover_art_with_an_unusual_second_type_is_refused_and_left_untouched() {
+        // The second value of `covr` is typed as text (1), not an image;
+        // lofty drops the whole atom on reading, so every image was lost.
+        refused_on_real_file(
+            "two-cover-types.m4a",
+            title_only,
+            &[
+                "covr would change: now 2 values: a JPEG image (",
+                "the text \"second-image-bytes\"; after saving, nothing",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_real_file_with_one_value_per_atom_is_written_and_every_other_atom_kept() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "one-value-each.m4a");
+        let before = raw_atoms(&path);
+        assert_eq!(before.len(), 14);
+
+        title_only(&path).expect("nothing but the title changes");
+
+        let after = raw_atoms(&path);
+        let title = fourcc(b"\xa9nam");
+        let changed: Vec<&RawAtom> = after.iter().filter(|a| a.key == title).collect();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(
+            changed[0].values,
+            [RawValue {
+                type_indicator: 1,
+                locale: 0,
+                value: b"Changed".to_vec()
+            }]
+        );
+        // Every other atom byte for byte as it was, in the same numbers.
+        let others = |atoms: &[RawAtom]| {
+            let mut kept: Vec<(RawKey, Vec<u8>)> = atoms
+                .iter()
+                .filter(|a| a.key != title)
+                .map(|a| (a.key.clone(), a.bytes.clone()))
+                .collect();
+            kept.sort();
+            kept
+        };
+        assert_eq!(others(&after), others(&before));
+        let read_back = read_tags(&path).expect("read");
+        assert_eq!(read_back[&CommonTag::Title], ["Changed"]);
+        assert_eq!(read_back[&CommonTag::Language], ["en", "fr"]);
+        assert_only_the_file_is_there(dir.path(), "one-value-each.m4a");
+    }
+
+    #[test]
+    fn replacing_an_atom_that_holds_two_values_is_allowed() {
+        // The stand-in review of revision 8, finding 5: writing the artist
+        // on a file whose `©ART` holds Alice and Bob replaces the atom on
+        // purpose. Allowed; only an atom NOT asked for may not change.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "two-artists.m4a");
+        let before = raw_atoms(&path);
+        write_tags(&path, &[(CommonTag::Artist, "Carol".into())]).expect("a replacement");
+        let after = raw_atoms(&path);
+        let artist = fourcc(b"\xa9ART");
+        let artists: Vec<&RawAtom> = after.iter().filter(|a| a.key == artist).collect();
+        assert_eq!(artists.len(), 1);
+        assert_eq!(artists[0].values.len(), 1);
+        assert_eq!(artists[0].values[0].value, b"Carol");
+        assert_eq!(
+            read_tags(&path).expect("read")[&CommonTag::Artist],
+            ["Carol"]
+        );
+        for other in [fourcc(b"\xa9alb"), fourcc(b"\xa9too")] {
+            let bytes = |atoms: &[RawAtom]| {
+                atoms
+                    .iter()
+                    .filter(|a| a.key == other)
+                    .map(|a| a.bytes.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(bytes(&after), bytes(&before));
+        }
+
+        // Writing the artist that is already FIRST is still asking for the
+        // whole atom: allowed, and it then holds that one artist. (What was
+        // asked for is recorded as the write is made, not worked out from
+        // which values changed — the tag lofty hands over holds only the
+        // first artist, so nothing would look changed.)
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "two-artists.m4a");
+        write_tags(&path, &[(CommonTag::Artist, "Alice".into())]).expect("a replacement");
+        let artists: Vec<RawAtom> = raw_atoms(&path)
+            .into_iter()
+            .filter(|a| a.key == artist)
+            .collect();
+        assert_eq!(artists.len(), 1);
+        assert_eq!(artists[0].values.len(), 1);
+        assert_eq!(artists[0].values[0].value, b"Alice");
+
+        // The same file, the title written instead: `©ART` was not asked
+        // for, and the save would keep only Alice — refused.
+        refused_on_real_file(
+            "two-artists.m4a",
+            title_only,
+            &[
+                "\u{a9}ART would change: now 2 values: the text \"Alice\", the text \"Bob\"; \
+               after saving, one value, the text \"Alice\"",
+            ],
+        );
+    }
+
+    #[test]
+    fn two_track_numbers_in_one_atom_are_refused_unless_the_number_is_written() {
+        // `trkn` holding two values (the M17 branch of revision 8's list,
+        // which no test pinned). A title-only write would keep the first.
+        refused_on_real_file(
+            "two-track-numbers.m4a",
+            title_only,
+            &[
+                "trkn would change: now 2 values: untyped data (8 bytes), untyped data (8 bytes); \
+               after saving, one value, untyped data (8 bytes)",
+            ],
+        );
+        // Writing the track number replaces the atom on purpose, and keeps
+        // the total that was there.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "two-track-numbers.m4a");
+        write_tags(&path, &[(CommonTag::TrackNumber, "5".into())]).expect("a replacement");
+        let trkn: Vec<RawAtom> = raw_atoms(&path)
+            .into_iter()
+            .filter(|a| a.key == fourcc(b"trkn"))
+            .collect();
+        assert_eq!(trkn.len(), 1);
+        assert_eq!(
+            trkn[0].values,
+            [RawValue {
+                type_indicator: 0,
+                locale: 0,
+                value: vec![0, 0, 0, 5, 0, 10, 0, 0]
+            }]
+        );
+    }
+
+    #[test]
+    fn a_change_of_data_type_alone_is_refused() {
+        // `cpil` stored as an UNSIGNED whole number (22); lofty writes it
+        // back as a signed one (21) holding the same byte.
+        refused_on_real_file(
+            "compilation-typed-unsigned.m4a",
+            title_only,
+            &[
+                "cpil would change: now one value, the unsigned whole number 1 in 1 byte; after \
+               saving, one value, the whole number 1 in 1 byte",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_change_of_locale_alone_is_refused() {
+        // ffmpeg's `©too` with a locale of 1; lofty writes every locale as 0.
+        refused_on_real_file(
+            "encoder-with-locale.m4a",
+            title_only,
+            &[
+                "\u{a9}too would change: now one value, the text \"Lavf63.1.101\" with locale 1; \
+               after saving, one value, the text \"Lavf63.1.101\"",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_typical_itunes_style_file_is_refused_until_the_route_keeps_its_atoms() {
+        // What iTunes and Apple Music leave in a file: whole numbers in one
+        // or two bytes, a six-byte disc number, a gapless flag. lofty
+        // rewrites every one of them (four-byte numbers, an eight-byte disc
+        // number, the flag as text), so even a title-only write is refused.
+        // That is the price of never changing what was not asked for until
+        // #102's real fix, a route that keeps these atoms as they are.
+        refused_on_real_file(
+            "itunes-style.m4a",
+            title_only,
+            &[
+                "stik would change: now one value, the whole number 1 in 1 byte; after saving, \
+                 one value, the whole number 1 in 4 bytes",
+                "rtng would change",
+                "tmpo would change: now one value, the whole number 120 in 2 bytes",
+                "akID would change",
+                "disk would change: now one value, untyped data (6 bytes); after saving, one \
+                 value, untyped data (8 bytes)",
+                "pgap would change",
+            ],
+        );
+    }
+
+    /// A registry of one track tag, `x`, written under the freeform key
+    /// `----:com.apple.iTunes:{name}`.
+    fn registry_of(name: &str) -> TagRegistry {
+        TagRegistry::from_toml(&format!(
+            "[track.X]\njson_path = \"x\"\nvalue_type = \"string\"\n\
+             atoms = [{{ namespace = \"----:com.apple.iTunes\", name = \"{name}\" }}]\n"
+        ))
+        .expect("registry")
+    }
+
+    fn registry_write(path: &Path, name: &str, value: &str) -> Result<(), MetadataError> {
+        write_registry_tags(
+            path,
+            &registry_of(name),
+            &serde_json::json!({ "x": value }),
+            TagScope::Track,
+        )
+        .map(|written| assert_eq!(written, 1))
+    }
+
+    #[test]
+    fn a_registry_write_that_would_be_duplicated_or_overridden_is_refused() {
+        // The stand-in review of revision 8, finding 6: both used to be
+        // reported written. A file already holding two ISRC atoms would
+        // keep both, with the new value as a third beside them (ffprobe
+        // shows the last, mutagen all three).
+        refused_on_real_file(
+            "two-isrc-atoms.m4a",
+            |path| registry_write(path, "ISRC", "GBXXX2600001"),
+            &[
+                "----:com.apple.iTunes:ISRC was asked to hold one value, the text \
+               \"GBXXX2600001\", but after saving would hold 3 atoms of that name",
+            ],
+        );
+        // A registry value aimed at the language atom is put back over by
+        // the file's own languages: not stored at all.
+        refused_on_real_file(
+            "language-en.m4a",
+            |path| registry_write(path, "LANGUAGE", "fr"),
+            &[
+                "----:com.apple.iTunes:LANGUAGE was asked to hold one value, the text \"fr\", \
+               but after saving would hold one value, the text \"en\"",
+            ],
+        );
+        // A key the file does not hold yet is stored, and reported so.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "language-en.m4a");
+        registry_write(&path, "ISRC", "GBXXX2600001").expect("a new atom");
+        let isrc = RawKey::Freeform {
+            mean: b"com.apple.iTunes".to_vec(),
+            name: b"ISRC".to_vec(),
+        };
+        let stored: Vec<RawAtom> = raw_atoms(&path)
+            .into_iter()
+            .filter(|a| a.key == isrc)
+            .collect();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].values[0].value, b"GBXXX2600001");
+    }
+
+    #[test]
+    fn a_value_lofty_would_leave_out_is_refused_not_reported_written() {
+        // lofty stores the compilation flag only as 0 or 1; "yes" would
+        // be dropped, and the write used to succeed without storing it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "one-value-each.m4a");
+        let before = std::fs::read(&path).expect("read");
+        let message = match write_tags(&path, &[(CommonTag::Compilation, "yes".into())]) {
+            Err(MetadataError::WriteError(message)) => message,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(
+            message.contains("the value given for cpil cannot be stored in an M4A file"),
+            "{message}"
+        );
+        assert_eq!(std::fs::read(&path).expect("read"), before);
+        // "1" is stored.
+        write_tags(&path, &[(CommonTag::Compilation, "1".into())]).expect("a flag");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_checked_save_through_a_symbolic_link_replaces_the_file_it_points_to() {
+        // The saved copy replaces the real file, not the link: the link is
+        // followed first, so it still points at the (now saved) file.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "one-value-each.m4a");
+        let link = dir.path().join("link.m4a");
+        std::os::unix::fs::symlink(&path, &link).expect("symlink");
+        title_only(&link).expect("write through the link");
+        assert!(std::fs::symlink_metadata(&link)
+            .expect("link")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            read_tags(&path).expect("read")[&CommonTag::Title],
+            ["Changed"]
+        );
     }
 
     #[test]
