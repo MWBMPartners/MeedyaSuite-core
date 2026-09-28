@@ -8,13 +8,17 @@
 This folder holds the one PHP implementation of the
 [Media Language & BCP 47 Policy](../../../docs/standards/media-language-bcp47-policy.md)
 (policy ID `MWBM-MEDIA-LANG`). It is a single self-contained file,
-`MediaLanguagePolicy.php`, with no Composer dependency and no requirement on
-PHP's `intl` extension. It is meant to be **copied verbatim** into a plain
-PHP application — today that means iHymns, iLyricsDB and NetPLAYERapp — the
-same way the policy document itself is copied (see the policy's section 8.3,
-"Copies in other repositories").
+`MediaLanguagePolicy.php`, with no Composer dependency and **no PHP
+extension requirement at all** — not `intl`, not even `ctype` (everything
+that could have used it is a plain regular expression instead), because any
+of those can be left out of a particular PHP build. It is meant to be
+**copied verbatim** into a plain PHP application — today that means
+iHymns, iLyricsDB and NetPLAYERapp — the same way the policy document
+itself is copied (see the policy's section 8.3, "Copies in other
+repositories").
 
-Runs on **PHP 8.1 or later**.
+Runs on **PHP 8.1 or later**, with every PHP extension disabled
+(`php -n`) if that is how the host runs it.
 
 ## What each file is
 
@@ -87,8 +91,14 @@ Policy::iso6392CodesForWriting('yue');      // ['b' => 'und', 't' => 'und'] (no 
 // Building and reading sidecar file names (TEXT-030):
 Policy::buildSidecarName('Film', 'en-GB', [], 'srt');                  // 'Film.en-GB.srt'
 Policy::buildSidecarName('Film', 'EN', ['forced', 'sdh'], 'srt');      // 'Film.en.sdh.forced.srt'
+Policy::buildSidecarName('Film', 'en', [], 'srt', 3);                  // 'Film.en.3.srt'
 Policy::parseSidecarName('Mr. Robot', 'Mr. Robot.en.sdh.srt');
 // ['tag' => 'en', 'unrecognised' => null, 'roles' => ['sdh'], 'number' => null, 'extension' => 'srt']
+// A clash-avoiding number has to be one a reader could make sense of - it
+// throws \InvalidArgumentException for 1, 0, a negative number, or more
+// than nine digits (999999999 is the largest parseSidecarName() will ever
+// read back), rather than silently writing a name nothing could parse:
+Policy::buildSidecarName('Film', 'en', [], 'srt', 1); // throws \InvalidArgumentException
 
 // Stored (canonical) order — the same for everyone, everywhere (Part A):
 $ordered = Policy::sortCanonicalOrder([
@@ -139,7 +149,13 @@ $match = Policy::matchTags('en-GB', 'en');
 
 // Automatic selection (AUTO-010 to AUTO-040) — a different decision from
 // menu order; the answer never depends on list position, only on the
-// track's own 'id':
+// track's own 'id' (AUTO-010's identifier order: identifiers made only of
+// ASCII digits sort first, as numbers - "9" before "10" - then, when two
+// digits-only identifiers are equal as numbers, as plain text - "01"
+// before "1"; every other identifier sorts after, as plain text). Every
+// track's 'id' MUST be unique - both functions throw
+// \InvalidArgumentException immediately if two tracks share one, rather
+// than silently picking one of them:
 $chosenAudioId = Policy::selectAudioTrack($audioTracks, ['en-GB'], accessibility: []);
 $chosenSubtitleId = Policy::selectSubtitleTrack(
     $subtitleTracks,
@@ -155,16 +171,31 @@ it implements and what it deliberately does not do.
 ## Running the conformance tests
 
 `tests/run-conformance.php` runs every case in
-`tests/fixtures/bcp47-language-policy-v1.json` (253 cases). Two kinds of
-case are also re-checked a second way, on top of their normal check: the
-`auto_select_audio` and `auto_select_subtitle` sections are each run again
-with their tracks reversed, to check AUTO-010's "the same answer whatever
-order the tracks are listed in"; and every `canonicalise` case whose
-expected answer is a real tag (not malformed) has that answer run back
-through `canonicalise()` a second time, to check that canonical form is
-stable — canonicalising an already-canonical tag must return it unchanged
-(322 checks in total). Plain PHP, no PHPUnit, so it runs the same way in
-every consumer:
+`tests/fixtures/bcp47-language-policy-v1.json` (268 cases). A case that
+carries `"error": true` (a handful of them: two clearly-wrong sidecar
+numbers, a negative one, one over nine digits, and two pairs of tracks
+sharing an identifier) means the implementation MUST refuse the input
+outright — the runner treats an exception as that case passing and a
+normal return, of any value, as it failing.
+
+Some cases are also checked a second way, on top of their normal check:
+the `auto_select_audio` and `auto_select_subtitle` sections (excluding
+their `error: true` cases, since refusing does not depend on list order)
+are each run again with their tracks reversed, to check AUTO-010's "the
+same answer whatever order the tracks are listed in"; and every
+`canonicalise` case whose expected answer is a real tag (not malformed)
+has that answer run back through `canonicalise()` a second time, to check
+that canonical form is stable — canonicalising an already-canonical tag
+must return it unchanged. Two further checks are PHP-specific
+implementation behaviour the shared, language-neutral fixture cases have
+no way to express: that canonicalising a tag with 20,000 variant subtags
+finishes in well under a second (duplicate-variant detection must be
+linear in the number of variants, not quadratic — see the class doc
+comment on `parseWellFormed()`), and one identifier-ordering case
+(`"99"` before `"1abc"`) chosen specifically because plain byte-string
+order would get it wrong, unlike the two ordinary fixture cases for the
+same rule. 343 checks in total. Plain PHP, no PHPUnit, so it runs the same
+way in every consumer:
 
 ```bash
 # From this repository's own root, using its own copies of the fixtures
@@ -181,7 +212,15 @@ php bindings/php/media-language/tests/run-conformance.php \
 Exit code is `0` only when every case passed AND the number of cases
 actually run matches the number declared in the fixture file (a guard
 against a section being silently skipped). Every failure is printed with
-the case id, what was expected and what was actually returned.
+the case id, what was expected and what was actually returned. Before a
+single case runs, the runner also refuses outright — rather than quietly
+running a smaller or differently-shaped test — if the fixture file has a
+section this runner has never heard of, is missing a section it needs, has
+a section with nothing in it, or has a case that is missing a field the
+schema requires.
+
+Needing no PHP extension applies here too — `php -n` (every extension
+disabled) runs this file exactly the same as an ordinary `php`.
 
 To check the PHP 8.1 floor without installing an old PHP locally:
 

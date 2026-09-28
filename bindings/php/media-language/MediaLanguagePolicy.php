@@ -588,7 +588,7 @@ final class Policy
         // "fre-ca" is different: "fre" is not itself registered as a BCP 47
         // language (only as the old ISO 639-2 code for French), so this
         // shape is the right reading and "fre-ca" becomes "fr-CA".
-        if (preg_match('/^([A-Za-z]{3})-([A-Za-z]{2})$/', $value, $m) === 1
+        if (preg_match('/\A([A-Za-z]{3})-([A-Za-z]{2})\z/', $value, $m) === 1
             && !in_array(strtolower($m[1]), self::data()['languages'], true)
         ) {
             $base = self::fromLegacyThreeLetter($m[1]);
@@ -739,13 +739,23 @@ final class Policy
      * (full < SDH < forced < commentary), regardless of the order $roles
      * was given in.
      *
-     * $number is written only when given and not zero - "a number (.2, .3
-     * …) is added only when two sidecars would otherwise get the same
-     * name, numbering from the second", so there is never a reason to
-     * write a clash-avoiding number of zero.
+     * $number is written only when given - "a number (.2, .3 …) is added
+     * only when two sidecars would otherwise get the same name, numbering
+     * from the second". A non-null $number MUST be at least 2 (numbering
+     * starts at the SECOND file; there is no such thing as a clash-
+     * avoiding number of 0, 1 or a negative amount) and at most
+     * 999,999,999 - nine digits, because parseSidecarName() never reads a
+     * run of more than nine digits back as a number (TEXT-030), so a
+     * number this function wrote could otherwise never be read back at
+     * all. Either limit being broken is a caller error, not a value this
+     * function can make sense of, so it throws rather than silently
+     * writing a name nothing can parse correctly - see the class doc
+     * comment's stance on refusing rather than guessing.
      *
      * @param list<string> $roles Role values as plain strings (see the
      *   Role enum); only 'sdh', 'forced' and 'commentary' matter here.
+     * @throws \InvalidArgumentException if $number is given and is less
+     *   than 2 or more than 999999999.
      */
     public static function buildSidecarName(
         string $stem,
@@ -754,6 +764,14 @@ final class Policy
         string $extension,
         ?int $number = null
     ): string {
+        if ($number !== null && ($number < 2 || $number > 999999999)) {
+            throw new \InvalidArgumentException(
+                "MWBM-MEDIA-LANG: a sidecar clash-avoiding number must be null or between 2 "
+                . "and 999999999 (nine digits - anything longer could never be read back by "
+                . "parseSidecarName()), got {$number}."
+            );
+        }
+
         $canonical = self::canonicalise($tag);
         $language = $canonical->isMalformed() ? 'und' : $canonical->tag;
 
@@ -768,10 +786,7 @@ final class Policy
         usort($words, static fn (string $a, string $b): int => self::SUBTITLE_ROLE_RANK[$a] <=> self::SUBTITLE_ROLE_RANK[$b]);
 
         $parts = array_merge([$stem, $language], $words);
-        if ($number) {
-            // A falsy $number (null, or literally 0) is never written -
-            // clash-avoiding numbers only ever start from 2 in practice,
-            // but there is no reason a 0 should ever appear in a name.
+        if ($number !== null) {
             $parts[] = (string) $number;
         }
         $parts[] = $extension;
@@ -803,13 +818,17 @@ final class Policy
      * no language, because there is only one part between the stem and
      * the extension and it fills the language slot.
      *
-     * Every part after the language is checked, in order found: an
-     * all-ASCII-digit part is the clash-avoiding number (the LAST one
-     * found wins, if there is somehow more than one); a part that reads
-     * (case-insensitively) as `sdh`, `cc`, `hi`, `forced` or `commentary`
-     * adds a role - `cc` and `hi` both mean `sdh`, because other tools
-     * write them, and repeats are silently folded into one; anything else
-     * is ignored, rather than treated as an error.
+     * Every part after the language is checked, in order found: a part
+     * made of ONE TO NINE ASCII digits and nothing else is the clash-
+     * avoiding number (the LAST one found wins, if there is somehow more
+     * than one) - a run of ten or more digits is not a number this format
+     * uses (TEXT-030; buildSidecarName() never writes more than nine, so
+     * ten or more could only be something else that happens to look like
+     * one) and is ignored, exactly like any other unrecognised part; a
+     * part that reads (case-insensitively) as `sdh`, `cc`, `hi`, `forced`
+     * or `commentary` adds a role - `cc` and `hi` both mean `sdh`, because
+     * other tools write them, and repeats are silently folded into one;
+     * anything else is ignored, rather than treated as an error.
      *
      * @return array{
      *     tag: string|null,
@@ -859,7 +878,7 @@ final class Policy
         $roles = [];
         for ($i = 1; $i < count($middle); $i++) {
             $piece = $middle[$i];
-            if ($piece !== '' && ctype_digit($piece)) {
+            if (preg_match('/\A[0-9]{1,9}\z/', $piece) === 1) {
                 $result['number'] = (int) $piece;
                 continue;
             }
@@ -1312,18 +1331,22 @@ final class Policy
     // ------------------------------------------------------------------
 
     /**
-     * Chooses which audio track should play (AUTO-020): tracks placed
-     * (TRACK-050) as commentary or other are skipped unless every track is
-     * one (an alternate mix or audio description CAN be chosen, just after
-     * the main programme - audio description first if the user asked for
-     * it); then each preference is tried in turn for the best match; if
-     * none match, the original track(s); otherwise the default track(s);
-     * otherwise the best by role again (so with nothing else to go on, a
-     * main-programme track still wins over an audio-description track
-     * nobody asked for), then canonical order, then the track's own
-     * identifier - NEVER its position in the given list (AUTO-010), which
-     * is why this function gives the same answer whichever order $tracks
-     * arrives in.
+     * Chooses which audio track should play (AUTO-020): tracks PLACED
+     * (TRACK-050 - the latest of a track's roles decides, and a role this
+     * file does not recognise counts as "other") as commentary or other
+     * are skipped unless every track is one (an alternate mix or audio
+     * description CAN be chosen, just after the main programme - audio
+     * description first if the user asked for it, and a track placed as
+     * audio description because that is the LATEST of its roles, such as
+     * one carrying both "alternate" and "audio_description", is treated as
+     * audio description throughout, not as an alternate); then each
+     * preference is tried in turn for the best match; if none match, the
+     * original track(s); otherwise the default track(s); otherwise the
+     * best by role again (so with nothing else to go on, a main-programme
+     * track still wins over an audio-description track nobody asked for),
+     * then canonical order, then the track's own identifier - NEVER its
+     * position in the given list (AUTO-010), which is why this function
+     * gives the same answer whichever order $tracks arrives in.
      *
      * Returns the chosen track's 'id', or null if $tracks is empty.
      *
@@ -1336,14 +1359,19 @@ final class Policy
      * }> $tracks
      * @param list<string> $preferences
      * @param array{audio_description?: bool} $accessibility
+     * @throws \InvalidArgumentException if two tracks share the same 'id'
+     *   (AUTO-010: the identifier must be unique, or there is nothing safe
+     *   to break a tie on - never guessed at by falling back to list
+     *   position).
      */
     public static function selectAudioTrack(array $tracks, array $preferences, array $accessibility = []): ?string
     {
         if ($tracks === []) {
             return null;
         }
+        self::requireUniqueIdentifiers($tracks);
 
-        $isSpecial = static fn (array $t): bool => array_intersect($t['roles'] ?? [], ['commentary', 'other']) !== [];
+        $isSpecial = static fn (array $t): bool => self::trackRoleRank($t, 'audio') >= self::AUDIO_ROLE_RANK['commentary'];
         $eligible = array_values(array_filter($tracks, static fn (array $t): bool => !$isSpecial($t)));
         if ($eligible === []) {
             // AUTO-020 step 1's exception: "unless every audio track is
@@ -1352,14 +1380,21 @@ final class Policy
         }
 
         $positions = self::canonicalPositions($eligible, 'audio');
+        // The PLACING role decides rank (0 = main, 1 = alternate,
+        // 2 = audio description - commentary/other never reach here,
+        // having been filtered into $isSpecial above), remapped when the
+        // user asked for audio description so THAT rank comes first.
         $rolePriority = static function (array $track) use ($accessibility): int {
-            $roles = $track['roles'] ?? [];
-            $isAudioDescription = in_array('audio_description', $roles, true);
-            $isAlternate = in_array('alternate', $roles, true);
+            $placement = self::trackRoleRank($track, 'audio');
             if (!empty($accessibility['audio_description'])) {
-                return $isAudioDescription ? 0 : ($isAlternate ? 2 : 1);
+                return match ($placement) {
+                    2 => 0,
+                    0 => 1,
+                    1 => 2,
+                    default => 3,
+                };
             }
-            return (!$isAudioDescription && !$isAlternate) ? 0 : ($isAlternate ? 1 : 2);
+            return $placement;
         };
 
         foreach ($preferences as $preference) {
@@ -1382,7 +1417,7 @@ final class Policy
                     ?: ((empty($t1['default']) ? 1 : 0) <=> (empty($t2['default']) ? 1 : 0))
                     ?: ((empty($t1['original']) ? 1 : 0) <=> (empty($t2['original']) ? 1 : 0))
                     ?: ($positions[$t1['id']] <=> $positions[$t2['id']])
-                    ?: ($t1['id'] <=> $t2['id']);
+                    ?: self::compareIdentifiers($t1['id'], $t2['id']);
             });
             return $candidates[0]['track']['id'];
         }
@@ -1396,7 +1431,7 @@ final class Policy
                 return ($rolePriority($t1) <=> $rolePriority($t2))
                     ?: ((empty($t1['default']) ? 1 : 0) <=> (empty($t2['default']) ? 1 : 0))
                     ?: ($positions[$t1['id']] <=> $positions[$t2['id']])
-                    ?: ($t1['id'] <=> $t2['id']);
+                    ?: self::compareIdentifiers($t1['id'], $t2['id']);
             });
             return $flagged[0]['id'];
         }
@@ -1414,7 +1449,7 @@ final class Policy
             }
             $comparison = ($rolePriority($track) <=> $rolePriority($best))
                 ?: ($positions[$track['id']] <=> $positions[$best['id']])
-                ?: ($track['id'] <=> $best['id']);
+                ?: self::compareIdentifiers($track['id'], $best['id']);
             if ($comparison < 0) {
                 $best = $track;
             }
@@ -1440,7 +1475,12 @@ final class Policy
      *
      * A forced track is never chosen by Always, and a full track is never
      * chosen by ForcedOnly (TRACK-030: a forced track is not an ordinary
-     * subtitle track in a different list position).
+     * subtitle track in a different list position). Both use each track's
+     * PLACING role (TRACK-050 - the latest of its roles; an unrecognised
+     * role counts as "other"), not just whether a role is somewhere in its
+     * list: a track carrying both "forced" and "sdh" is PLACED as forced
+     * (forced sorts later than sdh), so ForcedOnly considers it and Always
+     * does not, even though "sdh" is also one of its roles.
      *
      * @param list<array{
      *     id: string,
@@ -1452,6 +1492,8 @@ final class Policy
      *   or null if there is none.
      * @param list<string> $preferences
      * @param array{captions?: bool} $accessibility
+     * @throws \InvalidArgumentException if two tracks share the same 'id'
+     *   (AUTO-010: see selectAudioTrack()'s matching note).
      */
     public static function selectSubtitleTrack(
         array $tracks,
@@ -1460,6 +1502,8 @@ final class Policy
         SubtitleMode $mode,
         array $accessibility = []
     ): ?string {
+        self::requireUniqueIdentifiers($tracks);
+
         if ($mode === SubtitleMode::Off) {
             return null;
         }
@@ -1476,7 +1520,7 @@ final class Policy
             }
             $candidates = [];
             foreach ($tracks as $track) {
-                if (!in_array('forced', $track['roles'] ?? [], true)) {
+                if (self::trackRoleRank($track, 'subtitle') !== self::SUBTITLE_ROLE_RANK['forced']) {
                     continue;
                 }
                 $match = self::matchTags($audioTag, $track['tag']);
@@ -1494,18 +1538,26 @@ final class Policy
                     ?: ($x['match']->distance <=> $y['match']->distance)
                     ?: ((empty($t1['default']) ? 1 : 0) <=> (empty($t2['default']) ? 1 : 0))
                     ?: ($positions[$t1['id']] <=> $positions[$t2['id']])
-                    ?: ($t1['id'] <=> $t2['id']);
+                    ?: self::compareIdentifiers($t1['id'], $t2['id']);
             });
             return $candidates[0]['track']['id'];
         };
 
         $always = static function () use ($tracks, $preferences, $accessibility, $positions): ?string {
+            // Only tracks PLACED as full (no role) or SDH are ever chosen
+            // by "always" - a track placed as forced, commentary or other
+            // (including any role this file does not recognise, which
+            // counts as "other") is excluded, whatever else is in its
+            // role list.
             $ok = array_values(array_filter(
                 $tracks,
-                static fn (array $t): bool => array_intersect($t['roles'] ?? [], ['forced', 'commentary', 'other']) === []
+                // 0 = full subtitles (no recognised role at all) and
+                // self::SUBTITLE_ROLE_RANK['sdh'] (1) are the only two
+                // placements "always" ever offers.
+                static fn (array $t): bool => in_array(self::trackRoleRank($t, 'subtitle'), [0, self::SUBTITLE_ROLE_RANK['sdh']], true)
             ));
             $rolePriority = static function (array $track) use ($accessibility): int {
-                $isSdh = in_array('sdh', $track['roles'] ?? [], true);
+                $isSdh = self::trackRoleRank($track, 'subtitle') === self::SUBTITLE_ROLE_RANK['sdh'];
                 if (!empty($accessibility['captions'])) {
                     return $isSdh ? 0 : 1;
                 }
@@ -1530,7 +1582,7 @@ final class Policy
                         ?: ($x['match']->distance <=> $y['match']->distance)
                         ?: ((empty($t1['default']) ? 1 : 0) <=> (empty($t2['default']) ? 1 : 0))
                         ?: ($positions[$t1['id']] <=> $positions[$t2['id']])
-                        ?: ($t1['id'] <=> $t2['id']);
+                        ?: self::compareIdentifiers($t1['id'], $t2['id']);
                 });
                 return $candidates[0]['track']['id'];
             }
@@ -1541,7 +1593,7 @@ final class Policy
             usort(
                 $defaults,
                 static fn (array $t1, array $t2): int => ($positions[$t1['id']] <=> $positions[$t2['id']])
-                    ?: ($t1['id'] <=> $t2['id'])
+                    ?: self::compareIdentifiers($t1['id'], $t2['id'])
             );
             return $defaults[0]['id'];
         };
@@ -1601,7 +1653,16 @@ final class Policy
     {
         $parts = explode('-', $s);
         foreach ($parts as $part) {
-            if (!preg_match('/^[A-Za-z0-9]{1,8}$/', $part)) {
+            // Anchored with \z, the ABSOLUTE end of the string, not with a
+            // bare $ - PCRE's $ also matches just before a single trailing
+            // newline, so "foo\n" would wrongly pass a check written as
+            // /^[A-Za-z0-9]{1,8}$/, and every part of "en-x-foo\n-bar"
+            // would then look individually well-formed even though the
+            // line break is really part of the value (LANG-001 step 1
+            // only trims specific characters from the very ends of the
+            // WHOLE string, and a line break in the middle is trimmed
+            // nowhere at all).
+            if (!preg_match('/\A[A-Za-z0-9]{1,8}\z/', $part)) {
                 return null;
             }
         }
@@ -1662,15 +1723,27 @@ final class Policy
             $i++;
         }
 
+        // Duplicate check uses a KEYED array (a set: $seenVariants[$v] =
+        // true) rather than in_array() against the growing $variants list.
+        // in_array() on a plain list is a linear scan, so checking EVERY
+        // new variant against every variant already collected is quadratic
+        // in the number of variants - a single crafted tag with 20,000
+        // variant subtags took several seconds to canonicalise before this
+        // fix (a real cost on a server handling untrusted input), and well
+        // under a tenth of a second after it, because isset() on a keyed
+        // array is O(1) regardless of how many keys are already in it.
+        $seenVariants = [];
         while ($i < $count
             && ((strlen($lowered[$i]) >= 5 && strlen($lowered[$i]) <= 8)
                 || (strlen($lowered[$i]) === 4 && self::isAsciiDigit($lowered[$i][0])))
         ) {
-            if (in_array($lowered[$i], $result['variants'], true)) {
+            $variant = $lowered[$i];
+            if (isset($seenVariants[$variant])) {
                 // The same variant twice is malformed (LANG-001 step 3).
                 return null;
             }
-            $result['variants'][] = $lowered[$i];
+            $seenVariants[$variant] = true;
+            $result['variants'][] = $variant;
             $i++;
         }
 
@@ -1751,14 +1824,28 @@ final class Policy
         return implode('-', $out);
     }
 
+    /**
+     * True when $s is one or more ASCII letters and nothing else.
+     *
+     * Deliberately not ctype_alpha(): the ctype functions live in an
+     * extension that a PHP build can be compiled without, and this file's
+     * whole point is to need no extension at all (see the file's top doc
+     * comment). A plain regular expression, anchored at both true ends of
+     * the string (\A and \z, not ^ and a bare $ - see parseWellFormed()'s
+     * comment on why that distinction matters), needs nothing but the PCRE
+     * engine PHP itself is built on.
+     */
     private static function isAsciiAlpha(string $s): bool
     {
-        return $s !== '' && ctype_alpha($s);
+        return preg_match('/\A[A-Za-z]+\z/', $s) === 1;
     }
 
+    /** True when $s is one or more ASCII digits and nothing else. See
+     * isAsciiAlpha()'s comment for why this is a regular expression and
+     * not ctype_digit(). */
     private static function isAsciiDigit(string $s): bool
     {
-        return $s !== '' && ctype_digit($s);
+        return preg_match('/\A[0-9]+\z/', $s) === 1;
     }
 
     /** @param list<array{0: string, 1: string}> $ranges Inclusive [first, last] pairs, ASCII order. */
@@ -1886,7 +1973,7 @@ final class Policy
     private static function canonicalPositions(array $tracks, string $roleTableType): array
     {
         $sorted = $tracks;
-        usort($sorted, static fn (array $a, array $b): int => $a['id'] <=> $b['id']);
+        usort($sorted, static fn (array $a, array $b): int => self::compareIdentifiers($a['id'], $b['id']));
         $ordered = self::canonicalCompareSort(
             $sorted,
             static fn (array $item): int => self::trackRoleRank($item, $roleTableType)
@@ -1896,6 +1983,95 @@ final class Policy
             $positions[$track['id']] = $index;
         }
         return $positions;
+    }
+
+    /**
+     * AUTO-010's identifier order, used everywhere a tie is broken by a
+     * track's own 'id' rather than its position in a list: identifiers
+     * made of ASCII digits only sort FIRST, as numbers ("9" before "10" -
+     * ten tracks numbered the ordinary way are not "1, 10, 2, 3, ..."),
+     * and when two digits-only identifiers are equal as numbers, as plain
+     * byte strings ("01" before "1" - same value, but not the same text,
+     * and text order is the only thing left to decide with). Every other
+     * identifier (anything with so much as one non-digit character in it)
+     * sorts after all of those, in plain byte-string order.
+     *
+     * Deliberately NOT PHP's `<=>` or `<` on the raw strings: PHP compares
+     * two strings as numbers whenever BOTH look like one, which sounds
+     * like what is wanted here but is not quite it - `"01" <=> "1"` comes
+     * out 0 (equal), which would let a stable sort decide their order by
+     * accident, and PHP also treats forms like "1e3" as numeric, which
+     * this policy's "ASCII digits only" does not mean to include.
+     */
+    private static function compareIdentifiers(string $a, string $b): int
+    {
+        $aIsNumeric = self::isAsciiDigit($a);
+        $bIsNumeric = self::isAsciiDigit($b);
+        if ($aIsNumeric !== $bIsNumeric) {
+            return $aIsNumeric ? -1 : 1;
+        }
+        if ($aIsNumeric) {
+            return self::compareDigitStringsNumerically($a, $b) ?: strcmp($a, $b);
+        }
+        return strcmp($a, $b);
+    }
+
+    /**
+     * Compares two strings of ASCII digits AS NUMBERS, without parsing
+     * them into a PHP int first (a track identifier is caller-supplied
+     * text with no promised limit on how many digits it has, and this
+     * comparison must stay correct for a number of any length rather than
+     * silently misbehaving past PHP_INT_MAX). Leading zeros are stripped
+     * from a working copy of each string first (an empty result, meaning
+     * the whole string was zeros, is treated as "0"); a longer remaining
+     * string is always the bigger number, since neither string has a
+     * leading zero left to pad it out; equal length then compares as
+     * plain text, which for two same-length, leading-zero-free digit
+     * strings gives the same order as comparing them as numbers would.
+     * Returns 0 when the two represent the same number, however
+     * differently they are written ("01" and "1") - compareIdentifiers()
+     * is what then breaks that tie by the original text.
+     */
+    private static function compareDigitStringsNumerically(string $a, string $b): int
+    {
+        $strippedA = ltrim($a, '0');
+        $strippedB = ltrim($b, '0');
+        if ($strippedA === '') {
+            $strippedA = '0';
+        }
+        if ($strippedB === '') {
+            $strippedB = '0';
+        }
+        return (strlen($strippedA) <=> strlen($strippedB)) ?: strcmp($strippedA, $strippedB);
+    }
+
+    /**
+     * AUTO-010: "identifiers must be unique. Given two tracks with the
+     * same identifier, the selection function refuses with an error
+     * ... never guess." Called at the very start of selectAudioTrack() and
+     * selectSubtitleTrack(), before anything else about the tracks is
+     * looked at, so a caller finds out immediately rather than getting a
+     * plausible-looking but silently arbitrary answer - with a duplicate
+     * id, the position map built by canonicalPositions() could only ever
+     * keep one of the two tracks' positions anyway, overwriting the
+     * other's under the same key.
+     *
+     * @param list<array{id: string}> $tracks
+     * @throws \InvalidArgumentException if any two tracks share an 'id'.
+     */
+    private static function requireUniqueIdentifiers(array $tracks): void
+    {
+        $seen = [];
+        foreach ($tracks as $track) {
+            if (isset($seen[$track['id']])) {
+                throw new \InvalidArgumentException(
+                    "MWBM-MEDIA-LANG: two tracks share the identifier '{$track['id']}'. "
+                    . 'AUTO-010 requires every track identifier to be unique so a tie can be '
+                    . 'broken safely - refusing rather than guessing which one was meant.'
+                );
+            }
+            $seen[$track['id']] = true;
+        }
     }
 
     /**
@@ -1938,6 +2114,17 @@ final class Policy
      * falls through to PHP's stable sort, preserving input order
      * (UI-045 point 5).
      *
+     * Malformed entries are the one exception to all of that: LANG-026's
+     * "kept, flagged and put last, in the order it was found" applies in a
+     * menu too, not only in stored order, so a malformed item's role,
+     * original flag and any preference are never even looked at - it
+     * always compares as a tie against another malformed item, which (via
+     * PHP's stable sort, same as everywhere else in this file) leaves the
+     * whole malformed group in whatever order it was found. Every
+     * malformed item lands in the SAME group (they all share group key
+     * (8, '') - see groupKey()), so this function is never asked to
+     * compare a malformed item against an ordinary one.
+     *
      * @param array{item: array<string, mixed>, tag: LanguageTag} $a
      * @param array{item: array<string, mixed>, tag: LanguageTag} $b
      * @param list<string> $preferenceTags Canonical preference tags, in
@@ -1950,6 +2137,10 @@ final class Policy
         array $preferenceTags,
         array $accessibility
     ): int {
+        if ($a['tag']->kind === TagKind::Malformed && $b['tag']->kind === TagKind::Malformed) {
+            return 0;
+        }
+
         $aType = $a['item']['type'] ?? '';
         $bType = $b['item']['type'] ?? '';
 
@@ -2097,7 +2288,7 @@ final class Policy
             ? 1
             : 0;
         $base = 1 + ($tag->script !== null ? 1 : 0) + ($tag->region !== null ? 2 : 0);
-        $regionKind = $tag->region === null ? 0 : (ctype_alpha($tag->region) ? 1 : 2);
+        $regionKind = $tag->region === null ? 0 : (self::isAsciiAlpha($tag->region) ? 1 : 2);
 
         $restParts = [];
         if ($tag->extlang !== null) {
