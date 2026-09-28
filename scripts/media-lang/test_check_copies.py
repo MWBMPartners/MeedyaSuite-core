@@ -231,6 +231,76 @@ class CheckCopiesTest(unittest.TestCase):
             ["--init", COMMIT, "--file", f"x/policy.md={cc.POLICY_MASTER_PATH}"]), 1)
         self.assertIn("must include every required file", self.err)
 
+    # --- second review (Codex, 28 Sept 2026) --------------------------------
+
+    def test_lock_outside_the_repository_fails(self):
+        # A VALID lock placed outside the repository (the case Codex found):
+        # without the check, --update would rewrite it and exit 0.
+        outside = tempfile.mkdtemp()
+        outside_lock = os.path.join(outside, "OUTSIDE.lock")
+        with open(cc.DEFAULT_LOCK) as f:
+            before = f.read()
+        with open(outside_lock, "w") as f:
+            f.write(before)
+        self.assertEqual(self.run_checker(["--update", "e" * 40, "--lock", outside_lock]), 1)
+        with open(outside_lock) as f:
+            self.assertEqual(f.read(), before)
+
+    def test_lock_that_is_a_symbolic_link_fails(self):
+        outside = tempfile.mkdtemp()
+        target = os.path.join(outside, "real.lock")
+        os.replace(cc.DEFAULT_LOCK, target)
+        os.symlink(target, cc.DEFAULT_LOCK)
+        with open(target) as f:
+            before = f.read()
+        self.assertEqual(self.run_checker(["--update", COMMIT]), 1)
+        with open(target) as f:
+            self.assertEqual(f.read(), before)
+
+    def test_hard_linked_copy_is_not_written_through(self):
+        outside = tempfile.mkdtemp()
+        outside_file = os.path.join(outside, "outside-policy.md")
+        with open(outside_file, "wb") as f:
+            f.write(b"someone else's file\n")
+        copy = "copies/media-language-bcp47-policy.md"
+        os.unlink(copy)
+        os.link(outside_file, copy)
+        self.assertEqual(self.run_checker(["--update", COMMIT]), 0, self.err)
+        with open(outside_file, "rb") as f:
+            self.assertEqual(f.read(), b"someone else's file\n")
+        with open(copy, "rb") as f:
+            self.assertEqual(f.read(), POLICY)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root can read anything")
+    def test_unreadable_folder_fails_the_check(self):
+        os.makedirs("hidden")
+        os.chmod("hidden", 0)
+        try:
+            self.assertEqual(self.run_checker(), 1)
+            self.assertIn("could not read", self.err)
+        finally:
+            os.chmod("hidden", 0o755)
+
+    def test_in_a_git_checkout_only_tracked_files_are_searched(self):
+        import subprocess
+        subprocess.run(["git", "init", "-q"], check=True)
+        subprocess.run(["git", "add", "-A"], check=True)
+        # Build output git does not track (SwiftPM copies bundled data into
+        # .build) is not a hand-made copy.
+        os.makedirs(".build/res")
+        with open(".build/res/bcp47-language-data-v1.json", "w") as f:
+            f.write("{}")
+        with open(".gitignore", "w") as f:
+            f.write(".build/\n")
+        self.assertEqual(self.run_checker(), 0, self.err)
+        # A tracked copy that is not in the lock is still caught.
+        os.makedirs("elsewhere")
+        with open("elsewhere/bcp47-language-data-v1.json", "w") as f:
+            f.write("{}")
+        subprocess.run(["git", "add", "elsewhere"], check=True)
+        self.assertEqual(self.run_checker(), 1)
+        self.assertIn("not in the lock", self.err)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -51,7 +51,7 @@
     },
     "canonicalise": {
       "type": "array",
-      "description": "LANG-001 canonical form. Implementations call their canonicalise function on 'input'.",
+      "description": "LANG-001 canonical form. Implementations call their canonicalise function on 'input'. Harnesses MUST also check stability: canonicalising 'expected' again (for every case that is not malformed) must return 'expected' unchanged.",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -338,14 +338,16 @@
                             "commentary"
                           ]
                         },
-                        "description": "Roles read from role words (cc and hi read as sdh), without repeats, in TRACK-050 order."
+                        "description": "Roles read from role words (cc and hi read as sdh), without repeats, in TRACK-050 order.",
+                        "uniqueItems": true
                       },
                       "number": {
                         "type": [
                           "integer",
                           "null"
                         ],
-                        "description": "The clash-avoiding number, or null."
+                        "minimum": 0,
+                        "description": "The number part, or null. Readers accept any ASCII digits (other tools may write .1); if there are several, the last counts."
                       },
                       "extension": {
                         "type": "string",

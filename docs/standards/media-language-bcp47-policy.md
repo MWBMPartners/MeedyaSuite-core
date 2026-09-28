@@ -191,6 +191,14 @@ the reference data file):
    case; this is also the form Unicode CLDR uses. Stating it here removes
    any doubt about `en-x-foo-ab`: it stays lower case.)
 
+**Canonical form is stable.** Steps 4 and 5 repeat until the tag stops
+changing — a replacement can turn a tag into a redundant one, as `sgn-DD` →
+`sgn-DE` → `gsg` — and if a replacement leaves the same variant twice, the
+later one is dropped (`ja-Latn-hepburn-heploc-alalc97` →
+`ja-Latn-hepburn-alalc97`). So canonicalising a canonical tag always
+returns it unchanged. Every implementation MUST have this property, and
+every test harness checks it on every `canonicalise` case.
+
 Canonical form does **not** add or remove anything else. It does not add a
 script or region (LANG-024), and it does not remove a script the registry
 calls redundant: `en-Latn` stays `en-Latn`, because the content said so.
@@ -227,12 +235,16 @@ Then exactly one of these applies, in this order:
    Otherwise, if it is a registered language subtag (a genuine ISO 639-3
    code such as `yue` or `cmn`) or in the local-use range `qaa`–`qtz`,
    canonicalise it as a tag (LANG-001). Otherwise it is **unrecognised**.
-3. Three letters, a hyphen and two letters — how Matroska files written
-   before version 4 give a country
+3. Three letters that are **not** themselves a registered language
+   subtag, a hyphen and two letters — how Matroska files written before
+   version 4 give a country
    ([RFC 9559 §12](https://www.rfc-editor.org/rfc/rfc9559#section-12)):
-   read the three letters by step 2 and keep the two letters as the region
-   (`fre-ca` → `fr-CA`). If the three letters are unrecognised or mean
-   `und`, the whole value is **unrecognised**.
+   read the three letters by step 2, keep the two letters as the region,
+   and canonicalise the result (`fre-ca` → `fr-CA`; `ger-DD` → `de-DE`). If
+   the three letters are unrecognised or mean `und`, the whole value is
+   **unrecognised**. When the three letters ARE a registered subtag
+   (`und-GB`, `yue-HK`) the value is an ordinary tag and goes to step 4, so
+   nothing it says is lost.
 4. Anything else (two letters, or a longer tag) is canonicalised as a tag
    (LANG-001); if that finds it malformed, it is **unrecognised**.
 
@@ -373,7 +385,8 @@ promoted), in this fixed order:
 Every code in 1–5 is its own language group — each local-use code too, so
 `qaa` and `qab` are two groups, in ASCII order — and within a group LANG-021
 applies: `und-Latn` sorts after `und`, and `qaa-GB` after `qaa` but before
-`qab`.
+`qab`. In 6 and 7, every tag is a group of its own, keyed by the whole
+canonical tag: `x-bar` and `x-foo` are two groups, not one.
 
 ### LANG-026 — Malformed values are kept, flagged and put last
 
@@ -531,7 +544,10 @@ preferences come first, in the user's priority order.
 A preference's group is its primary language: a preference for `en-GB`
 brings the whole English group forward. A preference may name a special
 code — `zxx` from someone who wants the music-only track, say — and it is
-honoured like any other. A malformed preference is ignored.
+honoured like any other. A private-use or grandfathered preference brings
+forward only its own group, which is that exact tag (LANG-025): a
+preference for `x-foo` promotes `x-foo`, not `x-bar`. A malformed
+preference is ignored.
 
 ### UI-030 — Then the original
 
@@ -626,9 +642,11 @@ script may not be able to read the other.
 
 Match strength, best first: exact → general → specific → related → none.
 Different primary languages never match. These only ever match themselves
-exactly: `und`, `mul`, `mis` and `zxx` (two "unknown" or "uncoded" tracks
-need not be the same language); tags that are private use from the start
-(`x-…`); and grandfathered tags with no replacement (`i-default`). A tag
+exactly: every tag whose primary language is `und`, `mul`, `mis` or `zxx`,
+with or without further subtags (two "unknown" or "uncoded" tracks need not
+be the same language — so `und-Latn` does not match `und-Latn-GB`); tags
+that are private use from the start (`x-…`); and grandfathered tags with no
+replacement (`i-default`). A tag
 that merely *ends* in a private-use part (`en-x-foo`) is an ordinary tag.
 
 **Distance** — for general and specific matches — counts every
@@ -647,7 +665,10 @@ selection MUST NOT be "whatever is first in the menu", and MUST give the
 same answer whatever order the tracks are listed in: where the tie-breaks
 below leave two tracks level, the **track identifier** decides (the number
 or ID the file gives the track — compared as numbers when both are numbers,
-otherwise as plain text), never its position in a list. It MAY use:
+otherwise as plain text), never its position in a list. Wherever the rules
+below say "canonical order", ties that canonical order would leave to list
+position (LANG-026 for malformed values, LANG-027 for equal tags) are
+broken by the identifier instead. It MAY use:
 preferences, exact regional and script preference, original, default,
 forced, roles, accessibility settings, playback context and saved choices.
 
@@ -676,9 +697,10 @@ The subtitle choice depends on the audio chosen and on a subtitle mode:
 - **off** — nothing.
 - **forced only** — the forced track that best matches the *audio's*
   language (related or better; then match strength, fewer removed or extra
-  subtags, default flag, canonical order, identifier). Nothing if there is none, or if the audio's language is
-  `und` (not known), `mul` (several) or `zxx` (none) — there is nothing to
-  match a forced track against.
+  subtags, default flag, canonical order, identifier). Nothing if there is
+  none, or if the audio's primary language is `und` (not known), `mul`
+  (several) or `zxx` (none), with or without further subtags — there is
+  nothing to match a forced track against.
 - **always** — for each preference in order, the best-matching subtitle
   that is not forced, commentary or other (SDH first if the user has asked
   for captions, otherwise full subtitles first; then match strength, fewer
@@ -744,7 +766,13 @@ shape:
   belongs to — never guess where the stem ends — so `Mr. Robot.en.sdh.srt`
   beside `Mr. Robot.mkv` reads as tag `en`, role `sdh`. Because the tag is
   always first, a role word is never mistaken for a language (`sdh` is also
-  the code for Southern Kurdish, and `hi` for Hindi).
+  the code for Southern Kurdish, and `hi` for Hindi). The first part is
+  read with LANG-002's reader, so `Film.eng.srt` reads as `en`; an
+  unrecognised first part reads as `und`, with the original text kept. Of
+  the parts after it, role words are read as roles (each once), a part of
+  ASCII digits is the number (if there are several, the last counts), and
+  any other part is ignored and SHOULD be reported: `Film.en.sdh.backup.srt`
+  reads as tag `en`, role `sdh`.
 
 ### TEXT-040 — Presentation follows Part B
 

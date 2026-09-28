@@ -41,11 +41,19 @@
 #    as "../../../other/repo/README.md" to a file in an unrelated
 #    repository, and that deleting a lock line quietly stopped a file being
 #    checked. Both are closed here.)
-# 3. Every local path stays inside this repository, is not inside .git, and
-#    is not a shortcut (symbolic link) — so --update can never be steered
-#    into writing somewhere else.
-# 4. No file in the repository carries the name of a master file without
-#    being listed in the lock (so removing a line cannot hide a copy).
+# 3. Every local path — and the lock file's own path — stays inside this
+#    repository, is not inside .git, and is not a shortcut (symbolic link).
+#    Files are written by creating a new file beside the old one and moving
+#    it into place, so a hard link can never carry a write out of the
+#    repository either. (A second review, by Codex on 28 Sept 2026, found
+#    the lock path unchecked and hard links unhandled; both closed here.)
+# 4. No file git tracks in the repository carries the name of a master file
+#    without being listed in the lock (so removing a line cannot hide a
+#    copy). Asking git rather than walking the folders means build output
+#    (which git ignores — SwiftPM, for one, copies bundled data into .build)
+#    is never mistaken for a hand-made copy, and a folder that cannot be
+#    read cannot hide one. Outside a git checkout it falls back to walking
+#    the folders, and any folder it cannot read fails the check.
 # 5. Every local copy has the checksum recorded in the lock.
 # 6. The recorded commit is part of MeedyaSuite-core's own history on one of
 #    APPROVED_BRANCHES, asked of GitHub's compare lookup. (GitHub serves a
@@ -80,7 +88,9 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -246,17 +256,33 @@ def parse_lock(lock_path, root):
 
 
 def unlisted_copies(root, files):
-    """Files in the repository named like a master file but not in the lock."""
+    """Files named like a master file but not in the lock. Uses git's list
+    of tracked files when this is a git checkout; otherwise walks the
+    folders and fails if any folder cannot be read."""
     listed = {os.path.normpath(e["local"]) for e in files}
-    found = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "target", ".build")]
-        for name in filenames:
-            if name in DISTINCTIVE_NAMES:
-                rel = os.path.normpath(os.path.relpath(os.path.join(dirpath, name), root))
-                if rel not in listed:
-                    found.append(rel)
-    return sorted(found)
+    candidates = []
+    if os.path.exists(os.path.join(root, ".git")):
+        try:
+            out = subprocess.run(["git", "ls-files", "-z"], cwd=root, check=True,
+                                 capture_output=True).stdout
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise CheckFailed(f"could not list the repository's files with git ({exc}); "
+                              "the check fails rather than passing.")
+        for raw in out.split(b"\0"):
+            if raw:
+                rel = raw.decode("utf-8", errors="replace")
+                if os.path.basename(rel) in DISTINCTIVE_NAMES:
+                    candidates.append(os.path.normpath(rel))
+    else:
+        def refuse(exc):
+            raise CheckFailed(f"could not read {exc.filename} while looking for unlisted copies "
+                              f"({exc.strerror}); the check fails rather than passing.")
+        for dirpath, dirnames, filenames in os.walk(root, onerror=refuse):
+            dirnames[:] = [d for d in dirnames if d != ".git"]
+            for name in filenames + [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]:
+                if name in DISTINCTIVE_NAMES:
+                    candidates.append(os.path.normpath(os.path.relpath(os.path.join(dirpath, name), root)))
+    return sorted(c for c in candidates if c not in listed)
 
 
 def mismatch_message(entry, data, actual):
@@ -271,15 +297,31 @@ def mismatch_message(entry, data, actual):
             "MeedyaSuite-core and run --update.")
 
 
+def replace_file(full, data):
+    """Write data to full by creating a NEW file in the same folder and
+    moving it over the old name. Writing into the existing file instead
+    would also change any other name hard-linked to it — possibly a file
+    outside the repository."""
+    folder = os.path.dirname(full) or "."
+    os.makedirs(folder, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".media-lang-")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, full)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
 def write_lock(lock_path, policy_version, commit, files):
-    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
-    with open(lock_path, "w", encoding="utf-8", newline="\n") as f:
-        f.write("# MWBM-MEDIA-LANG copy lock. Written by scripts/media-lang/check_copies.py\n")
-        f.write("# --init / --update; do not edit by hand. Master: MWBMPartners/MeedyaSuite-core.\n")
-        f.write(f"policy MWBM-MEDIA-LANG {policy_version}\n")
-        f.write(f"source {MASTER_REPO} {commit}\n")
-        for entry in files:
-            f.write(f"file {entry['sha256']} {entry['local']} {entry['master']}\n")
+    lines = ["# MWBM-MEDIA-LANG copy lock. Written by scripts/media-lang/check_copies.py\n",
+             "# --init / --update; do not edit by hand. Master: MWBMPartners/MeedyaSuite-core.\n",
+             f"policy MWBM-MEDIA-LANG {policy_version}\n",
+             f"source {MASTER_REPO} {commit}\n"]
+    lines += [f"file {e['sha256']} {e['local']} {e['master']}\n" for e in files]
+    replace_file(lock_path, "".join(lines).encode("utf-8"))
 
 
 def fetch_into_place(commit, files, root):
@@ -297,10 +339,7 @@ def fetch_into_place(commit, files, root):
     if not policy_version:
         raise CheckFailed(f"the policy document at {commit[:12]} does not state a version")
     for entry, data in downloaded:
-        full = os.path.join(root, entry["local"])
-        os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
-        with open(full, "wb") as f:
-            f.write(data)
+        replace_file(os.path.join(root, entry["local"]), data)
         entry["sha256"] = sha256_bytes(data)
     return policy_version
 
@@ -353,6 +392,9 @@ def main(argv=None):
     args = ap.parse_args(argv)
     root = os.getcwd()
     try:
+        # The lock file is written by --init/--update, so its path gets the
+        # same checks as a copy's path (Codex review, 28 Sept 2026).
+        check_local_path(os.path.relpath(os.path.abspath(args.lock), root).replace(os.sep, "/"), root)
         if args.offline and (os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS")):
             raise CheckFailed("--offline does not check the master, so it is refused in CI "
                               "(the CI or GITHUB_ACTIONS variable is set)")

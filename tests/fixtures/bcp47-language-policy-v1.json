@@ -429,6 +429,26 @@
       "expected": "en-1-abc",
       "kind": "ordinary",
       "note": "A digit is a valid single-character extension subtag."
+    },
+    {
+      "id": "canon-47",
+      "rules": [
+        "LANG-001"
+      ],
+      "input": "ja-Latn-hepburn-heploc-alalc97",
+      "expected": "ja-Latn-hepburn-alalc97",
+      "kind": "ordinary",
+      "note": "A replacement that leaves the same variant twice drops the later one, so the result is stable."
+    },
+    {
+      "id": "canon-48",
+      "rules": [
+        "LANG-001"
+      ],
+      "input": "sgn-DD",
+      "expected": "gsg",
+      "kind": "ordinary",
+      "note": "Steps 4 and 5 repeat until stable: sgn-DD -> sgn-DE (region replaced) -> gsg (redundant tag replaced)."
     }
   ],
   "legacy_three_letter": [
@@ -721,6 +741,30 @@
       ],
       "input": "ajp",
       "expected": "apc"
+    },
+    {
+      "id": "legacy-36",
+      "rules": [
+        "LANG-002"
+      ],
+      "input": "und-GB",
+      "expected": "und-GB"
+    },
+    {
+      "id": "legacy-37",
+      "rules": [
+        "LANG-002"
+      ],
+      "input": "ger-DD",
+      "expected": "de-DE"
+    },
+    {
+      "id": "legacy-38",
+      "rules": [
+        "LANG-002"
+      ],
+      "input": "yue-HK",
+      "expected": "yue-HK"
     }
   ],
   "iso639_2_write": [
@@ -1270,6 +1314,56 @@
         ],
         "number": null,
         "extension": "vtt"
+      }
+    },
+    {
+      "id": "sidecar-17",
+      "rules": [
+        "TEXT-030"
+      ],
+      "mode": "parse",
+      "stem": "Film",
+      "filename": "Film.en.sdh.backup.srt",
+      "expected": {
+        "tag": "en",
+        "unrecognised": null,
+        "roles": [
+          "sdh"
+        ],
+        "number": null,
+        "extension": "srt"
+      }
+    },
+    {
+      "id": "sidecar-18",
+      "rules": [
+        "TEXT-030"
+      ],
+      "mode": "parse",
+      "stem": "Film",
+      "filename": "Film.en.1.srt",
+      "expected": {
+        "tag": "en",
+        "unrecognised": null,
+        "roles": [],
+        "number": 1,
+        "extension": "srt"
+      }
+    },
+    {
+      "id": "sidecar-19",
+      "rules": [
+        "TEXT-030"
+      ],
+      "mode": "parse",
+      "stem": "Film",
+      "filename": "Film.en.2.3.srt",
+      "expected": {
+        "tag": "en",
+        "unrecognised": null,
+        "roles": [],
+        "number": 3,
+        "extension": "srt"
       }
     }
   ],
@@ -3175,6 +3269,43 @@
         "en",
         "fr"
       ]
+    },
+    {
+      "id": "present-21",
+      "rules": [
+        "UI-020",
+        "LANG-025"
+      ],
+      "description": "A private-use preference promotes only its own tag",
+      "preferences": [
+        "x-foo"
+      ],
+      "accessibility": {},
+      "display_names": {
+        "en": "English"
+      },
+      "collation_keys": {
+        "en": "english"
+      },
+      "items": [
+        {
+          "id": "en",
+          "tag": "en"
+        },
+        {
+          "id": "x-bar",
+          "tag": "x-bar"
+        },
+        {
+          "id": "x-foo",
+          "tag": "x-foo"
+        }
+      ],
+      "expected": [
+        "x-foo",
+        "en",
+        "x-bar"
+      ]
     }
   ],
   "subtitle_menu": [
@@ -3685,6 +3816,18 @@
         "level": "exact",
         "distance": 0
       }
+    },
+    {
+      "id": "match-32",
+      "rules": [
+        "MATCH-040"
+      ],
+      "preference": "und-Latn",
+      "candidate": "und-Latn-GB",
+      "expected": {
+        "level": "none",
+        "distance": 0
+      }
     }
   ],
   "auto_select_audio": [
@@ -4091,6 +4234,29 @@
         }
       ],
       "expected": "t2"
+    },
+    {
+      "id": "audio-16",
+      "rules": [
+        "AUTO-010",
+        "LANG-026"
+      ],
+      "description": "Malformed languages: the identifier decides, not the list position",
+      "preferences": [],
+      "accessibility": {},
+      "tracks": [
+        {
+          "id": "t2",
+          "tag": "English",
+          "roles": []
+        },
+        {
+          "id": "t1",
+          "tag": "Deutsch",
+          "roles": []
+        }
+      ],
+      "expected": "t1"
     }
   ],
   "auto_select_subtitle": [
@@ -4553,6 +4719,28 @@
         {
           "id": "s1",
           "tag": "en",
+          "roles": [
+            "forced"
+          ]
+        }
+      ],
+      "expected": null
+    },
+    {
+      "id": "subs-18",
+      "rules": [
+        "AUTO-030",
+        "MATCH-040"
+      ],
+      "description": "Forced only: audio of unknown language with a script still matches nothing",
+      "mode": "forced_only",
+      "preferences": [],
+      "accessibility": {},
+      "audio": "und-Latn",
+      "tracks": [
+        {
+          "id": "s1",
+          "tag": "und-Latn",
           "roles": [
             "forced"
           ]
