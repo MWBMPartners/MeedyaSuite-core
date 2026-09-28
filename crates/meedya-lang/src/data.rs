@@ -70,10 +70,21 @@ pub fn embedded_data_version() -> &'static str {
 /// entry in `bcp47-language-data-v1.schema.json`). Used for the
 /// registry's local-use ranges: `qaa`–`qtz` (languages), `Qaaa`–`Qabx`
 /// (scripts), `QM`–`QZ` and `XA`–`XZ` (regions).
+///
+/// `value` must also be the same length as the range's two ends. Plain
+/// text comparison alone is not enough: `qb` sorts between `qaa` and
+/// `qtz`, but a two-letter subtag is not one of the three-letter
+/// local-use codes. Before policy revision 4 this check had no length
+/// test, so `qb` counted as local use — `iso639_2_code` then wrote `qb`
+/// into a three-letter field, and `canonicalise` did not report `qb` as
+/// unregistered.
 pub(crate) fn in_ranges(value: &str, ranges: &[(String, String)]) -> bool {
-    ranges
-        .iter()
-        .any(|(first, last)| first.as_str() <= value && value <= last.as_str())
+    ranges.iter().any(|(first, last)| {
+        value.len() == first.len()
+            && value.len() == last.len()
+            && first.as_str() <= value
+            && value <= last.as_str()
+    })
 }
 
 /// The bibliographic and terminology ISO 639-2 codes for one BCP 47
@@ -178,10 +189,15 @@ pub(crate) struct Data {
 impl Data {
     /// True when `language` (already lower case) is one of the codes
     /// TRACK-070 says are written as themselves — the ISO 639-2 range
-    /// reserved for local use.
+    /// reserved for local use, `qaa`–`qtz`. Three ASCII letters are
+    /// required: `qb` sorts inside the range as text but is not a
+    /// local-use code (see [`in_ranges`] for the fault this closes).
     pub(crate) fn is_iso639_2_local_use(&self, language: &str) -> bool {
-        self.iso639_2_local_use.0.as_str() <= language
-            && language <= self.iso639_2_local_use.1.as_str()
+        let (first, last) = (&self.iso639_2_local_use.0, &self.iso639_2_local_use.1);
+        language.len() == 3
+            && language.bytes().all(|b| b.is_ascii_lowercase())
+            && first.as_str() <= language
+            && language <= last.as_str()
     }
 }
 

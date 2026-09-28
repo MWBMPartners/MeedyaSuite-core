@@ -17,8 +17,10 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::canonical::{self, GroupKey, LanguageItem, BUCKET_MALFORMED};
-use crate::roles::{self, Role, TrackType};
+use serde::{Deserialize, Serialize};
+
+use crate::canonical::{self, GroupKey, BUCKET_MALFORMED};
+use crate::roles::{self, Role, RoleItem, TrackType};
 use crate::tag::LanguageTag;
 
 /// The two accessibility preferences AUTO-040 and UI-045 read: has the
@@ -27,7 +29,7 @@ use crate::tag::LanguageTag;
 /// means "no such preference" — this struct never distinguishes "not
 /// asked" from "asked for the opposite", because there is no opposite to
 /// ask for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Accessibility {
     pub audio_description: bool,
     pub captions: bool,
@@ -40,11 +42,11 @@ pub struct Accessibility {
 /// selecting a track never reorders the menu, and the surest way to keep
 /// that true is for the ordering function to have nothing to select from
 /// in the first place.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PresentationContext {
     /// Already-canonical preferences, highest priority first. A malformed
-    /// preference is simply ignored, per LANG-026 (nothing to place it
-    /// on the standing of "preferred").
+    /// preference is ignored (UI-020): it matches nothing (MATCH-010), so
+    /// it brings no group forward and promotes no item.
     pub preferences: Vec<LanguageTag>,
     pub accessibility: Accessibility,
 }
@@ -54,7 +56,10 @@ pub struct PresentationContext {
 /// can move it forward within its group (UI-045). A plain language item
 /// with no track-like roles — a translation in a picker, say — reports
 /// `None` from [`PresentationItem::kind`] instead of one of these.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serialises as `audio`, `subtitle`, `text`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PresentationKind {
     Audio,
     Subtitle,
@@ -62,18 +67,17 @@ pub enum PresentationKind {
 }
 
 /// Anything that can appear in a presentation list or menu: it has a
-/// language (via [`LanguageItem`]), and optionally a kind and roles.
-/// Implement this on your own item type to build a menu with
-/// [`sort_for_presentation`] or [`subtitle_menu`].
-pub trait PresentationItem: LanguageItem {
+/// language and roles (via [`RoleItem`], which builds on
+/// [`LanguageItem`](crate::LanguageItem); both default to "not original"
+/// and "no roles"), and optionally a kind. Implement this on your own item
+/// type to build a menu with [`sort_for_presentation`] or
+/// [`subtitle_menu`]. A plain language item needs only an empty
+/// `impl RoleItem for MyItem {}` beside this.
+pub trait PresentationItem: RoleItem {
     /// `None` for a plain language item (no roles apply); `Some(kind)`
     /// for something track-shaped. Defaults to `None`.
     fn kind(&self) -> Option<PresentationKind> {
         None
-    }
-    /// The item's roles (TRACK-010). Defaults to none.
-    fn roles(&self) -> &[Role] {
-        &[]
     }
 }
 
@@ -134,11 +138,12 @@ fn group_order<T: PresentationItem>(
         .collect();
     // UI-030 (as revised): several original groups are ordered among
     // themselves the same way UI-040 orders "everything else" — ordinary
-    // languages by localised name, so a menu with two original languages
-    // still reads alphabetically rather than by code; any original
-    // special code sorts after all of those, in its own fixed order.
+    // languages by localised name (ties by primary language code — see
+    // `by_name_then_code`), so a menu with two original languages still
+    // reads alphabetically rather than by code; any original special code
+    // sorts after all of those, in its own fixed order.
     original_groups.sort_by(|a, b| match (a.0 == 0, b.0 == 0) {
-        (true, true) => compare_groups(&a.1, &b.1),
+        (true, true) => by_name_then_code(compare_groups, &a.1, &b.1),
         (false, false) => a.cmp(b),
         (true, false) => Ordering::Less,
         (false, true) => Ordering::Greater,
@@ -151,15 +156,14 @@ fn group_order<T: PresentationItem>(
     }
 
     // UI-040: every remaining ORDINARY group (bucket 0), alphabetically by
-    // localised name via the caller's collation, falling back to the
-    // primary language code on a tie — both parts of that are the
-    // caller's `compare_groups` closure's job, per its own contract.
+    // localised name via the caller's collation, then by primary language
+    // code when two names compare equal (`by_name_then_code`).
     let mut rest: Vec<GroupKey> = present
         .iter()
         .filter(|g| g.0 == 0 && !seen.contains(*g))
         .cloned()
         .collect();
-    rest.sort_by(|a, b| compare_groups(&a.1, &b.1));
+    rest.sort_by(|a, b| by_name_then_code(compare_groups, &a.1, &b.1));
     for g in rest {
         seen.insert(g.clone());
         order.push(g);
@@ -190,6 +194,24 @@ fn group_order<T: PresentationItem>(
         .enumerate()
         .map(|(rank, g)| (g, rank))
         .collect()
+}
+
+/// UI-040's group order for two ordinary groups: the caller's
+/// localised-name comparison first, then — when it says the two names are
+/// equal — the primary language codes as plain ASCII ("Groups with the
+/// same name are ordered by primary language code").
+///
+/// This crate does the tie-break itself rather than trusting the caller's
+/// closure to. Before policy revision 4 it did not, and a closure that
+/// compared names only (a natural thing to write — a collator does exactly
+/// that) left tied groups in whatever order a hash set happened to list
+/// them, which changes from one run to the next.
+fn by_name_then_code(
+    compare_groups: &impl Fn(&str, &str) -> Ordering,
+    a: &str,
+    b: &str,
+) -> Ordering {
+    compare_groups(a, b).then_with(|| a.cmp(b))
 }
 
 /// The tuple items within one group are sorted by (UI-045):
@@ -274,7 +296,9 @@ fn within_group_key<T: PresentationItem>(
 /// `compare_groups` compares two primary-language subtags using the
 /// caller's localised-name collation for the current interface language
 /// — real callers use platform locale data (`Intl.DisplayNames`,
-/// `NSLocale`, ICU); this crate never invents its own name list.
+/// `NSLocale`, ICU); this crate never invents its own name list. It only
+/// has to compare the NAMES: when it returns [`Ordering::Equal`] this
+/// function breaks the tie by primary language code itself (UI-040).
 ///
 /// This function never takes a "selected" item (UI-050): selecting a
 /// track is shown with a tick or highlight, never by moving it — an
@@ -308,11 +332,37 @@ pub fn sort_for_presentation<T: PresentationItem>(
 /// One row of a subtitle menu (UI-060): the fixed "Off" entry, which is
 /// not a language and is never sorted with the tracks, or a reference to
 /// one of the (already sorted) subtitle tracks.
+///
+/// Always `Clone` and `Copy` (it holds only a reference), whatever `T`
+/// is. Two entries are equal when both are `Off`, or both are tracks
+/// that compare equal (`T: PartialEq`).
 #[derive(Debug)]
 pub enum MenuEntry<'a, T> {
     Off,
     Track(&'a T),
 }
+
+// Written by hand, not derived: `#[derive(Clone, Copy)]` would demand
+// `T: Clone`/`T: Copy`, although copying a reference never needs either.
+impl<T> Clone for MenuEntry<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for MenuEntry<'_, T> {}
+
+impl<T: PartialEq> PartialEq for MenuEntry<'_, T> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (MenuEntry::Off, MenuEntry::Off) => true,
+            (MenuEntry::Track(a), MenuEntry::Track(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl<T: Eq> Eq for MenuEntry<'_, T> {}
 
 /// Builds a subtitle menu per UI-060: sorts `items` into presentation
 /// order (exactly as [`sort_for_presentation`] does — this is not a
@@ -332,9 +382,14 @@ pub fn subtitle_menu<'a, T: PresentationItem>(
 }
 
 /// Builds a menu label per UI-070: the language name, then each present
-/// role's localised name — ordered by TRACK-050 for the given track type,
-/// via `role_name` — then the channel layout if given, all joined with
-/// " — " (space, em dash U+2014, space).
+/// role's localised name — once each, ordered by TRACK-050 for the given
+/// track type, via `role_name` — then the channel layout if given, all
+/// joined with " — " (space, em dash U+2014, space).
+///
+/// A role listed twice appears once ("Roles appear once each"). Roles
+/// TRACK-050 ranks the same (for audio, `sdh`, `forced` and `other` are all
+/// "anything else") keep the order they were given in. (Before policy
+/// revision 4 a repeated role was shown twice.)
 ///
 /// `language_name` is a localised name resolved by the caller (this
 /// crate holds no name data); an embedded track title is never used here
@@ -346,7 +401,15 @@ pub fn label(
     role_name: impl Fn(Role) -> String,
     channels: Option<&str>,
 ) -> String {
-    let mut ordered_roles: Vec<Role> = roles.to_vec();
+    // Duplicates are removed BEFORE sorting, keeping the first of each:
+    // removing neighbours after a sort would miss a repeat separated by a
+    // different role of the same rank (`[sdh, other, sdh]` on audio).
+    let mut ordered_roles: Vec<Role> = Vec::with_capacity(roles.len());
+    for &role in roles {
+        if !ordered_roles.contains(&role) {
+            ordered_roles.push(role);
+        }
+    }
     ordered_roles.sort_by_key(|&r| roles::individual_rank(track_type, r));
 
     let mut parts: Vec<String> = Vec::with_capacity(2 + ordered_roles.len());
@@ -363,6 +426,7 @@ pub fn label(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical::LanguageItem;
     use crate::tag::canonicalise;
 
     struct Item {
@@ -382,12 +446,15 @@ mod tests {
         }
     }
 
+    impl RoleItem for Item {
+        fn roles(&self) -> &[Role] {
+            &self.roles
+        }
+    }
+
     impl PresentationItem for Item {
         fn kind(&self) -> Option<PresentationKind> {
             self.kind
-        }
-        fn roles(&self) -> &[Role] {
-            &self.roles
         }
     }
 
@@ -479,5 +546,73 @@ mod tests {
         sort_for_presentation(&mut items, &context, compare);
         let order: Vec<&str> = items.iter().map(|i| i.id).collect();
         assert_eq!(order, ["en-GB", "en", "en-AU", "en-US", "fr"]);
+    }
+
+    #[test]
+    fn groups_with_equal_names_are_ordered_by_code_by_the_crate_itself() {
+        // UI-040: the caller's comparison says every name is equal; the
+        // crate must still give a fixed order, by primary language code.
+        // Before policy revision 4 tied groups kept a hash set's order,
+        // which changes between runs — with eight tied groups a run giving
+        // the right order by luck is about one in forty thousand.
+        let codes = ["zu", "nl", "ja", "fr", "es", "en", "de", "ar"];
+        let mut items: Vec<Item> = codes.iter().map(|c| plain(c, c, false)).collect();
+        let context = PresentationContext::default();
+        sort_for_presentation(&mut items, &context, |_: &str, _: &str| Ordering::Equal);
+        let order: Vec<&str> = items.iter().map(|i| i.id).collect();
+        assert_eq!(order, ["ar", "de", "en", "es", "fr", "ja", "nl", "zu"]);
+    }
+
+    #[test]
+    fn original_groups_with_equal_names_are_ordered_by_code_too() {
+        let mut items = vec![
+            plain("nl", "nl", true),
+            plain("fr", "fr", true),
+            plain("de", "de", true),
+            plain("en", "en", false),
+        ];
+        let context = PresentationContext::default();
+        sort_for_presentation(&mut items, &context, |_: &str, _: &str| Ordering::Equal);
+        let order: Vec<&str> = items.iter().map(|i| i.id).collect();
+        assert_eq!(order, ["de", "fr", "nl", "en"]);
+    }
+
+    #[test]
+    fn a_label_lists_each_role_once() {
+        let name = |r: Role| r.as_str().to_string();
+        assert_eq!(
+            label(
+                TrackType::Subtitle,
+                "English",
+                &[Role::Sdh, Role::Sdh, Role::Forced],
+                name,
+                None
+            ),
+            "English — sdh — forced"
+        );
+        // A repeat separated by a different role of the same rank (audio
+        // ranks sdh and other alike): still shown once, first-seen order.
+        assert_eq!(
+            label(
+                TrackType::Audio,
+                "English",
+                &[Role::Sdh, Role::Other, Role::Sdh],
+                name,
+                Some("5.1")
+            ),
+            "English — sdh — other — 5.1"
+        );
+    }
+
+    #[test]
+    fn menu_entries_copy_and_compare_without_bounds_on_copy() {
+        #[derive(PartialEq)]
+        struct NotCopy(u8);
+        let a = NotCopy(1);
+        let entry = MenuEntry::Track(&a);
+        let copied = entry;
+        assert!(entry == copied);
+        assert!(MenuEntry::<NotCopy>::Off == MenuEntry::Off);
+        assert!(entry != MenuEntry::Off);
     }
 }

@@ -4,14 +4,17 @@
 // meedya-lang::sidecar — TEXT-030: naming a sidecar file by language
 // (subtitles, lyrics), and reading one back. Its own module because
 // naming a file is a different job from any of tag parsing, ordering,
-// matching or selection — the policy's section 9 keeps these apart, and
-// this one didn't exist in version 1.0.0 of the policy at all; it was
-// added in the first revision after independent review.
+// matching or selection — the policy's section 9 keeps these apart.
+// TEXT-030 is part of policy 1.0.0; it was tightened in the revisions made
+// before that version was released, and this module follows the current
+// text.
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::roles::{individual_rank, Role, TrackType};
-use crate::tag::{canonicalise, from_legacy_three_letter};
+use crate::tag::from_legacy_three_letter;
 
 /// [`build_sidecar_name`] was asked for a clash-avoiding number outside
 /// the range TEXT-030 allows: 2 through 999,999,999 inclusive. `0` and
@@ -22,7 +25,7 @@ use crate::tag::{canonicalise, from_legacy_three_letter};
 /// treats a run of ten or more digits as plain text, not a number, so
 /// building one that a reader could never parse back would silently
 /// produce an unreadable name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct InvalidSidecarNumber {
     pub number: i64,
 }
@@ -40,11 +43,11 @@ impl fmt::Display for InvalidSidecarNumber {
 impl std::error::Error for InvalidSidecarNumber {}
 
 /// The parts read back out of a sidecar file name by [`parse_sidecar_name`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SidecarParts {
     /// The canonical language tag, `"und"` when the language part was
     /// unrecognised, or `None` when the file name has no language part at
-    /// all (just `{stem}.{ext}}`).
+    /// all (just `{stem}.{ext}`).
     pub tag: Option<String>,
     /// The language part exactly as written, when [`from_legacy_three_letter`]
     /// could not make sense of it (`tag` is then `Some("und".to_string())`
@@ -57,6 +60,14 @@ pub struct SidecarParts {
     pub roles: Vec<Role>,
     /// The clash-avoiding number, if the name carried one.
     pub number: Option<u32>,
+    /// Parts after the language that were neither a role word nor a
+    /// number, exactly as written and in the order found — TEXT-030 says
+    /// they are ignored and SHOULD be reported, so they are kept here for
+    /// the caller to report (`Film.en.sdh.backup.srt` gives
+    /// `["backup"]`). A run of ten or more digits is here too: it is not a
+    /// number. An earlier number part overridden by a later one is not:
+    /// it was a number, just not the one that counts.
+    pub ignored: Vec<String>,
     /// The file extension, without its leading dot.
     pub extension: String,
 }
@@ -93,10 +104,18 @@ fn role_from_word(word: &str) -> Option<Role> {
 /// Builds a sidecar file name per TEXT-030:
 /// `{stem}.{tag}[.{role}…][.{n}].{extension}`.
 ///
-/// `tag` is a raw language value (canonicalised first); a malformed value
-/// becomes `und` rather than being written into a file name at all — a
-/// malformed value can hold characters unsafe in a path. A grandfathered
-/// or private-use tag keeps its own canonical text.
+/// `tag` is a raw language value, read with LANG-002's reader
+/// ([`from_legacy_three_letter`]) exactly as [`parse_sidecar_name`] will
+/// read the name back — so `fre` is written as `fr`, and a value the
+/// reader does not recognise (a malformed value, or an unregistered
+/// three-letter code such as `zzz`) as `und`. What this writes is
+/// therefore always what the reader reads back. A malformed value never
+/// reaches a file name — it can hold characters unsafe in a path. A
+/// grandfathered or private-use tag keeps its own canonical text.
+///
+/// (Before policy revision 4 the builder canonicalised the value as a
+/// tag instead, which wrote `fre` and `zzz` into names unchanged — names a
+/// reader then read back as `fr` and `und`.)
 ///
 /// Only `sdh`, `forced` and `commentary` ever produce a role word, in
 /// that TRACK-050 order, without repeats, regardless of `roles`' own
@@ -127,11 +146,9 @@ pub fn build_sidecar_name(
         }
     }
 
-    let canonical = canonicalise(tag);
-    let tag_text = if canonical.is_malformed() {
-        "und".to_string()
-    } else {
-        canonical.tag
+    let tag_text = match from_legacy_three_letter(tag) {
+        Some(read) => read.tag,
+        None => "und".to_string(),
     };
 
     let mut role_words: Vec<&'static str> = Vec::new();
@@ -164,7 +181,8 @@ pub fn build_sidecar_name(
 /// (`sdh` is also the code for Southern Kurdish, and `hi` for Hindi: only
 /// the FIRST part is ever read as a language, so position — not spelling
 /// — decides). Remaining parts are read as a role word, a number, or
-/// ignored if neither.
+/// ignored if neither — and an ignored part is returned in
+/// [`SidecarParts::ignored`] so the caller can report it.
 pub fn parse_sidecar_name(stem: &str, filename: &str) -> Option<SidecarParts> {
     let prefix = format!("{stem}.");
     let rest = filename.strip_prefix(&prefix)?;
@@ -182,6 +200,7 @@ pub fn parse_sidecar_name(stem: &str, filename: &str) -> Option<SidecarParts> {
             unrecognised: None,
             roles: Vec::new(),
             number: None,
+            ignored: Vec::new(),
             extension,
         });
     }
@@ -194,6 +213,7 @@ pub fn parse_sidecar_name(stem: &str, filename: &str) -> Option<SidecarParts> {
 
     let mut roles: Vec<Role> = Vec::new();
     let mut number: Option<u32> = None;
+    let mut ignored: Vec<String> = Vec::new();
     for segment in segments {
         // A number part is one to nine ASCII digits (TEXT-030, as
         // revised) — nine digits is the most that fits in the builder's
@@ -215,8 +235,11 @@ pub fn parse_sidecar_name(stem: &str, filename: &str) -> Option<SidecarParts> {
             if !roles.contains(&role) {
                 roles.push(role);
             }
+            continue;
         }
-        // Anything else is ignored, per TEXT-030.
+        // Anything else is ignored, per TEXT-030 — and kept so the caller
+        // can report it (a SHOULD in TEXT-030).
+        ignored.push(segment.to_string());
     }
     roles.sort_by_key(|&r| individual_rank(TrackType::Subtitle, r));
 
@@ -225,6 +248,7 @@ pub fn parse_sidecar_name(stem: &str, filename: &str) -> Option<SidecarParts> {
         unrecognised,
         roles,
         number,
+        ignored,
         extension,
     })
 }
@@ -408,5 +432,57 @@ mod tests {
         let parts = parse_sidecar_name("Film", "Film.en.sdh.backup.srt").unwrap();
         assert_eq!(parts.roles, vec![Role::Sdh]);
         assert_eq!(parts.number, None);
+        assert_eq!(parts.ignored, vec!["backup".to_string()]);
+    }
+
+    #[test]
+    fn ignored_parts_are_reported_in_order_and_numbers_are_not() {
+        let parts = parse_sidecar_name("Film", "Film.en.x.2.1234567890.CC.old.3.srt").unwrap();
+        assert_eq!(parts.roles, vec![Role::Sdh]);
+        assert_eq!(parts.number, Some(3));
+        assert_eq!(
+            parts.ignored,
+            vec!["x".to_string(), "1234567890".to_string(), "old".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_builder_reads_its_input_like_a_reader() {
+        // TEXT-030 (policy revision 4): an old three-letter code is
+        // written as the tag a reader reads back; an unrecognised one as
+        // und. Both used to be written unchanged.
+        assert_eq!(
+            build_sidecar_name("Film", "fre", &[], "srt", None),
+            Ok("Film.fr.srt".to_string())
+        );
+        assert_eq!(
+            build_sidecar_name("Film", "zzz", &[], "srt", None),
+            Ok("Film.und.srt".to_string())
+        );
+        assert_eq!(
+            build_sidecar_name("Film", "fre-ca", &[Role::Sdh], "srt", None),
+            Ok("Film.fr-CA.sdh.srt".to_string())
+        );
+        // What the builder writes, the reader reads back.
+        for value in [
+            "fre",
+            "zzz",
+            "eng",
+            "x-foo",
+            "i-default",
+            "XXX",
+            "en-GB",
+            "English",
+        ] {
+            let name = build_sidecar_name("Film", value, &[], "srt", None).unwrap();
+            let read = parse_sidecar_name("Film", &name).unwrap();
+            assert_eq!(read.unrecognised, None, "{value} -> {name}");
+            let written = name
+                .strip_prefix("Film.")
+                .unwrap()
+                .strip_suffix(".srt")
+                .unwrap();
+            assert_eq!(read.tag.as_deref(), Some(written), "{value} -> {name}");
+        }
     }
 }

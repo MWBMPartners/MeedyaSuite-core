@@ -35,7 +35,8 @@ use meedya_lang::{
     from_posix_locale, iso639_2_write, label, match_tags, parse_sidecar_name, select_audio,
     select_subtitle, sort_canonical, sort_for_presentation, sort_tracks, subtitle_menu,
     Accessibility, LanguageItem, LanguageTag, MatchLevel, MenuEntry, PresentationContext,
-    PresentationItem, PresentationKind, Role, SelectableTrack, SubtitleMode, TrackItem, TrackType,
+    PresentationItem, PresentationKind, Role, RoleItem, SelectableTrack, SubtitleMode, TrackItem,
+    TrackType,
 };
 
 // ---------------------------------------------------------------------
@@ -270,7 +271,7 @@ struct LabelCase {
 #[derive(Deserialize)]
 struct MatchExpected {
     level: String,
-    distance: u8,
+    distance: usize,
 }
 
 #[derive(Deserialize)]
@@ -405,12 +406,15 @@ impl LanguageItem for TrackTestItem {
     }
 }
 
+impl RoleItem for TrackTestItem {
+    fn roles(&self) -> &[Role] {
+        &self.roles
+    }
+}
+
 impl TrackItem for TrackTestItem {
     fn track_type(&self) -> TrackType {
         self.track_type
-    }
-    fn roles(&self) -> &[Role] {
-        &self.roles
     }
 }
 
@@ -431,12 +435,15 @@ impl LanguageItem for PresentationTestItem {
     }
 }
 
+impl RoleItem for PresentationTestItem {
+    fn roles(&self) -> &[Role] {
+        &self.roles
+    }
+}
+
 impl PresentationItem for PresentationTestItem {
     fn kind(&self) -> Option<PresentationKind> {
         self.kind
-    }
-    fn roles(&self) -> &[Role] {
-        &self.roles
     }
 }
 
@@ -449,22 +456,28 @@ struct SelectTestTrack {
     original: bool,
 }
 
+impl LanguageItem for SelectTestTrack {
+    fn language(&self) -> &LanguageTag {
+        &self.tag
+    }
+    fn is_original(&self) -> bool {
+        self.original
+    }
+}
+
+impl RoleItem for SelectTestTrack {
+    fn roles(&self) -> &[Role] {
+        &self.roles
+    }
+}
+
 impl SelectableTrack for SelectTestTrack {
     type Id = String;
     fn id(&self) -> Self::Id {
         self.id.clone()
     }
-    fn language(&self) -> &LanguageTag {
-        &self.tag
-    }
-    fn roles(&self) -> &[Role] {
-        &self.roles
-    }
     fn is_default(&self) -> bool {
         self.default
-    }
-    fn is_original(&self) -> bool {
-        self.original
     }
 }
 

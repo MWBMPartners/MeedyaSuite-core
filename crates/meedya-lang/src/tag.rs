@@ -11,6 +11,9 @@
 // the pipeline.
 
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+
+use serde::{Deserialize, Serialize};
 
 use crate::data::{self, Data};
 
@@ -18,7 +21,11 @@ use crate::data::{self, Data};
 /// LANG-001. A caller should always check this before trusting the parsed
 /// fields — `language`/`script`/`region`/`variants`/`extensions` are only
 /// meaningful for [`TagKind::Ordinary`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Serialises as the words the policy's test cases use: `ordinary`,
+/// `grandfathered`, `privateuse`, `malformed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TagKind {
     /// A normal language tag: a primary language, optionally with script,
     /// region, variants, extensions and private-use subtags.
@@ -39,7 +46,7 @@ pub enum TagKind {
 /// One extension subtag: a single letter other than `x`, followed by one
 /// or more further subtags (`u-ca-gregory` is `{ singleton: 'u', subtags:
 /// ["ca", "gregory"] }`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Extension {
     pub singleton: char,
     pub subtags: Vec<String>,
@@ -49,7 +56,8 @@ pub struct Extension {
 /// the tag itself (LANG-001's "kept... and SHOULD be reported", COMPAT-040's
 /// "report doubt, do not resolve it by guessing"). Never affects sorting,
 /// matching or selection — those all work from the canonical tag alone.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TagNote {
     /// A subtag that is well formed but is not — as far as the embedded
     /// registry snapshot knows — one the registry has ever assigned
@@ -72,13 +80,24 @@ pub enum TagNote {
 /// crate works from — ordering, matching and selection never look at a
 /// raw string again once it has become a `LanguageTag`.
 ///
-/// Equality and ordering elsewhere in the crate always go through
-/// [`tag`](LanguageTag::tag) or the parsed fields, never through
-/// [`notes`](LanguageTag::notes) — two tags that mean the same thing but
-/// were reached by different paths (one already canonical, one via a
-/// Preferred-Value replacement) end up with the same `tag` and parsed
-/// fields, but not necessarily the same notes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// **Equality and hashing look at [`tag`](LanguageTag::tag) and
+/// [`kind`](LanguageTag::kind) only.** Two values that mean the same
+/// language are equal even when they were reached by different paths and
+/// so carry different [`notes`](LanguageTag::notes) — `canonicalise("iw")`
+/// (noted as replaced by `he`) equals `canonicalise("he")` (no notes). The
+/// parsed fields are not compared either: for a value produced by this
+/// crate they follow from `tag` and `kind`, so comparing them would add
+/// nothing. (Until policy revision 4 the derived equality compared the
+/// notes too, which made those two unequal — a trap for a caller putting
+/// tags in a set or map.) `kind` is compared because a malformed value
+/// keeps its text: the malformed text `x` and a real tag spelled `x`
+/// could otherwise be confused.
+///
+/// Serialises every field. Deserialising trusts the fields exactly as
+/// given — it does not re-run [`canonicalise`] — so for storage keep the
+/// canonical `tag` text (LANG-001) and read it back through
+/// [`canonicalise`] or [`from_legacy_three_letter`] instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LanguageTag {
     /// The canonical string form. For [`TagKind::Malformed`], this is the
     /// input with leading/trailing whitespace removed (LANG-001 step 1)
@@ -106,11 +125,36 @@ pub struct LanguageTag {
     /// Extension subtags, ordered by their singleton letter (LANG-001
     /// step 6) — `a-...` before `u-...`.
     pub extensions: Vec<Extension>,
-    /// Private-use subtags (the part after `x-`), lower case.
+    /// Private-use subtags — the parts after `x-` — lower case, in the
+    /// order written. Filled in for [`TagKind::PrivateUse`] (the whole tag
+    /// is private use: `x-foo` gives `["foo"]`) and for an ordinary tag that
+    /// merely *ends* in a private-use part (`en-x-foo` gives `["foo"]`).
+    /// LANG-021 rule 5 orders such a tag after the plainer tags of its
+    /// group, so this part must be kept. (Until policy revision 4 this
+    /// crate dropped it for ordinary tags, and `en-x-foo` sorted as if it
+    /// were plain `en`.) Empty for every other value.
     pub private_use: Vec<String>,
     /// Things worth reporting about this tag. Never affects sorting,
     /// matching or selection — see the struct-level note above.
     pub notes: Vec<TagNote>,
+}
+
+impl PartialEq for LanguageTag {
+    /// See the struct-level note: `tag` and `kind` only, never `notes`.
+    fn eq(&self, other: &Self) -> bool {
+        self.tag == other.tag && self.kind == other.kind
+    }
+}
+
+impl Eq for LanguageTag {}
+
+impl Hash for LanguageTag {
+    /// Hashes exactly what [`PartialEq`] compares (`tag` and `kind`), so
+    /// equal values always hash equally.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.tag.hash(state);
+        self.kind.hash(state);
+    }
 }
 
 impl LanguageTag {
@@ -286,12 +330,18 @@ fn parse_wellformed(s: &str, data: &Data) -> Option<Parsed> {
         i += 1;
     }
 
+    // The duplicate check uses a set, not `variants.contains(...)`: a
+    // linear search of the list for every new variant made a tag with tens
+    // of thousands of variants take seconds (quadratic time), which matters
+    // for code handed untrusted input. A set makes each check constant
+    // time. (Changed in policy revision 4, after an independent review.)
     let mut variants: Vec<String> = Vec::new();
+    let mut seen_variant_subtags: HashSet<&str> = HashSet::new();
     while i < lp.len()
         && ((5..=8).contains(&lp[i].len())
             || (lp[i].len() == 4 && lp[i].as_bytes()[0].is_ascii_digit()))
     {
-        if variants.contains(&lp[i]) {
+        if !seen_variant_subtags.insert(lp[i].as_str()) {
             return None; // the same variant twice is malformed
         }
         variants.push(lp[i].clone());
@@ -607,7 +657,9 @@ pub fn canonicalise(input: &str) -> LanguageTag {
         region: parsed.region,
         variants: parsed.variants,
         extensions: parsed.extensions,
-        private_use: Vec::new(),
+        // Kept, not dropped: `en-x-foo` is an ordinary tag with a
+        // private-use ending, and LANG-021 rule 5 sorts it after `en`.
+        private_use: parsed.private_use,
         notes,
     }
 }
@@ -642,18 +694,57 @@ fn matroska_three_letter_region(s: &str) -> Option<(&str, &str)> {
 /// [`canonicalise`] alone is for a value already known to be a BCP 47 tag
 /// (one a person typed into a tag field), not one that might still be an
 /// old three-letter code.
+///
+/// A field holding several values (ID3v2.4 separates them with a null
+/// character) gives only the first, the primary language, here; use
+/// [`from_legacy_three_letter_all`] to read every one of them.
 pub fn from_legacy_three_letter(input: &str) -> Option<LanguageTag> {
     // Fixed-width fields are padded with trailing null characters; strip
     // those first, then the usual whitespace. If a null remains INSIDE
     // the value, the field held several values (ID3v2.4 separates them
     // with a null) — the first is the primary language, so split there
     // and read only that.
-    let without_trailing_nulls = input.trim_end_matches('\u{0}');
-    let mut s = trim_lang_whitespace(without_trailing_nulls);
+    let mut s = strip_legacy_padding(input);
     if let Some((first, _rest)) = s.split_once('\u{0}') {
         s = trim_lang_whitespace(first);
     }
+    read_one_legacy_value(s)
+}
 
+/// Reads EVERY null-separated value in a field (LANG-002: "If the field
+/// holds several values ... split them first and read each on its own;
+/// the first is the primary language").
+///
+/// Returns one entry per value, in the order written, so the index still
+/// says which value is which: entry 0 is always the primary language and
+/// is exactly what [`from_legacy_three_letter`] returns for the same
+/// input. Each entry is `None` when that one value is unrecognised (the
+/// caller then stores `und` for it and keeps its text — LANG-002), rather
+/// than being dropped, which would make a later value look like the
+/// primary one. Never empty: a field with nothing in it gives one `None`.
+///
+/// Trailing null padding and LANG-001's four whitespace characters come
+/// off the whole field first, then off each value, exactly as for the
+/// single-value reader. An empty value between two nulls (`"eng\0\0fre"`)
+/// is unrecognised, like any other empty value.
+pub fn from_legacy_three_letter_all(input: &str) -> Vec<Option<LanguageTag>> {
+    strip_legacy_padding(input)
+        .split('\u{0}')
+        .map(|value| read_one_legacy_value(trim_lang_whitespace(value)))
+        .collect()
+}
+
+/// LANG-002's "before the steps": trailing null characters (fixed-width
+/// field padding) come off first, then LANG-001's four whitespace
+/// characters from both ends. Nulls inside the value are left for the
+/// caller, since they separate several values.
+fn strip_legacy_padding(input: &str) -> &str {
+    trim_lang_whitespace(input.trim_end_matches('\u{0}'))
+}
+
+/// LANG-002's numbered steps for ONE value that has already had its
+/// padding removed and contains no null separator.
+fn read_one_legacy_value(s: &str) -> Option<LanguageTag> {
     // ID3's own "language not known" marker, any case.
     if s.len() == 3 && s.eq_ignore_ascii_case("xxx") {
         return Some(canonicalise("und"));
@@ -670,7 +761,7 @@ pub fn from_legacy_three_letter(input: &str) -> Option<LanguageTag> {
     // combines the "not known" marker with a region.
     if let Some((three, two)) = matroska_three_letter_region(s) {
         if !data::data().languages.contains(&three.to_ascii_lowercase()) {
-            let base = from_legacy_three_letter(three)?;
+            let base = read_one_legacy_value(three)?;
             if base.kind != TagKind::Ordinary || base.tag == "und" {
                 return None;
             }
@@ -708,7 +799,12 @@ pub fn from_legacy_three_letter(input: &str) -> Option<LanguageTag> {
 /// `POSIX` mean "no language" and return `None`, as does anything that
 /// still fails to canonicalise once converted.
 pub fn from_posix_locale(input: &str) -> Option<LanguageTag> {
-    let trimmed = input.trim();
+    // Only LANG-001's four whitespace characters are trimmed — not Rust's
+    // `str::trim()`, which also removes a no-break space (U+00A0) and every
+    // other Unicode space. A value starting with a no-break space is
+    // malformed, not quietly tidied up. (Changed in policy revision 4: this
+    // function used `trim()`, so `"\u{a0}en_US.UTF-8"` wrongly gave `en-US`.)
+    let trimmed = trim_lang_whitespace(input);
     if trimmed.is_empty() || trimmed == "C" || trimmed == "POSIX" {
         return None;
     }
@@ -759,7 +855,8 @@ fn insert_script(base: &str, script: &str) -> String {
 /// differ for twenty languages, so picking the wrong one is a real error:
 /// Matroska's old `Language` element wants the bibliographic form,
 /// MP4/MOV's media header and ID3 want the terminology form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Iso639Form {
     /// Matroska's old `Language` element (`ger`, `fre`, `chi`).
     Bibliographic,
@@ -770,7 +867,7 @@ pub enum Iso639Form {
 /// Both ISO 639-2 forms at once (TRACK-070's writing rule): the
 /// bibliographic form for Matroska's old `Language` element, the
 /// terminology form for MP4/MOV's media header and ID3.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Iso639Write {
     pub bibliographic: String,
     pub terminology: String,
@@ -942,5 +1039,156 @@ mod tests {
         for input in inputs {
             let _ = canonicalise(input);
         }
+    }
+
+    // ---- policy revision 4 -------------------------------------------
+
+    #[test]
+    fn an_ordinary_tag_keeps_its_private_use_part() {
+        // Before revision 4 the private-use part of an ordinary tag was
+        // dropped from the parsed fields, so `en-x-foo` sorted as `en`.
+        let t = canonicalise("EN-x-Foo-BAR");
+        assert!(t.is_ordinary());
+        assert_eq!(t.tag, "en-x-foo-bar");
+        assert_eq!(t.private_use, vec!["foo".to_string(), "bar".to_string()]);
+        assert_eq!(canonicalise("x-foo").private_use, vec!["foo".to_string()]);
+    }
+
+    #[test]
+    fn a_two_letter_q_code_is_not_local_use() {
+        // Two letters sort between qaa and qtz as text but are not the
+        // three-letter local-use range: write und, and report the subtag
+        // as unregistered.
+        for input in ["qb", "QM", "qt"] {
+            let t = canonicalise(input);
+            assert!(t.is_ordinary(), "{input}");
+            assert_eq!(
+                iso639_2_code(&t, Iso639Form::Bibliographic),
+                "und",
+                "{input}"
+            );
+            assert_eq!(iso639_2_code(&t, Iso639Form::Terminology), "und", "{input}");
+            assert!(
+                t.notes.contains(&TagNote::UnregisteredSubtag {
+                    subtag: input.to_ascii_lowercase()
+                }),
+                "{input}: {:?}",
+                t.notes
+            );
+        }
+        // The real local-use codes are unaffected.
+        assert_eq!(
+            iso639_2_code(&canonicalise("qaa"), Iso639Form::Terminology),
+            "qaa"
+        );
+        assert!(canonicalise("qtz").notes.is_empty());
+    }
+
+    #[test]
+    fn many_distinct_variants_are_checked_in_linear_time() {
+        // The duplicate-variant check used a linear search of the list for
+        // each new variant: quadratic. Measured in a debug build on the
+        // development machine (28 Sept 2026), canonicalising a tag with
+        // 20,000 distinct variants took about 16 s with that search and
+        // about 0.6 s with the set that replaced it. The 5 s limit leaves
+        // roughly eight times headroom for a slow CI machine while a return
+        // to quadratic time still fails it by a factor of three.
+        let mut tag = String::from("en");
+        for i in 0..20_000u32 {
+            tag.push('-');
+            let mut n = i;
+            for _ in 0..6 {
+                tag.push(char::from(b'a' + (n % 26) as u8));
+                n /= 26;
+            }
+        }
+        let _ = canonicalise("en"); // load the reference data outside the timing
+        let started = std::time::Instant::now();
+        let t = canonicalise(&tag);
+        let elapsed = started.elapsed();
+        assert!(t.is_ordinary());
+        assert_eq!(t.variants.len(), 20_000);
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "canonicalising 20,000 variants took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn equality_and_hashing_ignore_notes() {
+        use std::collections::HashSet;
+        // `iw` is noted as replaced by `he`; `he` has no notes. They are
+        // the same language, so they must be equal and hash the same.
+        let replaced = canonicalise("iw");
+        let direct = canonicalise("he");
+        assert_ne!(replaced.notes, direct.notes);
+        assert_eq!(replaced, direct);
+        let set: HashSet<LanguageTag> = [replaced, direct].into_iter().collect();
+        assert_eq!(set.len(), 1);
+        // The kind still counts: malformed text is never equal to a tag.
+        let mut fake = canonicalise("en");
+        fake.kind = TagKind::Malformed;
+        assert_ne!(fake, canonicalise("en"));
+    }
+
+    #[test]
+    fn a_posix_name_is_trimmed_of_the_four_characters_only() {
+        // Rust's trim() also removes a no-break space; LANG-001 does not.
+        assert_eq!(from_posix_locale("\u{a0}en_US.UTF-8"), None);
+        // (A trailing one after `.UTF-8` would be dropped with the
+        // character set by LANG-004 step 2, so test it on the region.)
+        assert_eq!(from_posix_locale("en_US\u{a0}"), None);
+        assert_eq!(from_posix_locale("\u{0b}en_US"), None);
+        assert_eq!(
+            from_posix_locale(" \t\r\nen_US.UTF-8\n").map(|t| t.tag),
+            Some("en-US".to_string())
+        );
+    }
+
+    #[test]
+    fn every_null_separated_value_can_be_read() {
+        let all = from_legacy_three_letter_all("eng\u{0}fre\u{0}\u{0}zzz\u{0}XXX\u{0}\u{0}\u{0}");
+        let tags: Vec<Option<String>> = all.into_iter().map(|t| t.map(|t| t.tag)).collect();
+        assert_eq!(
+            tags,
+            vec![
+                Some("en".to_string()),
+                Some("fr".to_string()),
+                None, // an empty value between two nulls
+                None, // zzz is unrecognised — kept in place, not dropped
+                Some("und".to_string()),
+            ]
+        );
+        // Entry 0 is always what the single-value reader returns.
+        for input in [
+            "",
+            " ger \u{0} fre",
+            "\u{0}eng",
+            "fre-ca\u{0}",
+            "English\u{0}en",
+        ] {
+            let first = from_legacy_three_letter_all(input)
+                .into_iter()
+                .next()
+                .unwrap();
+            assert_eq!(first, from_legacy_three_letter(input), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn public_types_round_trip_through_serde() {
+        let t = canonicalise("zh-Hant-TW-u-ca-chinese-x-foo");
+        let json = serde_json::to_string(&t).unwrap();
+        let back: LanguageTag = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, t);
+        assert_eq!(back.private_use, t.private_use);
+        assert_eq!(back.extensions, t.extensions);
+        assert_eq!(
+            serde_json::to_string(&TagKind::PrivateUse).unwrap(),
+            "\"privateuse\""
+        );
+        let w = iso639_2_write(&canonicalise("de"));
+        let back: Iso639Write = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+        assert_eq!(back, w);
     }
 }

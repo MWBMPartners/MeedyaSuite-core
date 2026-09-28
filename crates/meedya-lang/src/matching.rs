@@ -8,14 +8,20 @@
 // candidate it considers, but this module has no idea what a preference
 // list, a track, or a subtitle mode is.
 
+use serde::{Deserialize, Serialize};
+
 use crate::tag::LanguageTag;
 
 /// How well a candidate tag matches a preference, best first (so that
 /// deriving [`Ord`] makes the best match sort first, which is exactly
 /// what MATCH-010 to MATCH-040 need). `und`, `mul`, `mis` and `zxx`,
 /// private-use-only tags, and grandfathered tags with no replacement only
-/// ever match themselves exactly — see [`match_tags`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// ever match themselves exactly, and a malformed value matches nothing
+/// at all — see [`match_tags`].
+///
+/// Serialises as `exact`, `general`, `specific`, `related`, `none`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum MatchLevel {
     /// The canonical tags are identical (MATCH-010).
     Exact,
@@ -27,20 +33,27 @@ pub enum MatchLevel {
     /// Same primary language, no script conflict, but neither a shorter
     /// nor a longer form of the other (MATCH-040).
     Related,
-    /// Different primary languages, a script conflict, or either tag is
-    /// not usable for matching at all (malformed, or one of `und`/`mul`/
-    /// `mis`/`zxx`/private-use/no-replacement-grandfathered matched
-    /// against something other than itself).
+    /// No match: different primary languages; both tags state a script
+    /// and the scripts differ; either value is malformed (a malformed value
+    /// matches nothing — not even an identical malformed value, MATCH-010);
+    /// or either tag is one that only ever matches itself (a primary
+    /// language of `und`/`mul`/`mis`/`zxx`, a private-use tag, or a
+    /// grandfathered tag with no replacement) and the other tag is not
+    /// identical to it.
     None,
 }
 
 /// The result of comparing one preference against one candidate:
 /// [`MatchLevel::General`] and [`MatchLevel::Specific`] carry how many
 /// subtags were removed or added; every other level carries 0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `distance` is a `usize`, the same type as a subtag count, so it can
+/// never wrap round. (Until policy revision 4 it was a `u8`, and a tag
+/// with 300 extra subtags reported a distance of 44.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TagMatch {
     pub level: MatchLevel,
-    pub distance: u8,
+    pub distance: usize,
 }
 
 fn hyphen_subtags(tag: &LanguageTag) -> Vec<String> {
@@ -75,10 +88,21 @@ fn is_self_match_only_special(tag: &LanguageTag) -> bool {
 /// says `zh-TW` is written in Simplified script. That is a known,
 /// deliberate limitation of this policy version (see its changelog).
 pub fn match_tags(preference: &LanguageTag, candidate: &LanguageTag) -> TagMatch {
-    // Exact match is checked before anything else, including the
-    // "must both be ordinary" gate below — this is what lets two
-    // identical private-use tags (`x-foo` vs `x-foo`) match exactly while
-    // two different ones (`x-foo` vs `x-bar`) match not at all.
+    // MATCH-010: a malformed value matches nothing — not even an identical
+    // malformed value — so this comes before the exact test. (Before policy
+    // revision 4 the exact test ran first and `English` matched `ENGLISH`
+    // exactly.)
+    if preference.is_malformed() || candidate.is_malformed() {
+        return TagMatch {
+            level: MatchLevel::None,
+            distance: 0,
+        };
+    }
+
+    // Exact match is checked before the "must both be ordinary" gate below
+    // — this is what lets two identical private-use tags (`x-foo` vs
+    // `x-foo`) match exactly while two different ones (`x-foo` vs `x-bar`)
+    // match not at all.
     if preference.tag.eq_ignore_ascii_case(&candidate.tag) {
         return TagMatch {
             level: MatchLevel::Exact,
@@ -122,13 +146,13 @@ pub fn match_tags(preference: &LanguageTag, candidate: &LanguageTag) -> TagMatch
     if c_subtags.len() < p_subtags.len() && p_subtags[..c_subtags.len()] == c_subtags[..] {
         return TagMatch {
             level: MatchLevel::General,
-            distance: (p_subtags.len() - c_subtags.len()) as u8,
+            distance: p_subtags.len() - c_subtags.len(),
         };
     }
     if p_subtags.len() < c_subtags.len() && c_subtags[..p_subtags.len()] == p_subtags[..] {
         return TagMatch {
             level: MatchLevel::Specific,
-            distance: (c_subtags.len() - p_subtags.len()) as u8,
+            distance: c_subtags.len() - p_subtags.len(),
         };
     }
     TagMatch {
@@ -206,6 +230,25 @@ mod tests {
     fn grandfathered_tags_with_no_replacement_only_match_themselves() {
         assert_eq!(m("i-default", "I-DEFAULT").level, MatchLevel::Exact);
         assert_eq!(m("i-default", "i-mingo").level, MatchLevel::None);
+    }
+
+    #[test]
+    fn a_malformed_value_matches_nothing_not_even_itself() {
+        // MATCH-010 (policy revision 4): the exact test used to run first.
+        assert_eq!(m("English", "ENGLISH").level, MatchLevel::None);
+        assert_eq!(m("English", "English").level, MatchLevel::None);
+        assert_eq!(m("", "").level, MatchLevel::None);
+        assert_eq!(m("en_US", "en_US").level, MatchLevel::None);
+    }
+
+    #[test]
+    fn a_large_distance_does_not_wrap_round() {
+        // 300 private-use subtags after `x`: 302 parts against 1. As a
+        // `u8` the distance used to wrap to 45.
+        let candidate = format!("en-x{}", "-a".repeat(300));
+        let got = m("en", &candidate);
+        assert_eq!(got.level, MatchLevel::Specific);
+        assert_eq!(got.distance, 301);
     }
 
     #[test]

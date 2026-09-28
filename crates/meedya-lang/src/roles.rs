@@ -8,6 +8,13 @@
 // mixing "what a track's tag is" with "what a track is for" is exactly
 // the kind of drift that makes an implementation hard to trust.
 
+use std::fmt;
+use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
+
+use crate::canonical::LanguageItem;
+
 /// The kind of track, for TRACK-060 ("each track type is ordered on its
 /// own — video, then audio, then subtitles, then anything else") and for
 /// picking which role order applies (audio and subtitles order their
@@ -17,7 +24,10 @@
 /// [`tracks::sort_tracks`](crate::tracks::sort_tracks) sorts by it
 /// directly, so the declaration order below **is** TRACK-060's ordering.
 /// Reordering these variants would silently change stored track order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Serialises as `video`, `audio`, `subtitle`, `other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TrackType {
     Video,
     Audio,
@@ -29,7 +39,12 @@ pub enum TrackType {
 /// roles at all is the main programme (audio) or full subtitles
 /// (subtitle) — there is no `Role::Main` or `Role::Full` variant because
 /// "no roles" already means that.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Written and read with the policy's own words — `alternate`,
+/// `audio_description`, `commentary`, `sdh`, `forced`, `other` — by
+/// [`Role::as_str`], [`FromStr`] and serde alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
     Alternate,
     AudioDescription,
@@ -37,6 +52,102 @@ pub enum Role {
     Sdh,
     Forced,
     Other,
+}
+
+impl Role {
+    /// Every role, in declaration order.
+    pub const ALL: [Role; 6] = [
+        Role::Alternate,
+        Role::AudioDescription,
+        Role::Commentary,
+        Role::Sdh,
+        Role::Forced,
+        Role::Other,
+    ];
+
+    /// The policy's word for this role (the fixture schema's `role` list):
+    /// `alternate`, `audio_description`, `commentary`, `sdh`, `forced`,
+    /// `other`. Not a sidecar file name word — TEXT-030 has its own,
+    /// shorter list (see [`crate::sidecar`]).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Alternate => "alternate",
+            Role::AudioDescription => "audio_description",
+            Role::Commentary => "commentary",
+            Role::Sdh => "sdh",
+            Role::Forced => "forced",
+            Role::Other => "other",
+        }
+    }
+}
+
+impl fmt::Display for Role {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for Role {
+    type Err = UnknownWordError;
+
+    /// Reads the policy's word for a role, exactly as [`Role::as_str`]
+    /// writes it (lower case, no other spelling). An unknown word is an
+    /// error here, so a typo is not silently accepted. When reading roles
+    /// from a file or another system, remember TRACK-050: a role you do not
+    /// recognise counts as **other** — `word.parse().unwrap_or(Role::Other)`.
+    fn from_str(word: &str) -> Result<Self, Self::Err> {
+        Role::ALL
+            .into_iter()
+            .find(|r| r.as_str() == word)
+            .ok_or_else(|| UnknownWordError {
+                what: "role",
+                word: word.to_string(),
+            })
+    }
+}
+
+/// A word that is not one of the policy's words for the thing being read
+/// ([`Role`]'s or [`SubtitleMode`](crate::select::SubtitleMode)'s
+/// [`FromStr`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UnknownWordError {
+    /// What was being read: `"role"` or `"subtitle mode"`.
+    pub what: &'static str,
+    /// The word as given.
+    pub word: String,
+}
+
+impl fmt::Display for UnknownWordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:?} is not a {} word the policy defines",
+            self.word, self.what
+        )
+    }
+}
+
+impl std::error::Error for UnknownWordError {}
+
+/// Anything with a language that can also carry roles — the one place
+/// `roles()` is declared. [`TrackItem`](crate::tracks::TrackItem),
+/// [`PresentationItem`](crate::presentation::PresentationItem) and
+/// [`SelectableTrack`](crate::select::SelectableTrack) all build on it.
+///
+/// Why one shared trait: before policy revision 4 each of those three
+/// declared its own `roles()` (and `SelectableTrack` its own `language()`
+/// and `is_original()` too). A type implementing all three — an app's own
+/// track type, the obvious thing to write — then had three methods called
+/// `roles`, and a plain `track.roles()` would not compile until the caller
+/// spelled out which trait they meant. Declared once, the call is
+/// unambiguous and the three traits cannot drift apart.
+pub trait RoleItem: LanguageItem {
+    /// The item's roles (TRACK-010). Defaults to none: a track with no
+    /// roles is the main programme (audio) or full subtitles, and a plain
+    /// language item (a translation in a picker) has none at all.
+    fn roles(&self) -> &[Role] {
+        &[]
+    }
 }
 
 /// Where one role sits in TRACK-050's fixed order, for the given track
@@ -113,5 +224,30 @@ mod tests {
     fn video_and_other_track_types_never_rank_by_role() {
         assert_eq!(role_rank(TrackType::Video, &[Role::Commentary]), 0);
         assert_eq!(role_rank(TrackType::Other, &[Role::Forced]), 0);
+    }
+
+    #[test]
+    fn role_words_round_trip() {
+        for role in Role::ALL {
+            assert_eq!(role.as_str().parse::<Role>(), Ok(role));
+            assert_eq!(role.to_string(), role.as_str());
+            assert_eq!(
+                serde_json::to_string(&role).unwrap(),
+                format!("\"{}\"", role.as_str())
+            );
+        }
+        assert_eq!(Role::AudioDescription.as_str(), "audio_description");
+        assert_eq!(
+            "cc".parse::<Role>(),
+            Err(UnknownWordError {
+                what: "role",
+                word: "cc".to_string()
+            })
+        );
+        assert!("SDH".parse::<Role>().is_err());
+        assert_eq!(
+            serde_json::to_string(&TrackType::Subtitle).unwrap(),
+            "\"subtitle\""
+        );
     }
 }

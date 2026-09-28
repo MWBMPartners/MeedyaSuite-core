@@ -171,8 +171,17 @@ pub(crate) fn promoted_groups<'a>(
 /// 3. within a promoted group, the item(s) actually marked original
 ///    (LANG-010: "the item marked original leads");
 /// 4. the role rank the caller supplies — always 0 for plain Part A
-///    ordering; TRACK-050's per-role-type rank for tracks;
+///    ordering; TRACK-050's per-role-type rank for tracks — except for a
+///    malformed value, whose role rank is always treated as 0 (see below);
 /// 5. specificity (LANG-021 to LANG-023).
+///
+/// Malformed values (LANG-026) all share one group and are never promoted,
+/// and their role rank is ignored, so two malformed values always compare
+/// [`Ordering::Equal`] and keep the order they were found in: "roles,
+/// original flags and preferences do not reorder malformed entries among
+/// themselves". (Before policy revision 4 the role rank was still compared
+/// for them, so a malformed commentary track sorted after a malformed
+/// main track found after it.)
 ///
 /// Returns [`Ordering::Equal`] for two items this policy does not
 /// distinguish, leaving LANG-027's stability requirement to whichever
@@ -190,6 +199,10 @@ pub(crate) fn compare_ranked(
     b_role_rank: u8,
     promoted: &HashSet<GroupKey>,
 ) -> Ordering {
+    // LANG-026: a malformed value's roles never move it (see above).
+    let a_role_rank = if a_tag.is_malformed() { 0 } else { a_role_rank };
+    let b_role_rank = if b_tag.is_malformed() { 0 } else { b_role_rank };
+
     let a_group = group_key(a_tag);
     let b_group = group_key(b_tag);
     let a_promoted = promoted.contains(&a_group);

@@ -6,7 +6,7 @@
 >
 > **This is not a Swagger/OpenAPI spec.** `MeedyaSuite-core` is a Rust library workspace, not a web service. There are no HTTP endpoints. If you need an HTTP-shaped contract, build one in your downstream app on top of these crates.
 >
-> **Last refreshed**: 2026-09-28 (`feature/bcp47-language-policy`: `meedya-lyrics` and `meedya-metadata` brought into line with the Media Language & BCP 47 Policy, `MWBM-MEDIA-LANG` — `embed::DEFAULT_LANGUAGE`/`embed::id3_language`, `xml:lang` reading, and `CommonTag::Language` writing all now go through the shared `meedya-lang` crate rather than guessing or passing values through unchanged; test counts re-measured). See the [maintenance section](#maintenance) for how this stays in sync with the code.
+> **Last refreshed**: 2026-09-28 (`feature/bcp47-language-policy`: `meedya-lang` brought into line with policy revision 4 — a shared `RoleItem` trait under `TrackItem`/`PresentationItem`/`SelectableTrack`, serde on the public data types, `from_legacy_three_letter_all`, `SidecarParts::ignored`, `TagMatch::distance` as `usize`, `SubtitleMode`/`Role` words and defaults, and the behaviour fixes listed in its section. Before that the same day: `meedya-lyrics` and `meedya-metadata` brought into line with the Media Language & BCP 47 Policy, `MWBM-MEDIA-LANG` — `embed::DEFAULT_LANGUAGE`/`embed::id3_language`, `xml:lang` reading, and `CommonTag::Language` writing all now go through the shared `meedya-lang` crate rather than guessing or passing values through unchanged). See the [maintenance section](#maintenance) for how this stays in sync with the code.
 
 ---
 
@@ -350,9 +350,10 @@ The shared Rust implementation of policy **MWBM-MEDIA-LANG** — see
 [`docs/standards/media-language-bcp47-policy.md`](../docs/standards/media-language-bcp47-policy.md)
 for the normative rules. Identifies, orders, matches and selects languages for audio tracks,
 subtitle tracks, lyrics, translations and multilingual metadata. Synchronous, no I/O, no
-network — the only dependencies are `serde` and `serde_json`, needed to parse the reference
-data compiled into the crate (`docs/standards/data/bcp47-language-data-v1.json`, embedded
-byte-for-byte via `include_str!`).
+network — the only dependencies are `serde` (derives on the public data types, so an app can
+store them or send them over IPC) and `serde_json` (to parse the reference data compiled into
+the crate, `docs/standards/data/bcp47-language-data-v1.json`, embedded byte-for-byte via
+`include_str!`).
 
 **Two orders, kept as two separate algorithms on purpose**: [`canonical::sort_canonical`] is
 Part A, the order things are *stored* in (a file, a database) — it depends only on the
@@ -370,72 +371,147 @@ pub use presentation::{
     label, sort_for_presentation, subtitle_menu, Accessibility, MenuEntry, PresentationContext,
     PresentationItem, PresentationKind,
 };
-pub use roles::{role_rank, Role, TrackType};
+pub use roles::{role_rank, Role, RoleItem, TrackType, UnknownWordError};
 pub use select::{
     compare_identifiers, select_audio, select_subtitle, DuplicateIdentifierError, SelectableTrack,
     SubtitleMode,
 };
 pub use sidecar::{build_sidecar_name, parse_sidecar_name, InvalidSidecarNumber, SidecarParts};
 pub use tag::{
-    canonicalise, from_legacy_three_letter, from_posix_locale, iso639_2_code, iso639_2_write,
-    Extension, Iso639Form, Iso639Write, LanguageTag, TagKind, TagNote,
+    canonicalise, from_legacy_three_letter, from_legacy_three_letter_all, from_posix_locale,
+    iso639_2_code, iso639_2_write, Extension, Iso639Form, Iso639Write, LanguageTag, TagKind,
+    TagNote,
 };
 pub use tracks::{sort_tracks, TrackItem};
 pub use embedded_data_version; // the reference-data version this build was compiled against
 ```
+
+#### The item traits
+
+```rust
+pub trait LanguageItem { fn language(&self) -> &LanguageTag; fn is_original(&self) -> bool { false } }
+pub trait RoleItem: LanguageItem { fn roles(&self) -> &[Role] { &[] } }
+pub trait TrackItem: RoleItem { fn track_type(&self) -> TrackType; }
+pub trait PresentationItem: RoleItem { fn kind(&self) -> Option<PresentationKind> { None } }
+pub trait SelectableTrack: RoleItem {
+    type Id: Clone + Eq + Hash + AsRef<str>;
+    fn id(&self) -> Self::Id;
+    fn is_default(&self) -> bool { false }
+}
+```
+
+`language()`, `is_original()` and `roles()` are each declared exactly once, so one app track
+type can implement `TrackItem`, `PresentationItem` and `SelectableTrack` together and still call
+`track.roles()` without naming a trait. **Breaking change (policy revision 4):** before it,
+all three traits declared their own `roles()` and `SelectableTrack` its own `language()` and
+`is_original()`. An implementation now writes `impl LanguageItem` + `impl RoleItem` (an empty
+`impl RoleItem for T {}` for an item with no roles) and drops those methods from the other
+impls.
 
 #### Key modules
 
 - **`tag`** — `canonicalise(&str) -> LanguageTag` (LANG-001, never panics: anything not a
   well-formed tag comes back `TagKind::Malformed` with its trimmed text kept, not guessed at).
   `from_legacy_three_letter` reads an old ISO 639-2 field (LANG-002 — `eng` → `en`, `fre-ca` →
-  `fr-CA`, `XXX` → `und`, unrecognised → `None`). `from_posix_locale` converts an OS locale name
-  (LANG-004 — `en_US.UTF-8` → `en-US`). `iso639_2_code`/`iso639_2_write` produce the
-  bibliographic/terminology forms for writing an old three-letter field back out (TRACK-070). A
-  `TagNote` on `LanguageTag.notes` records anything worth telling a person about a tag — an
-  unregistered subtag, one deprecated with no replacement, one replaced during
-  canonicalisation — without ever refusing to use the tag itself.
+  `fr-CA`, `XXX` → `und`, unrecognised → `None`); for a field holding several null-separated
+  values it gives the first (the primary language), and `from_legacy_three_letter_all` gives
+  every one as `Vec<Option<LanguageTag>>` — one entry per value, in order, `None` for an
+  unrecognised one, entry 0 always equal to what `from_legacy_three_letter` returns.
+  `from_posix_locale` converts an OS locale name (LANG-004 — `en_US.UTF-8` → `en-US`; only
+  LANG-001's four whitespace characters are trimmed, so a no-break space makes it malformed).
+  `iso639_2_code`/`iso639_2_write` produce the bibliographic/terminology forms for writing an old
+  three-letter field back out (TRACK-070; only a three-letter `qaa`–`qtz` code is written as
+  itself — `qb` writes `und`). A `TagNote` on `LanguageTag.notes` records anything worth telling
+  a person about a tag — an unregistered subtag, one deprecated with no replacement, one replaced
+  during canonicalisation — without ever refusing to use the tag itself. `LanguageTag` equality
+  and hashing use `tag` and `kind` only, never `notes` (so `canonicalise("iw") ==
+  canonicalise("he")`); an ordinary tag ending in a private-use part keeps it in
+  `private_use` (`en-x-foo` → `["foo"]`).
 - **`canonical`** — Part A's comparator: `sort_canonical<T: LanguageItem>` implements LANG-010
   to LANG-027 (original-language promotion, ordering by primary language code, specificity,
   stability).
-- **`roles`** / **`tracks`** — `TrackType`, `Role`, and `sort_tracks<T: TrackItem>`, the
-  role-aware variant of Part A's ordering for container tracks (TRACK-050, TRACK-060).
+- **`roles`** / **`tracks`** — `TrackType`, `Role`, the shared `RoleItem` trait, and
+  `sort_tracks<T: TrackItem>`, the role-aware variant of Part A's ordering for container tracks
+  (TRACK-050, TRACK-060; roles never reorder malformed values among themselves, LANG-026).
+  `Role::as_str()`, `Display` and `FromStr` use the policy's words (`alternate`,
+  `audio_description`, `commentary`, `sdh`, `forced`, `other`); an unknown word is an
+  `UnknownWordError` (TRACK-050 says to treat it as `other`: `word.parse().unwrap_or(Role::Other)`).
 - **`presentation`** — Part B's comparator: `sort_for_presentation<T: PresentationItem>`
   (UI-020 to UI-050 — preferences, then the original, then everything else by localised name,
-  which the crate never invents itself), `subtitle_menu` (UI-060, prepends a fixed "Off"), and
-  `label` (UI-070, builds a menu label from structured data).
+  which the crate never invents itself; the caller's closure compares names only, and the crate
+  itself breaks a tie by primary language code), `subtitle_menu` (UI-060, prepends a fixed
+  "Off"; `MenuEntry` is always `Clone`/`Copy`, and `PartialEq`/`Eq` when the item type is), and
+  `label` (UI-070, builds a menu label from structured data, each role once).
 - **`matching`** — `match_tags(&LanguageTag, &LanguageTag) -> TagMatch` (MATCH-010 to
   MATCH-040): exact, general, specific, related or none, with a distance count for the
-  first two. `MatchLevel` derives `Ord` so the best match sorts first.
+  first two (`TagMatch::distance` is a `usize` — it was a `u8`, which wrapped past 255). A
+  malformed value matches nothing, not even an identical one. `MatchLevel` derives `Ord` so the
+  best match sorts first.
 - **`select`** — `select_audio`/`select_subtitle` (AUTO-010 to AUTO-040): automatic selection,
   never influenced by list order — every tie-break bottoms out in the track's own identifier
-  (compared per `compare_identifiers`: ASCII-digit-only identifiers first, as numbers, then as
-  text; everything else after, as text) or a canonical position computed from an
-  identifier-sorted copy, never a position in whatever slice the caller happened to pass. Both
-  return `Result<Option<T::Id>, DuplicateIdentifierError>` — two tracks sharing an identifier is
-  refused rather than guessed at.
+  (compared per `compare_identifiers`: ASCII-digit-only identifiers first, as numbers of any
+  length — no number type, so a 40-digit identifier still counts — then as text; everything
+  else after, as text) or a position in stored order among *all* tracks of the type, computed
+  from an identifier-sorted copy, never a position in whatever slice the caller happened to
+  pass. Malformed preferences are ignored, and all-malformed preferences count as none; when
+  every audio track is commentary or other, commentary ranks first; forced-only mode matches a
+  private-use or grandfathered audio tag to a forced track with exactly that tag. Both return
+  `Result<Option<T::Id>, DuplicateIdentifierError>` — two tracks sharing an identifier is
+  refused rather than guessed at. `SubtitleMode` defaults to `Automatic` and has `as_str()`,
+  `Display` and `FromStr` with the policy's words (`automatic`, `always`, `forced_only`, `off`).
 - **`sidecar`** — `build_sidecar_name`/`parse_sidecar_name` (TEXT-030): sidecar file naming
-  (`Film.en-GB.sdh.srt`) and reading one back, including the old three-letter reader so `eng`
-  in a file name is understood too. `build_sidecar_name` returns
-  `Result<String, InvalidSidecarNumber>` — a clash-avoiding number outside 2..=999,999,999 is
-  refused rather than silently written into an unreadable name.
+  (`Film.en-GB.sdh.srt`) and reading one back, both through the old three-letter reader — so
+  `eng` in a file name is understood, and a builder given `fre` writes `Film.fr.srt` (and
+  `Film.und.srt` for a value the reader does not recognise): what it writes is what the reader
+  reads back. `build_sidecar_name` returns `Result<String, InvalidSidecarNumber>` — a
+  clash-avoiding number outside 2..=999,999,999 is refused rather than silently written into an
+  unreadable name. `SidecarParts::ignored` lists the parts that were neither a role word nor a
+  number (`Film.en.sdh.backup.srt` → `["backup"]`), which TEXT-030 says should be reported.
+
+#### Serialisation
+
+The public data types derive serde's `Serialize` and `Deserialize`: `LanguageTag`, `TagKind`,
+`Extension`, `TagNote`, `Iso639Form`, `Iso639Write`, `MatchLevel`, `TagMatch`, `Role`,
+`TrackType`, `UnknownWordError`, `Accessibility`, `PresentationContext`, `PresentationKind`,
+`SubtitleMode`, `DuplicateIdentifierError`, `SidecarParts`, `InvalidSidecarNumber`. Words
+match the policy's test cases (`TagKind` → `ordinary`/`grandfathered`/`privateuse`/`malformed`;
+`Role` → `audio_description` …; `SubtitleMode` → `forced_only` …). `MenuEntry` is not
+serialisable — it borrows the items it lists. Deserialising a `LanguageTag` trusts its fields
+as given; for storage, keep the canonical `tag` text and read it back through `canonicalise`
+or `from_legacy_three_letter`.
 
 #### Typical usage
 
 ```rust
-use meedya_lang::{canonicalise, sort_canonical, LanguageItem, LanguageTag};
+use meedya_lang::{
+    canonicalise, select_audio, sort_canonical, sort_tracks, Accessibility, LanguageItem,
+    LanguageTag, Role, RoleItem, SelectableTrack, TrackItem, TrackType,
+};
 
-struct Track { id: String, tag: LanguageTag, original: bool }
+struct Track { id: String, tag: LanguageTag, roles: Vec<Role>, original: bool }
 impl LanguageItem for Track {
     fn language(&self) -> &LanguageTag { &self.tag }
     fn is_original(&self) -> bool { self.original }
 }
+impl RoleItem for Track {
+    fn roles(&self) -> &[Role] { &self.roles }
+}
+impl TrackItem for Track {
+    fn track_type(&self) -> TrackType { TrackType::Audio }
+}
+impl SelectableTrack for Track {
+    type Id = String;
+    fn id(&self) -> String { self.id.clone() }
+}
 
 let mut tracks = vec![
-    Track { id: "a".into(), tag: canonicalise("en-US"), original: false },
-    Track { id: "b".into(), tag: canonicalise("ja"), original: true },
+    Track { id: "a".into(), tag: canonicalise("en-US"), roles: vec![], original: false },
+    Track { id: "b".into(), tag: canonicalise("ja"), roles: vec![], original: true },
 ];
 sort_canonical(&mut tracks); // Japanese (the original) comes first
+sort_tracks(&mut tracks);    // the same, role-aware, for container tracks
+let chosen = select_audio(&tracks, &[canonicalise("en")], &Accessibility::default());
+assert_eq!(chosen, Ok(Some("a".to_string())));
 ```
 
 #### Conformance

@@ -10,17 +10,29 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
 
 use crate::canonical::{self, GroupKey};
 use crate::matching::{match_tags, MatchLevel};
 use crate::presentation::Accessibility;
-use crate::roles::{self, Role, TrackType};
+use crate::roles::{self, Role, RoleItem, TrackType, UnknownWordError};
 use crate::tag::LanguageTag;
 
-/// A track that can be chosen automatically: it has an identifier stable
-/// enough to break ties by (AUTO-010: "the track identifier decides, the
-/// number or ID the file gives the track — never its position in a
-/// list"), a language, roles, and default/original flags.
+/// A track that can be chosen automatically: it has a language, an
+/// original flag and roles (via [`RoleItem`], which builds on
+/// [`LanguageItem`](crate::LanguageItem)), an identifier stable enough to
+/// break ties by (AUTO-010: "the track identifier decides, the number or ID
+/// the file gives the track — never its position in a list"), and a
+/// default flag.
+///
+/// `language()`, `is_original()` and `roles()` come from the shared
+/// traits, not from this one, so a track type that also implements
+/// [`TrackItem`](crate::TrackItem) and
+/// [`PresentationItem`](crate::PresentationItem) has exactly one of each.
+/// (Before policy revision 4 this trait declared its own copies, and such a
+/// type could not call `track.roles()` without naming a trait.)
 ///
 /// `Id` is required to render as text (`AsRef<str>`) rather than simply
 /// to be `Ord`: AUTO-010 defines a specific comparison — identifiers made
@@ -33,18 +45,12 @@ use crate::tag::LanguageTag;
 /// integers but different strings, and a naive numeric-aware comparison
 /// (as several dynamically-typed languages' own comparison operators do)
 /// would treat them as interchangeable, silently discarding one.
-pub trait SelectableTrack {
+pub trait SelectableTrack: RoleItem {
     type Id: Clone + Eq + std::hash::Hash + AsRef<str>;
 
     fn id(&self) -> Self::Id;
-    fn language(&self) -> &LanguageTag;
-    fn roles(&self) -> &[Role];
     /// The container's "default" flag. Defaults to `false`.
     fn is_default(&self) -> bool {
-        false
-    }
-    /// The container's "original language" flag. Defaults to `false`.
-    fn is_original(&self) -> bool {
         false
     }
 }
@@ -53,7 +59,7 @@ pub trait SelectableTrack {
 /// identifier. Selection refuses to guess which one was meant, rather
 /// than silently overwriting one candidate's canonical position with the
 /// other's.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DuplicateIdentifierError {
     pub identifier: String,
 }
@@ -70,33 +76,47 @@ impl fmt::Display for DuplicateIdentifierError {
 
 impl std::error::Error for DuplicateIdentifierError {}
 
-/// AUTO-010's identifier comparison: `(is-not-all-digits, numeric value
-/// when all-digits, the text itself)`. Digits-only identifiers sort
-/// first (bucket 0), by their numeric value, then — for two identifiers
-/// that are numerically equal but not textually identical, such as `"1"`
-/// and `"01"` — by the text itself. Anything else sorts after (bucket 1),
-/// in plain byte-string order.
-///
-/// An identifier is more digits than any real track count will ever
-/// need (`u128` overflows only past 39 digits) is treated as plain text
-/// instead of failing — comparing it as text is still a defined, useful
-/// answer, and refusing outright over an identifier this policy never
-/// expected to matter to a human would be a worse failure mode than a
-/// slightly surprising sort position.
-fn identifier_key(id: &str) -> (u8, u128, &str) {
-    if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
-        if let Ok(n) = id.parse::<u128>() {
-            return (0, n, id);
-        }
-    }
-    (1, 0, id)
+/// True for an identifier made only of ASCII digits (and at least one of
+/// them). Such identifiers come first in AUTO-010's order.
+fn is_digits_only(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// Compares two identifiers per AUTO-010 (see [`identifier_key`]). Every
-/// tie-break in this module that would otherwise fall back to a track's
-/// position in a list uses this instead.
+/// Compares two digits-only identifiers as numbers, of any length,
+/// without converting them to a number type: leading zeros are removed,
+/// then the longer is the bigger number, and two of the same length
+/// compare as text (for digit strings with no leading zero, text order and
+/// number order are the same). Returns [`Ordering::Equal`] for two ways of
+/// writing one number (`"01"` and `"1"`) — the caller breaks that tie.
+fn compare_as_numbers(a: &str, b: &str) -> Ordering {
+    let a = a.trim_start_matches('0');
+    let b = b.trim_start_matches('0');
+    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+}
+
+/// Compares two identifiers per AUTO-010. Every tie-break in this module
+/// that would otherwise fall back to a track's position in a list uses
+/// this instead:
+///
+/// 1. digits-only identifiers before every other identifier;
+/// 2. two digits-only identifiers as numbers, of any length (`9` before
+///    `10`; a 40-digit identifier is still a number);
+/// 3. two that are the same number written differently, as plain text
+///    (`01` before `1`);
+/// 4. two other identifiers as plain text (byte order).
+///
+/// Before policy revision 4 step 2 converted the digits to a 128-bit
+/// number and, for 40 or more digits, where that overflows, fell back to
+/// treating the identifier as ordinary text — which moved it after `0abc`,
+/// against AUTO-010's order. No number type is used now, so there is no
+/// length at which the rule changes.
 pub fn compare_identifiers(a: &str, b: &str) -> Ordering {
-    identifier_key(a).cmp(&identifier_key(b))
+    match (is_digits_only(a), is_digits_only(b)) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (true, true) => compare_as_numbers(a, b).then_with(|| a.cmp(b)),
+        (false, false) => a.cmp(b),
+    }
 }
 
 fn check_unique_ids<T: SelectableTrack>(tracks: &[&T]) -> Result<(), DuplicateIdentifierError> {
@@ -112,21 +132,83 @@ fn check_unique_ids<T: SelectableTrack>(tracks: &[&T]) -> Result<(), DuplicateId
     Ok(())
 }
 
-/// The user's subtitle preference (AUTO-030).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The user's subtitle preference (AUTO-030). Defaults to
+/// [`SubtitleMode::Automatic`], the policy's usual default.
+///
+/// Written and read with the policy's own words — `automatic`, `always`,
+/// `forced_only`, `off` — by [`SubtitleMode::as_str`], [`FromStr`] and
+/// serde alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SubtitleMode {
     /// If the chosen audio's language matches a preference (or there are
-    /// no preferences at all), act as [`SubtitleMode::ForcedOnly`];
-    /// otherwise act as [`SubtitleMode::Always`]. The usual default.
+    /// no preferences at all — malformed ones do not count), act as
+    /// [`SubtitleMode::ForcedOnly`]; otherwise act as
+    /// [`SubtitleMode::Always`]. The usual default.
+    #[default]
     Automatic,
-    /// The best-matching non-forced, non-commentary subtitle track, by
-    /// preference order.
+    /// The best-matching subtitle track placed as full or SDH, by
+    /// preference order; else the default one of those; else none.
     Always,
     /// Only the forced track matching the chosen audio's language, if
     /// any.
     ForcedOnly,
     /// Never choose a subtitle track.
     Off,
+}
+
+impl SubtitleMode {
+    /// Every mode, in declaration order.
+    pub const ALL: [SubtitleMode; 4] = [
+        SubtitleMode::Automatic,
+        SubtitleMode::Always,
+        SubtitleMode::ForcedOnly,
+        SubtitleMode::Off,
+    ];
+
+    /// The policy's word for this mode: `automatic`, `always`,
+    /// `forced_only`, `off`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SubtitleMode::Automatic => "automatic",
+            SubtitleMode::Always => "always",
+            SubtitleMode::ForcedOnly => "forced_only",
+            SubtitleMode::Off => "off",
+        }
+    }
+}
+
+impl fmt::Display for SubtitleMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SubtitleMode {
+    type Err = UnknownWordError;
+
+    /// Reads the policy's word for a mode, exactly as
+    /// [`SubtitleMode::as_str`] writes it. An unknown word is an error,
+    /// never a guess at a mode.
+    fn from_str(word: &str) -> Result<Self, Self::Err> {
+        SubtitleMode::ALL
+            .into_iter()
+            .find(|m| m.as_str() == word)
+            .ok_or_else(|| UnknownWordError {
+                what: "subtitle mode",
+                word: word.to_string(),
+            })
+    }
+}
+
+/// AUTO-010 (as clarified in policy revision 4): a malformed preference is
+/// ignored in selection, as it is in menus — it matches nothing — and a
+/// user whose preferences are ALL malformed counts as having none. Only
+/// that second part changes an answer (see [`select_subtitle`]'s automatic
+/// mode), but filtering once here keeps every step below honest about
+/// which preferences exist.
+fn usable_preferences(preferences: &[LanguageTag]) -> Vec<&LanguageTag> {
+    preferences.iter().filter(|p| !p.is_malformed()).collect()
 }
 
 /// AUTO-020 point 1's "special" test, as revised: a track counts as
@@ -144,14 +226,20 @@ fn is_special_audio_role(roles: &[Role]) -> bool {
         >= roles::individual_rank(TrackType::Audio, Role::Commentary)
 }
 
-/// Builds each eligible track's position in Part A's stored order,
-/// computed from a copy of `tracks` **sorted by id first** (using
-/// [`compare_identifiers`], not the caller's own `Ord`, since `Id` no
-/// longer needs one) — this is what makes the result independent of the
-/// order the caller's slice happens to be in (AUTO-010): whichever order
-/// `tracks` arrives in, sorting by id first before working out canonical
-/// positions means two callers who disagree only about track order still
-/// agree about positions, and therefore about ties.
+/// Each track's position in stored order (TRACK-050, TRACK-060) among
+/// `tracks`, which must be EVERY track of the type — including tracks that
+/// cannot be chosen (AUTO-020, as clarified in policy revision 4). An
+/// original track that is never chosen (commentary, say) still brings its
+/// language group forward, exactly as it does in stored order. Before
+/// revision 4 the audio positions were worked out from the choosable
+/// tracks only, which lost that promotion.
+///
+/// Worked out from a copy of `tracks` **sorted by id first** (using
+/// [`compare_identifiers`], not the caller's own `Ord`) — this is what
+/// makes the result independent of the order the caller's slice happens
+/// to be in (AUTO-010): two tracks stored order leaves level (equal tags,
+/// or two malformed values) get positions in identifier order, whichever
+/// order they arrived in.
 fn canonical_positions<T: SelectableTrack>(
     tracks: &[&T],
     track_type: TrackType,
@@ -184,23 +272,33 @@ fn canonical_positions<T: SelectableTrack>(
         .collect()
 }
 
-/// The role-preference rank AUTO-020 point 2 uses as the first tie-break
-/// among candidates, built from the track's PLACING role (TRACK-050: the
-/// latest of its roles — exactly [`roles::role_rank`]'s own definition).
-/// Ordinarily this is that rank unchanged (main first, then alternate,
-/// then audio description, worst); when the user has asked for audio
-/// description, audio description is promoted ahead of both.
+/// The role rank AUTO-020 uses as the first tie-break among candidates,
+/// built from the track's PLACING role (TRACK-050: the latest of its
+/// roles — exactly [`roles::role_rank`]'s own definition). Lower is
+/// better.
+///
+/// * Ordinarily that rank unchanged: main (0), alternate (1), audio
+///   description (2), commentary (3), other (4).
+/// * When the user has asked for audio description: audio description,
+///   then main, then alternate — and then commentary before other, as
+///   ever. Commentary and other only reach this comparison when every
+///   audio track is one of them (AUTO-020 point 1), and the policy settles
+///   (revision 4) that commentary still ranks before other then, whether
+///   or not audio description was asked for.
 fn audio_role_preference(roles: &[Role], accessibility: &Accessibility) -> u8 {
     let placing = roles::role_rank(TrackType::Audio, roles);
-    if accessibility.audio_description {
-        match placing {
-            2 => 0,         // audio description promoted to the front
-            0 => 1,         // main
-            1 => 2,         // alternate
-            other => other, // commentary/other: unaffected, already excluded upstream
-        }
-    } else {
-        placing
+    if !accessibility.audio_description {
+        return placing;
+    }
+    let audio_description = roles::individual_rank(TrackType::Audio, Role::AudioDescription);
+    let alternate = roles::individual_rank(TrackType::Audio, Role::Alternate);
+    match placing {
+        p if p == audio_description => 0,
+        0 => 1, // main programme
+        p if p == alternate => 2,
+        // Commentary (3) and other (4) keep TRACK-050's order and stay
+        // behind the three above.
+        other => other,
     }
 }
 
@@ -208,7 +306,7 @@ fn audio_role_preference(roles: &[Role], accessibility: &Accessibility) -> u8 {
 ///
 /// `Ok(None)` only when `tracks` is empty. `Err` when two tracks share an
 /// identifier (AUTO-010) — this function never guesses which one was
-/// meant.
+/// meant. A malformed preference is ignored (it matches nothing).
 ///
 /// Never influenced by list order: reversing `tracks` and calling this
 /// again gives the same answer back, because every tie-break bottoms out
@@ -226,6 +324,7 @@ pub fn select_audio<T: SelectableTrack>(
     }
     let refs: Vec<&T> = tracks.iter().collect();
     check_unique_ids(&refs)?;
+    let preferences = usable_preferences(preferences);
 
     // AUTO-020 point 1: tracks placed as commentary/other are never
     // chosen automatically unless every track is one.
@@ -236,17 +335,19 @@ pub fn select_audio<T: SelectableTrack>(
             .copied()
             .collect();
         if non_special.is_empty() {
-            refs
+            refs.clone()
         } else {
             non_special
         }
     };
 
-    let positions = canonical_positions(&eligible, TrackType::Audio);
+    // Canonical order counts ALL audio tracks, not only the eligible ones
+    // (AUTO-020, as clarified in policy revision 4).
+    let positions = canonical_positions(&refs, TrackType::Audio);
 
     // AUTO-020 point 2: for each preference in order, the best match.
     for preference in preferences {
-        let mut candidates: Vec<(&&T, MatchLevel, u8)> = eligible
+        let mut candidates: Vec<(&&T, MatchLevel, usize)> = eligible
             .iter()
             .filter_map(|t| {
                 let m = match_tags(preference, t.language());
@@ -304,15 +405,25 @@ pub fn select_audio<T: SelectableTrack>(
         .map(|t| t.id()))
 }
 
-fn is_ineligible_for_matching(tag: &LanguageTag) -> bool {
-    !tag.is_ordinary() || matches!(tag.language.as_deref(), Some("und" | "mul" | "zxx"))
+/// AUTO-030's "forced only": true when the audio's language gives a forced
+/// track nothing to match — a malformed value (it matches nothing,
+/// MATCH-010), or a primary language of `und` (not known), `mul` (several)
+/// or `zxx` (none), with or without further subtags.
+///
+/// A private-use tag (`x-foo`) or a grandfathered tag with no replacement
+/// (`i-default`) DOES have something to match: a forced track with exactly
+/// that tag (MATCH-040; settled in policy revision 4). Before revision 4
+/// this function refused every tag that was not an ordinary one, so such
+/// audio never got its forced subtitles.
+fn audio_has_nothing_to_match(tag: &LanguageTag) -> bool {
+    tag.is_malformed()
+        || (tag.is_ordinary() && matches!(tag.language.as_deref(), Some("und" | "mul" | "zxx")))
 }
 
 /// AUTO-030's "forced only": a track's PLACING role (TRACK-050) must be
 /// exactly forced — a `["forced", "sdh"]` track qualifies (placed as
-/// forced, the later of the two), but a `["sdh", "audio_description"]`
-/// track would not (placed as something else entirely, per whichever
-/// role ranks highest for subtitles).
+/// forced, the later of the two), but a `["forced", "commentary"]` track
+/// does not (placed as commentary, which ranks later still).
 fn is_placed_as_forced(roles: &[Role]) -> bool {
     roles::role_rank(TrackType::Subtitle, roles)
         == roles::individual_rank(TrackType::Subtitle, Role::Forced)
@@ -328,18 +439,19 @@ fn is_placed_as_full_or_sdh(roles: &[Role]) -> bool {
 }
 
 /// The forced track that best matches `audio`'s language, per AUTO-030's
-/// "forced only": `None` if there is no audio, the audio's language is
-/// `und`/`mul`/`zxx`, or no forced track matches it at all.
+/// "forced only": `None` if there is no audio, the audio's language gives
+/// nothing to match (see [`audio_has_nothing_to_match`]), or no forced
+/// track matches it at all.
 fn forced_only<T: SelectableTrack>(
     subtitles: &[&T],
     audio: Option<&LanguageTag>,
     positions: &HashMap<T::Id, usize>,
 ) -> Option<T::Id> {
     let audio = audio?;
-    if is_ineligible_for_matching(audio) {
+    if audio_has_nothing_to_match(audio) {
         return None;
     }
-    let mut candidates: Vec<(&&T, MatchLevel, u8)> = subtitles
+    let mut candidates: Vec<(&&T, MatchLevel, usize)> = subtitles
         .iter()
         .filter(|t| is_placed_as_forced(t.roles()))
         .filter_map(|t| {
@@ -360,12 +472,12 @@ fn forced_only<T: SelectableTrack>(
     Some(candidates[0].0.id())
 }
 
-/// The best-matching non-forced, non-commentary subtitle track, per
-/// AUTO-030's "always": tries each preference in order, then falls back
-/// to the default full track, else `None`.
+/// The best-matching subtitle track placed as full or SDH, per AUTO-030's
+/// "always": tries each preference in order, then falls back to the
+/// default one of those tracks, else `None`.
 fn always<T: SelectableTrack>(
     subtitles: &[&T],
-    preferences: &[LanguageTag],
+    preferences: &[&LanguageTag],
     accessibility: &Accessibility,
     positions: &HashMap<T::Id, usize>,
 ) -> Option<T::Id> {
@@ -390,7 +502,7 @@ fn always<T: SelectableTrack>(
     };
 
     for preference in preferences {
-        let mut candidates: Vec<(&&&T, MatchLevel, u8)> = ok
+        let mut candidates: Vec<(&&&T, MatchLevel, usize)> = ok
             .iter()
             .filter_map(|t| {
                 let m = match_tags(preference, t.language());
@@ -430,6 +542,10 @@ fn always<T: SelectableTrack>(
 /// audio language that is not known). `mode` is the user's subtitle
 /// preference.
 ///
+/// A malformed preference is ignored, and a user whose preferences are all
+/// malformed counts as having none — so automatic mode then acts as
+/// forced only (AUTO-010, as clarified in policy revision 4).
+///
 /// `Err` when two tracks share an identifier (AUTO-010) — see
 /// [`select_audio`]'s doc comment; the same guarantee about list order
 /// applies here too.
@@ -446,12 +562,14 @@ pub fn select_subtitle<T: SelectableTrack>(
     if mode == SubtitleMode::Off {
         return Ok(None);
     }
+    let preferences = usable_preferences(preferences);
+    // Every subtitle track counts for canonical order, as for audio.
     let positions = canonical_positions(&refs, TrackType::Subtitle);
 
     Ok(match mode {
         SubtitleMode::Off => unreachable!("handled by the early return above"),
         SubtitleMode::ForcedOnly => forced_only(&refs, audio, &positions),
-        SubtitleMode::Always => always(&refs, preferences, accessibility, &positions),
+        SubtitleMode::Always => always(&refs, &preferences, accessibility, &positions),
         SubtitleMode::Automatic => {
             if preferences.is_empty() {
                 forced_only(&refs, audio, &positions)
@@ -464,7 +582,7 @@ pub fn select_subtitle<T: SelectableTrack>(
                 if audio_matches_a_preference {
                     forced_only(&refs, audio, &positions)
                 } else {
-                    always(&refs, preferences, accessibility, &positions)
+                    always(&refs, &preferences, accessibility, &positions)
                 }
             }
         }
@@ -474,6 +592,7 @@ pub fn select_subtitle<T: SelectableTrack>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical::LanguageItem;
     use crate::tag::canonicalise;
 
     #[derive(Clone)]
@@ -485,22 +604,28 @@ mod tests {
         original: bool,
     }
 
+    impl LanguageItem for Track {
+        fn language(&self) -> &LanguageTag {
+            &self.tag
+        }
+        fn is_original(&self) -> bool {
+            self.original
+        }
+    }
+
+    impl RoleItem for Track {
+        fn roles(&self) -> &[Role] {
+            &self.roles
+        }
+    }
+
     impl SelectableTrack for Track {
         type Id = &'static str;
         fn id(&self) -> Self::Id {
             self.id
         }
-        fn language(&self) -> &LanguageTag {
-            &self.tag
-        }
-        fn roles(&self) -> &[Role] {
-            &self.roles
-        }
         fn is_default(&self) -> bool {
             self.default
-        }
-        fn is_original(&self) -> bool {
-            self.original
         }
     }
 
@@ -516,6 +641,11 @@ mod tests {
 
     fn with_default(mut t: Track) -> Track {
         t.default = true;
+        t
+    }
+
+    fn with_original(mut t: Track) -> Track {
+        t.original = true;
         t
     }
 
@@ -731,5 +861,163 @@ mod tests {
             ),
             Ok(None)
         );
+    }
+
+    // ---- policy revision 4 -------------------------------------------
+
+    #[test]
+    fn digits_only_identifiers_of_any_length_come_first() {
+        // AUTO-010: 40 digits overflow a 128-bit number; before revision 4
+        // such an identifier fell back to text order and lost to "0abc".
+        let forty = "1234567890123456789012345678901234567890";
+        assert_eq!(compare_identifiers(forty, "0abc"), Ordering::Less);
+        assert_eq!(compare_identifiers("0abc", forty), Ordering::Greater);
+        let tracks = vec![
+            track("0abc", "en", &[]),
+            Track {
+                id: forty,
+                ..track("x", "en", &[])
+            },
+        ];
+        let a11y = Accessibility::default();
+        assert_eq!(
+            select_audio(&tracks, &prefs(&["en"]), &a11y),
+            Ok(Some(forty))
+        );
+    }
+
+    #[test]
+    fn long_digit_identifiers_compare_as_numbers_by_length() {
+        let small = "99999999999999999999999999999999999999999"; // 41 nines
+        let big = "100000000000000000000000000000000000000000"; // 42 digits
+        assert_eq!(compare_identifiers(small, big), Ordering::Less);
+        // Leading zeros do not make a number bigger.
+        assert_eq!(
+            compare_identifiers("0000000000000000000000000000000000000009", "10"),
+            Ordering::Less
+        );
+        // Same number, different text: plain text decides ("01" before "1").
+        assert_eq!(compare_identifiers("01", "1"), Ordering::Less);
+        assert_eq!(compare_identifiers("0", "000"), Ordering::Less);
+        assert_eq!(compare_identifiers("9", "10"), Ordering::Less);
+        assert_eq!(compare_identifiers("", "0"), Ordering::Greater);
+    }
+
+    #[test]
+    fn a_malformed_preference_matches_nothing_in_selection() {
+        // MATCH-010 / AUTO-010 (revision 4): "English" used to match the
+        // track "english" exactly.
+        let tracks = vec![
+            with_default(track("1", "fr", &[])),
+            track("2", "english", &[]),
+        ];
+        let a11y = Accessibility::default();
+        assert_eq!(
+            select_audio(&tracks, &prefs(&["English"]), &a11y),
+            Ok(Some("1"))
+        );
+    }
+
+    #[test]
+    fn all_malformed_preferences_count_as_none_for_automatic_subtitles() {
+        // AUTO-010 (revision 4): automatic mode acts as forced only.
+        let subs = vec![
+            with_default(track("1", "en", &[])),
+            track("2", "en", &[Role::Forced]),
+        ];
+        let a11y = Accessibility::default();
+        let en = canonicalise("en");
+        assert_eq!(
+            select_subtitle(
+                &subs,
+                Some(&en),
+                &prefs(&["English", "en_US"]),
+                SubtitleMode::Automatic,
+                &a11y
+            ),
+            Ok(Some("2"))
+        );
+    }
+
+    #[test]
+    fn canonical_order_counts_tracks_that_cannot_be_chosen() {
+        // AUTO-020 (revision 4): the original Japanese commentary is never
+        // chosen, but it brings the Japanese group forward, so of the two
+        // default tracks the Japanese one wins.
+        let tracks = vec![
+            with_default(track("1", "en", &[])),
+            with_default(track("2", "ja", &[])),
+            with_original(track("3", "ja", &[Role::Commentary])),
+        ];
+        let a11y = Accessibility::default();
+        assert_eq!(select_audio(&tracks, &[], &a11y), Ok(Some("2")));
+    }
+
+    #[test]
+    fn commentary_ranks_before_other_even_when_audio_description_is_asked_for() {
+        // AUTO-020 (revision 4): every track is commentary or other.
+        let tracks = vec![
+            with_default(track("1", "en", &[Role::Other])),
+            track("2", "en", &[Role::Commentary]),
+        ];
+        let wants_ad = Accessibility {
+            audio_description: true,
+            captions: false,
+        };
+        assert_eq!(
+            select_audio(&tracks, &prefs(&["en"]), &wants_ad),
+            Ok(Some("2"))
+        );
+        assert_eq!(
+            select_audio(&tracks, &prefs(&["en"]), &Accessibility::default()),
+            Ok(Some("2"))
+        );
+    }
+
+    #[test]
+    fn forced_only_matches_a_private_use_or_grandfathered_audio_tag_exactly() {
+        // AUTO-030 (revision 4): these used to give nothing.
+        let subs = vec![
+            track("1", "x-bar", &[Role::Forced]),
+            track("2", "x-foo", &[Role::Forced]),
+            track("3", "i-default", &[Role::Forced]),
+        ];
+        let a11y = Accessibility::default();
+        for (audio, expected) in [
+            ("x-foo", Some("2")),
+            ("i-default", Some("3")),
+            ("x-baz", None),
+        ] {
+            let audio = canonicalise(audio);
+            assert_eq!(
+                select_subtitle(&subs, Some(&audio), &[], SubtitleMode::ForcedOnly, &a11y),
+                Ok(expected)
+            );
+        }
+        // A malformed audio value still has nothing to match.
+        let malformed = canonicalise("English");
+        assert_eq!(
+            select_subtitle(
+                &subs,
+                Some(&malformed),
+                &[],
+                SubtitleMode::ForcedOnly,
+                &a11y
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn subtitle_mode_words_default_and_round_trip() {
+        assert_eq!(SubtitleMode::default(), SubtitleMode::Automatic);
+        for mode in SubtitleMode::ALL {
+            assert_eq!(mode.as_str().parse::<SubtitleMode>(), Ok(mode));
+            assert_eq!(
+                serde_json::to_string(&mode).unwrap(),
+                format!("\"{}\"", mode.as_str())
+            );
+        }
+        assert!("Forced_Only".parse::<SubtitleMode>().is_err());
     }
 }

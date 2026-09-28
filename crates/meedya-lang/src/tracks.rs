@@ -8,18 +8,22 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::canonical::{self, GroupKey, LanguageItem};
-use crate::roles::{self, Role, TrackType};
+use crate::canonical::{self, GroupKey};
+use crate::roles::{self, RoleItem, TrackType};
 
-/// Anything that is a container track: it has a language (via
-/// [`LanguageItem`]), a [`TrackType`], and a list of [`Role`]s. Implement
-/// this on your own track type to sort it into stored order with
-/// [`sort_tracks`].
-pub trait TrackItem: LanguageItem {
+/// Anything that is a container track: it has a language and roles (via
+/// [`RoleItem`], which builds on [`LanguageItem`](crate::LanguageItem))
+/// and a [`TrackType`]. Implement this on your own track type to sort it
+/// into stored order with [`sort_tracks`].
+///
+/// `roles()` comes from [`RoleItem`], shared with
+/// [`PresentationItem`](crate::PresentationItem) and
+/// [`SelectableTrack`](crate::SelectableTrack), so one track type can
+/// implement all three and still call `track.roles()` without naming a
+/// trait.
+pub trait TrackItem: RoleItem {
     /// Which kind of track this is (TRACK-060).
     fn track_type(&self) -> TrackType;
-    /// The track's roles (TRACK-010). Most tracks have none.
-    fn roles(&self) -> &[Role];
 }
 
 /// Sorts `items` into stored order per TRACK-050 and TRACK-060:
@@ -34,7 +38,9 @@ pub trait TrackItem: LanguageItem {
 ///   (TRACK-020 + TRACK-060 together);
 /// * within a language group, role order comes before specificity
 ///   (TRACK-050: main/full first, alternates and accessibility roles
-///   after, in the order that track type's roles are defined);
+///   after, in the order that track type's roles are defined) — except
+///   among malformed values, which keep the order they were found in
+///   whatever their roles (LANG-026);
 /// * ties keep their original relative order (LANG-027), via Rust's
 ///   stable [`slice::sort_by`].
 pub fn sort_tracks<T: TrackItem>(items: &mut [T]) {
@@ -80,6 +86,8 @@ pub fn sort_tracks<T: TrackItem>(items: &mut [T]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical::LanguageItem;
+    use crate::roles::Role;
     use crate::tag::{canonicalise, LanguageTag};
 
     struct Track {
@@ -99,12 +107,15 @@ mod tests {
         }
     }
 
+    impl RoleItem for Track {
+        fn roles(&self) -> &[Role] {
+            &self.roles
+        }
+    }
+
     impl TrackItem for Track {
         fn track_type(&self) -> TrackType {
             self.track_type
-        }
-        fn roles(&self) -> &[Role] {
-            &self.roles
         }
     }
 
@@ -194,6 +205,27 @@ mod tests {
         sort_tracks(&mut tracks);
         let order: Vec<&str> = tracks.iter().map(|t| t.id).collect();
         assert_eq!(order, ["a3", "a4", "a2", "a1", "s4", "s3", "s2", "s1"]);
+    }
+
+    #[test]
+    fn malformed_tracks_keep_their_found_order_whatever_their_roles() {
+        // LANG-026: the first malformed track is commentary, the second has
+        // no role. Before policy revision 4 the role rank still applied and
+        // put m2 first.
+        let mut tracks = vec![
+            track(
+                "m1",
+                "English",
+                TrackType::Audio,
+                &[Role::Commentary],
+                false,
+            ),
+            track("m2", "Francais", TrackType::Audio, &[], false),
+            track("a1", "de", TrackType::Audio, &[Role::Commentary], false),
+        ];
+        sort_tracks(&mut tracks);
+        let order: Vec<&str> = tracks.iter().map(|t| t.id).collect();
+        assert_eq!(order, ["a1", "m1", "m2"]);
     }
 
     #[test]

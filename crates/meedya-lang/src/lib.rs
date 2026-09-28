@@ -8,15 +8,17 @@
 // apart. Every public item below names the rule ID it exists for.
 //
 // Synchronous, no I/O, no network, no dependency beyond `serde` and
-// `serde_json` (needed only to parse the reference data this crate
-// embeds). Eight building blocks, kept apart on purpose (policy section
-// 9): tag parsing and canonical form (`tag`); the canonical, stored-order
-// comparator (`canonical`, Part A); track types and roles (`roles`); the
-// track-aware variant of stored order (`tracks`); the presentation
-// comparator (`presentation`, Part B — a genuinely different algorithm
-// from Part A, not the same one wearing a different name); preference
-// matching (`matching`); automatic selection (`select`); and sidecar file
-// naming (`sidecar`, added in the policy's first revision, TEXT-030).
+// `serde_json` (`serde` for the derives on the public data types, so an
+// app can store them or send them over IPC; `serde_json` to parse the
+// reference data this crate embeds). Eight building blocks, kept apart on
+// purpose (policy section 9): tag parsing and canonical form (`tag`); the
+// canonical, stored-order comparator (`canonical`, Part A); track types
+// and roles (`roles`); the track-aware variant of stored order (`tracks`);
+// the presentation comparator (`presentation`, Part B — a genuinely
+// different algorithm from Part A, not the same one wearing a different
+// name); preference matching (`matching`); automatic selection
+// (`select`); and sidecar file naming (`sidecar`, TEXT-030 — part of
+// policy 1.0.0).
 
 //! # meedya-lang
 //!
@@ -72,14 +74,93 @@ pub use presentation::{
     label, sort_for_presentation, subtitle_menu, Accessibility, MenuEntry, PresentationContext,
     PresentationItem, PresentationKind,
 };
-pub use roles::{role_rank, Role, TrackType};
+pub use roles::{role_rank, Role, RoleItem, TrackType, UnknownWordError};
 pub use select::{
     compare_identifiers, select_audio, select_subtitle, DuplicateIdentifierError, SelectableTrack,
     SubtitleMode,
 };
 pub use sidecar::{build_sidecar_name, parse_sidecar_name, InvalidSidecarNumber, SidecarParts};
 pub use tag::{
-    canonicalise, from_legacy_three_letter, from_posix_locale, iso639_2_code, iso639_2_write,
-    Extension, Iso639Form, Iso639Write, LanguageTag, TagKind, TagNote,
+    canonicalise, from_legacy_three_letter, from_legacy_three_letter_all, from_posix_locale,
+    iso639_2_code, iso639_2_write, Extension, Iso639Form, Iso639Write, LanguageTag, TagKind,
+    TagNote,
 };
 pub use tracks::{sort_tracks, TrackItem};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One app track type implementing every track trait this crate has —
+    /// the obvious thing for a player to write.
+    struct AppTrack {
+        id: String,
+        tag: LanguageTag,
+        roles: Vec<Role>,
+        original: bool,
+    }
+
+    impl LanguageItem for AppTrack {
+        fn language(&self) -> &LanguageTag {
+            &self.tag
+        }
+        fn is_original(&self) -> bool {
+            self.original
+        }
+    }
+
+    impl RoleItem for AppTrack {
+        fn roles(&self) -> &[Role] {
+            &self.roles
+        }
+    }
+
+    impl TrackItem for AppTrack {
+        fn track_type(&self) -> TrackType {
+            TrackType::Audio
+        }
+    }
+
+    impl PresentationItem for AppTrack {
+        fn kind(&self) -> Option<PresentationKind> {
+            Some(PresentationKind::Audio)
+        }
+    }
+
+    impl SelectableTrack for AppTrack {
+        type Id = String;
+        fn id(&self) -> String {
+            self.id.clone()
+        }
+    }
+
+    #[test]
+    fn one_type_can_implement_every_track_trait_and_call_its_methods_plainly() {
+        // Before policy revision 4, TrackItem, PresentationItem and
+        // SelectableTrack each declared `roles()` (and SelectableTrack
+        // `language()` too), so the two plain calls below did not compile
+        // for a type implementing all three. This test is that proof: it
+        // only has to build.
+        let track = AppTrack {
+            id: "1".to_string(),
+            tag: canonicalise("en"),
+            roles: vec![Role::Commentary],
+            original: true,
+        };
+        assert_eq!(track.language().tag, "en");
+        assert_eq!(track.roles(), &[Role::Commentary]);
+        assert!(track.is_original());
+
+        let mut tracks = vec![track];
+        sort_tracks(&mut tracks);
+        sort_for_presentation(
+            &mut tracks,
+            &PresentationContext::default(),
+            |a: &str, b: &str| a.cmp(b),
+        );
+        assert_eq!(
+            select_audio(&tracks, &[], &Accessibility::default()),
+            Ok(Some("1".to_string()))
+        );
+    }
+}
