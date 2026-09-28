@@ -88,6 +88,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -279,7 +280,16 @@ def unlisted_copies(root, files):
                               f"({exc.strerror}); the check fails rather than passing.")
         for dirpath, dirnames, filenames in os.walk(root, onerror=refuse):
             dirnames[:] = [d for d in dirnames if d != ".git"]
-            for name in filenames + [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]:
+            for d in dirnames:
+                if os.path.islink(os.path.join(dirpath, d)):
+                    # Nothing can be vouched for behind a linked folder (it
+                    # may lead anywhere, and following links can loop), so
+                    # outside a git checkout it fails the check. Inside a
+                    # git checkout git lists what is tracked, links included.
+                    rel = os.path.relpath(os.path.join(dirpath, d), root)
+                    raise CheckFailed(f"{rel} is a link to a folder; outside a git checkout the check "
+                                      "cannot see behind it, so it fails. Run it in a git checkout.")
+            for name in filenames:
                 if name in DISTINCTIVE_NAMES:
                     candidates.append(os.path.normpath(os.path.relpath(os.path.join(dirpath, name), root)))
     return sorted(c for c in candidates if c not in listed)
@@ -304,10 +314,23 @@ def replace_file(full, data):
     outside the repository."""
     folder = os.path.dirname(full) or "."
     os.makedirs(folder, exist_ok=True)
+    # The new file must keep the permissions the old one had — an
+    # executable checker must stay executable, and a PHP copy must stay
+    # readable by a web server running as another account. mkstemp()
+    # creates files readable only by their owner, so set the mode
+    # explicitly: the old file's mode, or for a new file the usual default
+    # (0666 less the process's umask). Found by Codex's third round.
+    if os.path.exists(full):
+        mode = stat.S_IMODE(os.stat(full).st_mode)
+    else:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
     fd, tmp = tempfile.mkstemp(dir=folder, prefix=".media-lang-")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+        os.chmod(tmp, mode)
         os.replace(tmp, full)
     except BaseException:
         if os.path.exists(tmp):
@@ -393,8 +416,12 @@ def main(argv=None):
     root = os.getcwd()
     try:
         # The lock file is written by --init/--update, so its path gets the
-        # same checks as a copy's path (Codex review, 28 Sept 2026).
-        check_local_path(os.path.relpath(os.path.abspath(args.lock), root).replace(os.sep, "/"), root)
+        # same checks as a copy's path, applied to the path EXACTLY as given
+        # (a plain relative path, no "." or ".." parts, no symbolic link on
+        # the way). An earlier version tidied the path first, so
+        # "jump/../escaped.lock" was checked as "escaped.lock" but written
+        # through the link "jump" — found by Codex's third round.
+        check_local_path(args.lock, root)
         if args.offline and (os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS")):
             raise CheckFailed("--offline does not check the master, so it is refused in CI "
                               "(the CI or GITHUB_ACTIONS variable is set)")

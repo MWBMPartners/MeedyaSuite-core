@@ -301,6 +301,47 @@ class CheckCopiesTest(unittest.TestCase):
         self.assertEqual(self.run_checker(), 1)
         self.assertIn("not in the lock", self.err)
 
+    # --- third review (Codex, 28 Sept 2026) ---------------------------------
+
+    def test_lock_path_through_a_link_and_dot_dot_fails(self):
+        outside = tempfile.mkdtemp()
+        os.makedirs(os.path.join(outside, "child"))
+        os.symlink(os.path.join(outside, "child"), "jump")
+        with open(cc.DEFAULT_LOCK) as f:
+            lock = f.read()
+        with open(os.path.join(outside, "escaped.lock"), "w") as f:
+            f.write(lock)
+        self.assertEqual(self.run_checker(["--update", "f" * 40, "--lock", "jump/../escaped.lock"]), 1)
+        with open(os.path.join(outside, "escaped.lock")) as f:
+            self.assertEqual(f.read(), lock)
+
+    def test_linked_folder_outside_git_fails(self):
+        other = tempfile.mkdtemp()
+        with open(os.path.join(other, "bcp47-language-data-v1.json"), "w") as f:
+            f.write("altered")
+        os.symlink(other, "translations")
+        self.assertEqual(self.run_checker(), 1)
+        self.assertIn("link to a folder", self.err)
+
+    def test_update_keeps_file_permissions(self):
+        checker = "copies/check_copies.py"
+        os.chmod(checker, 0o755)
+        os.chmod("copies/bcp47-language-data-v1.json", 0o644)
+        self.assertEqual(self.run_checker(["--update", COMMIT]), 0, self.err)
+        self.assertEqual(os.stat(checker).st_mode & 0o777, 0o755)
+        self.assertEqual(os.stat("copies/bcp47-language-data-v1.json").st_mode & 0o777, 0o644)
+
+    def test_new_copies_are_not_owner_only(self):
+        umask = os.umask(0o022)
+        try:
+            args = ["--init", COMMIT, "--lock", "fresh/MWBM-MEDIA-LANG.lock"]
+            for master in cc.REQUIRED_MASTER_FILES:
+                args += ["--file", f"fresh/{os.path.basename(master)}={master}"]
+            self.assertEqual(self.run_checker(args), 0, self.err)
+            self.assertEqual(os.stat("fresh/media-language-bcp47-policy.md").st_mode & 0o777, 0o644)
+        finally:
+            os.umask(umask)
+
 
 if __name__ == "__main__":
     unittest.main()
