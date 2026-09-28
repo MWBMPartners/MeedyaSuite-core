@@ -25,8 +25,24 @@ cd "$(dirname "$0")/.."
 sum_passing() {
     # One `test result:` line per test binary (unit, integration, doc), so the
     # workspace total is their sum — not the last line.
-    # shellcheck disable=SC2086
-    cargo test --workspace $1 --locked --no-fail-fast 2>&1 \
+    #
+    # cargo's own exit status is captured explicitly, and a failing run stops
+    # the script with a message: counting the tests that passed in a run
+    # where some FAILED would compare a meaningless number. (The pipe used to
+    # run straight from cargo into grep and awk. `set -o pipefail` above
+    # already made a failure stop the script, but silently - checked with a
+    # stand-in cargo that exits 101 - and the CI step that copied this
+    # function had no pipefail at all, so there a failing run was counted as
+    # if it had passed. Found by Codex's review r7.)
+    local out status=0
+    out=$(cargo test --workspace "$@" --locked --no-fail-fast 2>&1) || status=$?
+    if [ "$status" -ne 0 ]; then
+        printf '%s\n' "$out" | tail -n 40 >&2
+        echo "FAILED: cargo test --workspace $* exited with status ${status}, so its tests" \
+             "were not counted. Fix the failing tests first." >&2
+        return "$status"
+    fi
+    printf '%s\n' "$out" \
         | grep -E '^test result' \
         | awk -F'[ ;]' '{p += $4} END {print p + 0}'
 }
@@ -38,7 +54,7 @@ if [ "$#" -eq 2 ]; then
 else
     echo "Measuring the real suite (compiles and runs it twice)..."
     ALL=$(sum_passing --all-features)
-    DEFAULT=$(sum_passing "")
+    DEFAULT=$(sum_passing)
     echo "  measured: ${DEFAULT} default-features, ${ALL} --all-features"
 fi
 

@@ -123,15 +123,32 @@ jobs:
       # The suite is run here rather than reusing the `backend` job's run
       # because jobs do not share a filesystem; the script takes the totals
       # as arguments so it does not run anything a third time.
+      #
+      # `shell: bash` and `set -euo pipefail`, and cargo's exit status
+      # captured explicitly, so a failing test run fails this step. Without
+      # them (GitHub's default shell runs `bash -e`, with no pipefail) the
+      # pipe from cargo into grep and awk reported awk's success: a run with
+      # a failing test was counted as if it had passed, and the step went on
+      # (reproduced with a stand-in cargo that exits 101; found by Codex's
+      # review r7). The script's own measuring path does the same.
       - name: Measure and compare documented test counts
+        shell: bash
         run: |
+          set -euo pipefail
           sum() {
-            cargo test --workspace $1 --locked --no-fail-fast 2>&1 \
+            local out status=0
+            out=$(cargo test --workspace "$@" --locked --no-fail-fast 2>&1) || status=$?
+            if [ "$status" -ne 0 ]; then
+              printf '%s\n' "$out" | tail -n 40 >&2
+              echo "::error::cargo test --workspace $* failed (status $status); tests not counted" >&2
+              return "$status"
+            fi
+            printf '%s\n' "$out" \
               | grep -E '^test result' \
               | awk -F'[ ;]' '{p += $4} END {print p + 0}'
           }
           ALL=$(sum --all-features)
-          DEFAULT=$(sum "")
+          DEFAULT=$(sum)
           echo "measured: $DEFAULT default-features, $ALL --all-features"
           ./scripts/check-doc-test-counts.sh "$DEFAULT" "$ALL"
 
