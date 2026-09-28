@@ -237,13 +237,20 @@ actually run matches the number declared in the fixture file (a guard
 against a section being silently skipped). Every failure is printed with
 the case id, what was expected and what was actually returned. Before a
 single case runs, the runner also refuses outright — rather than quietly
-running a smaller or differently-shaped test — if the fixture file has a
-section this runner has never heard of, is missing a section it needs, has
-a section with nothing in it, or has a case that does not match the
-schema's shape: a missing required field (including inside a nested
+running a smaller or differently-shaped test — if the fixture file's own
+fields are wrong (`policy`, `policy_version`, `fixtures_version` or
+`data_version` missing or not what the schema says, a `data_version`
+that is not the data file's, or a `$schema` that is not a string), if it
+has a section this runner has never heard of, is missing a section it
+needs, has a section with nothing in it, or has a case that does not match
+the schema's shape: a missing required field (including inside a nested
 `expected` object and in every item and track), a field the schema does
 not allow (so an `"error": true` in a section that has no refusal cases is
-refused, not ignored), or an `error` flag that is not `true` or sits on a
+refused, not ignored), a value of the wrong type (a number where a string
+belongs, a string where true/false belongs, a fraction where a whole number
+belongs, a list holding something other than strings — and `null` anywhere
+the schema does not allow it, so `"roles": null` is refused rather than
+read as "no roles"), or an `error` flag that is not `true` or sits on a
 case that does not expect `null`. Each refusal names the case and the field.
 
 Needing no PHP extension applies here too — `php -n` (every extension

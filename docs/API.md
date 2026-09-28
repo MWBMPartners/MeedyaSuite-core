@@ -526,12 +526,17 @@ canonical-form **stability** property (canonicalising a `canonicalise` case's no
 again must return it completely unchanged); that no section was silently skipped (the number of
 cases actually run must equal the number the file has); that the fixture file names no section
 this harness does not know how to run, and that none of the sections it needs is empty (policy
-8.1); and that every case matches the schema's shape — a missing required field (including inside
-a nested `expected` object and in every item and track), a field the schema does not allow (so an
-`error: true` flag in a section with no refusal cases), or an `error` flag that is not `true` or sits
-on a case that does not expect `null` fails the run, naming the case, rather than being quietly
-defaulted or ignored. Eighteen `harness_refuses::*` tests prove that by running the harness on
-damaged copies of the real case file. The harness's stand-in collation compares names only, so the
+8.1); that the file's own fields are right (`policy`, `policy_version`, a `fixtures_version` of
+three dot-separated numbers, a `data_version` matching the embedded data, a string `$schema`); and
+that every case matches the schema's shape — a missing required field (including inside a nested
+`expected` object and in every item and track), a field the schema does not allow (so an
+`error: true` flag in a section with no refusal cases), a value of the wrong type (including `null`
+where the schema allows none, such as an optional `description` or a track's `original`), or an
+`error` flag that is not `true` or sits on a case that does not expect `null` fails the run, naming
+the case, rather than being quietly defaulted or ignored. Twenty `harness_refuses::*` tests prove
+that by running the harness on damaged copies of the real case file — eighteen with one damage
+each, and two that each run a table of damaged copies (ten to the top-level fields, thirty-one to
+field types and nulls). The harness's stand-in collation compares names only, so the
 crate's own tie-break by language code (UI-040) is what the tied-name case checks. A unit test separately asserts the crate's embedded copy of the reference
 data is byte-for-byte identical to the master copy under `docs/standards/`.
 

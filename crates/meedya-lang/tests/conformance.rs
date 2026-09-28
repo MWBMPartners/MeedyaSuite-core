@@ -35,6 +35,18 @@
 //   `const`), and a case carrying it must expect `null`.
 // * Required fields that may not be null are ordinary (non-`Option`)
 //   fields, which serde already refuses to leave out.
+// * A field the schema makes OPTIONAL but never nullable (a `description`,
+//   a track's `original`, an accessibility preference ...) is read with
+//   `default, deserialize_with = "present_not_null"`: absent is `None`,
+//   an explicit `null` is refused. A plain `Option<T>` reads `null` as
+//   `None`, exactly like an absent key, so until Codex's review r7 a null
+//   the schema forbids passed unnoticed here. Every other wrong TYPE (a
+//   number where a string belongs, `roles: null`, a fraction where a whole
+//   number belongs) serde already refuses, because each field is typed.
+// * The file's own top-level fields are checked too: `policy` and
+//   `policy_version` exactly, `fixtures_version` as three dot-separated
+//   numbers, `data_version` against the data this crate embeds, and
+//   `$schema`, if present, as a string.
 // * The `harness_refuses` tests at the bottom prove each of those by
 //   running this same harness on a deliberately damaged copy of the case
 //   file and requiring it to fail, for the stated reason.
@@ -103,6 +115,23 @@ fn only_true<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Erro
     }
 }
 
+/// For a field the schema makes optional but never nullable: absent is
+/// `None` (the field also carries `#[serde(default)]`), a real value is
+/// `Some`, and an explicit `null` is refused. See the header comment for
+/// why a plain `Option<T>` is not enough.
+fn present_not_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    match Option::<T>::deserialize(deserializer)? {
+        Some(value) => Ok(Some(value)),
+        None => Err(D::Error::custom(
+            "a field is null, which the schema does not allow here - leave it out instead",
+        )),
+    }
+}
+
 /// A case that carries `error: true` must expect `null` (the schema's
 /// `if error then expected: null`) — otherwise it is unclear what it tests.
 fn require_null_expected_on_error(id: &str, error: bool, expected_is_null: bool) {
@@ -156,6 +185,7 @@ struct CanonicaliseCase {
     expected: Option<String>,
     kind: String,
     #[allow(dead_code)]
+    #[serde(default, deserialize_with = "present_not_null")]
     note: Option<String>,
 }
 
@@ -177,6 +207,7 @@ struct PosixCase {
     #[allow(dead_code)]
     rules: Vec<String>,
     #[allow(dead_code)]
+    #[serde(default, deserialize_with = "present_not_null")]
     description: Option<String>,
     input: String,
     #[serde(deserialize_with = "Option::deserialize")]
@@ -197,6 +228,7 @@ struct Iso639WriteCase {
     #[allow(dead_code)]
     rules: Vec<String>,
     #[allow(dead_code)]
+    #[serde(default, deserialize_with = "present_not_null")]
     description: Option<String>,
     input: String,
     expected: Iso639WriteExpected,
@@ -233,6 +265,7 @@ enum SidecarCase {
         #[allow(dead_code)]
         rules: Vec<String>,
         #[allow(dead_code)]
+        #[serde(default, deserialize_with = "present_not_null")]
         description: Option<String>,
         stem: String,
         tag: String,
@@ -259,8 +292,10 @@ enum SidecarCase {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OrderItem {
+    #[serde(default, deserialize_with = "present_not_null")]
     id: Option<String>,
     tag: String,
+    #[serde(default, deserialize_with = "present_not_null")]
     original: Option<bool>,
 }
 
@@ -284,6 +319,7 @@ struct TrackDef {
     kind: String,
     tag: String,
     roles: Vec<String>,
+    #[serde(default, deserialize_with = "present_not_null")]
     original: Option<bool>,
 }
 
@@ -304,7 +340,9 @@ struct TrackOrderCase {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct AccessibilityDef {
+    #[serde(default, deserialize_with = "present_not_null")]
     audio_description: Option<bool>,
+    #[serde(default, deserialize_with = "present_not_null")]
     captions: Option<bool>,
 }
 
@@ -323,10 +361,12 @@ struct PresentationItemDef {
     id: String,
     tag: String,
     #[serde(rename = "type")]
+    #[serde(default, deserialize_with = "present_not_null")]
     kind: Option<String>,
     // Optional in the schema: "Absent means none."
     #[serde(default)]
     roles: Vec<String>,
+    #[serde(default, deserialize_with = "present_not_null")]
     original: Option<bool>,
 }
 
@@ -343,6 +383,7 @@ struct PresentationCase {
     /// Present only to show that selection changes nothing (UI-050); the
     /// ordering function takes no selection input, so it is never read.
     #[allow(dead_code)]
+    #[serde(default, deserialize_with = "present_not_null")]
     selected: Option<String>,
     #[allow(dead_code)]
     display_names: HashMap<String, String>,
@@ -358,6 +399,7 @@ struct LabelCase {
     #[allow(dead_code)]
     rules: Vec<String>,
     #[allow(dead_code)]
+    #[serde(default, deserialize_with = "present_not_null")]
     description: Option<String>,
     #[serde(rename = "type")]
     kind: String,
@@ -383,6 +425,7 @@ struct MatchCase {
     #[allow(dead_code)]
     rules: Vec<String>,
     #[allow(dead_code)]
+    #[serde(default, deserialize_with = "present_not_null")]
     description: Option<String>,
     preference: String,
     candidate: String,
@@ -399,7 +442,9 @@ struct SelectTrackDef {
     id: String,
     tag: String,
     roles: Vec<String>,
+    #[serde(default, deserialize_with = "present_not_null")]
     default: Option<bool>,
+    #[serde(default, deserialize_with = "present_not_null")]
     original: Option<bool>,
 }
 
@@ -694,7 +739,25 @@ fn run_conformance(raw: &str) -> Report {
     };
     assert_eq!(text("policy"), "MWBM-MEDIA-LANG");
     assert_eq!(text("policy_version"), "1.0.0");
-    let _ = text("fixtures_version");
+    // The schema's pattern for a version: three dot-separated numbers.
+    // (Until Codex's review r7 this field was only required to be a
+    // string, so "1.0" passed.)
+    let fixtures_version = text("fixtures_version");
+    let parts: Vec<&str> = fixtures_version.split('.').collect();
+    assert!(
+        parts.len() == 3
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())),
+        "fixtures_version {fixtures_version:?} is not a version of three dot-separated numbers"
+    );
+    // `$schema` is optional, but when present the schema says it is a string.
+    if let Some(schema) = top.get("$schema") {
+        assert!(
+            schema.is_string(),
+            "the fixture file's \"$schema\" must be a string, not {schema}"
+        );
+    }
     assert_eq!(
         text("data_version"),
         embedded_data_version(),
@@ -1351,5 +1414,390 @@ mod harness_refuses {
         run_conformance(&with_top(|top| {
             top.remove("match");
         }));
+    }
+
+    // -----------------------------------------------------------------
+    // Top-level fields and field TYPES (Codex review r7, finding 3)
+    //
+    // Codex showed the PHP runner passing a file with the four required
+    // top-level fields removed, and one with a selection track's `roles`
+    // set to null. The same damaged copies, and more (a wrong type in each
+    // kind of field; null where the schema allows none), are run here
+    // against this runner. Each must be refused before any case runs, with
+    // a message naming what was wrong. Table-driven: one row per damaged
+    // copy, so a new kind of damage is one more row.
+    // -----------------------------------------------------------------
+
+    /// Runs the harness on `raw` and returns the message it stopped with,
+    /// or `None` if it accepted the file (ran to the end without stopping).
+    fn refusal(raw: &str) -> Option<String> {
+        let payload = std::panic::catch_unwind(|| run_conformance(raw)).err()?;
+        Some(
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Checks every row: the harness refuses the damaged copy, and its
+    /// message contains the row's expected fragment. Collects every wrong
+    /// row before failing, so one run shows them all.
+    fn check_refusals(rows: Vec<(&str, String, &str)>) {
+        let mut wrong = Vec::new();
+        for (name, raw, fragment) in rows {
+            match refusal(&raw) {
+                None => wrong.push(format!("{name}: ACCEPTED - it must be refused")),
+                Some(message) if !message.contains(fragment) => {
+                    wrong.push(format!("{name}: expected {fragment:?} in {message:?}"))
+                }
+                Some(_) => {}
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    #[test]
+    fn damaged_top_level_fields_are_refused() {
+        check_refusals(vec![
+            (
+                "all four required top-level fields removed (Codex's input)",
+                with_top(|top| {
+                    for key in [
+                        "policy",
+                        "policy_version",
+                        "fixtures_version",
+                        "data_version",
+                    ] {
+                        top.remove(key);
+                    }
+                }),
+                "fixture file has no string \"policy\"",
+            ),
+            (
+                "policy removed",
+                with_top(|top| {
+                    top.remove("policy");
+                }),
+                "no string \"policy\"",
+            ),
+            (
+                "policy_version removed",
+                with_top(|top| {
+                    top.remove("policy_version");
+                }),
+                "no string \"policy_version\"",
+            ),
+            (
+                "fixtures_version removed",
+                with_top(|top| {
+                    top.remove("fixtures_version");
+                }),
+                "no string \"fixtures_version\"",
+            ),
+            (
+                "data_version removed",
+                with_top(|top| {
+                    top.remove("data_version");
+                }),
+                "no string \"data_version\"",
+            ),
+            (
+                "policy has the wrong value",
+                with_top(|top| {
+                    top.insert("policy".into(), Value::String("OTHER".into()));
+                }),
+                "MWBM-MEDIA-LANG",
+            ),
+            (
+                "policy_version is a number",
+                with_top(|top| {
+                    top.insert("policy_version".into(), serde_json::json!(1));
+                }),
+                "no string \"policy_version\"",
+            ),
+            (
+                "fixtures_version is not three numbers",
+                with_top(|top| {
+                    top.insert("fixtures_version".into(), Value::String("1.0".into()));
+                }),
+                "fixtures_version \"1.0\" is not a version",
+            ),
+            (
+                "data_version is not the embedded data's",
+                with_top(|top| {
+                    top.insert("data_version".into(), Value::String("9.9.9".into()));
+                }),
+                "different reference-data version",
+            ),
+            (
+                "$schema is a number",
+                with_top(|top| {
+                    top.insert("$schema".into(), serde_json::json!(5));
+                }),
+                "\"$schema\" must be a string",
+            ),
+        ]);
+    }
+
+    #[test]
+    fn damaged_field_types_are_refused() {
+        use serde_json::json;
+        let first = |section: &str| -> String {
+            let fixtures: Value = serde_json::from_str(&fixture_text()).unwrap();
+            fixtures[section][0]["id"].as_str().unwrap().to_string()
+        };
+        let set = |section: &str, id: &str, pointer: &str, value: Value| -> String {
+            with_case(section, id, |c| {
+                let (parent, key) = pointer.rsplit_once('/').unwrap();
+                let target = if parent.is_empty() {
+                    c
+                } else {
+                    c.pointer_mut(parent).unwrap()
+                };
+                target
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(key.to_string(), value);
+            })
+        };
+        check_refusals(vec![
+            (
+                "a selection track's roles is null (Codex's input)",
+                set(
+                    "auto_select_audio",
+                    "audio-01",
+                    "/tracks/0/roles",
+                    Value::Null,
+                ),
+                "invalid type: null, expected a sequence",
+            ),
+            (
+                "a canonicalise input is a number",
+                set("canonicalise", &first("canonicalise"), "/input", json!(5)),
+                "invalid type: integer `5`, expected a string",
+            ),
+            (
+                "a label's channels is a number",
+                set("label", "label-01", "/channels", json!(5)),
+                "invalid type: integer `5`, expected a string",
+            ),
+            (
+                "an optional description is null",
+                set(
+                    "posix_locale",
+                    &first("posix_locale"),
+                    "/description",
+                    Value::Null,
+                ),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "a track's original is a string",
+                set(
+                    "track_order",
+                    &first("track_order"),
+                    "/tracks/0/original",
+                    json!("yes"),
+                ),
+                "expected a boolean",
+            ),
+            (
+                "a track's original is null",
+                set(
+                    "track_order",
+                    &first("track_order"),
+                    "/tracks/0/original",
+                    Value::Null,
+                ),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "a match distance is a string",
+                set("match", "match-01", "/expected/distance", json!("1")),
+                "expected usize",
+            ),
+            (
+                "a match distance has a fraction",
+                set("match", "match-01", "/expected/distance", json!(1.5)),
+                "invalid type: floating point",
+            ),
+            (
+                "rules is a string",
+                set(
+                    "legacy_three_letter",
+                    &first("legacy_three_letter"),
+                    "/rules",
+                    json!("LANG-002"),
+                ),
+                "expected a sequence",
+            ),
+            (
+                "rules holds a number",
+                set(
+                    "legacy_three_letter",
+                    &first("legacy_three_letter"),
+                    "/rules",
+                    json!([1]),
+                ),
+                "expected a string",
+            ),
+            (
+                "a display name is a number",
+                set(
+                    "presentation_order",
+                    &first("presentation_order"),
+                    "/display_names",
+                    json!({"en": 5}),
+                ),
+                "expected a string",
+            ),
+            (
+                "preferences is null",
+                set("auto_select_audio", "audio-01", "/preferences", Value::Null),
+                "expected a sequence",
+            ),
+            (
+                "a sidecar build number is a string",
+                set("sidecar_name", "sidecar-01", "/number", json!("2")),
+                "expected i64",
+            ),
+            (
+                "an accessibility preference is null",
+                set(
+                    "auto_select_audio",
+                    "audio-01",
+                    "/accessibility",
+                    json!({"captions": null}),
+                ),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "an order item's id is null",
+                set(
+                    "canonical_order",
+                    &first("canonical_order"),
+                    "/items/0/id",
+                    Value::Null,
+                ),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "a menu's selected is null",
+                set(
+                    "subtitle_menu",
+                    &first("subtitle_menu"),
+                    "/selected",
+                    Value::Null,
+                ),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "a canonicalise note is null",
+                set("canonicalise", &first("canonicalise"), "/note", Value::Null),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "a presentation item's type is null",
+                set(
+                    "presentation_order",
+                    &first("presentation_order"),
+                    "/items/0/type",
+                    Value::Null,
+                ),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "a selection track's default is null",
+                set(
+                    "auto_select_audio",
+                    "audio-01",
+                    "/tracks/0/default",
+                    Value::Null,
+                ),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "a selection track's original is null",
+                set(
+                    "auto_select_subtitle",
+                    "subs-01",
+                    "/tracks/0/original",
+                    Value::Null,
+                ),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "a label's role_names is null",
+                set("label", "label-01", "/role_names", Value::Null),
+                "expected a map",
+            ),
+            (
+                "a sidecar parse number is a string",
+                set("sidecar_name", "sidecar-07", "/expected/number", json!("3")),
+                "expected u32",
+            ),
+            (
+                "a write case's form is null",
+                set("iso639_2_write", "write-01", "/expected/b", Value::Null),
+                "expected a string",
+            ),
+            (
+                "a label's roles holds a number",
+                set("label", "label-01", "/roles", json!([1])),
+                "expected a string",
+            ),
+            (
+                "an expected order is null",
+                set(
+                    "track_order",
+                    &first("track_order"),
+                    "/expected",
+                    Value::Null,
+                ),
+                "expected a sequence",
+            ),
+            (
+                "a label description is null",
+                set("label", "label-05", "/description", Value::Null),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "a match description is null",
+                set("match", "match-01", "/description", Value::Null),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "a write description is null",
+                set("iso639_2_write", "write-01", "/description", Value::Null),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "a sidecar build description is null",
+                set("sidecar_name", "sidecar-01", "/description", Value::Null),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "a presentation item's original is null",
+                set(
+                    "presentation_order",
+                    &first("presentation_order"),
+                    "/items/0/original",
+                    Value::Null,
+                ),
+                "is null, which the schema does not allow here",
+            ),
+            (
+                "an order item's original is null",
+                set(
+                    "canonical_order",
+                    &first("canonical_order"),
+                    "/items/0/original",
+                    Value::Null,
+                ),
+                "is null, which the schema does not allow here",
+            ),
+        ]);
     }
 }

@@ -32,14 +32,18 @@
  * section 8.1 also requires this runner to FAIL - never quietly report
  * success - on an unknown section, a missing or empty section it needs, or
  * a case that is missing a field the schema requires: those checks run
- * before a single case is executed (see checkSections() and
- * checkCaseShapes() below), so a broken fixture file is caught immediately
- * rather than producing a confusing, partial run. checkCaseShapes() checks
- * every case against the schema's own shape - required fields, including
- * inside nested objects and in every item and track; no field the schema
- * does not allow (so an `error` flag in a section that has no refusal cases
- * is refused, not ignored); and `error`, where allowed, only ever `true`,
- * on a case that expects null.
+ * before a single case is executed (see checkTopLevel(), checkSections()
+ * and checkCaseShapes() below), so a broken fixture file is caught
+ * immediately rather than producing a confusing, partial run.
+ * checkTopLevel() checks the file's own fields (`policy`, the three
+ * versions, `$schema`) and that its data_version is the data file's.
+ * checkCaseShapes() checks every case against the schema's own shape -
+ * required fields, including inside nested objects and in every item and
+ * track; no field the schema does not allow (so an `error` flag in a
+ * section that has no refusal cases is refused, not ignored); every field's
+ * TYPE (string, true/false, whole number, list, object - and null only
+ * where the schema allows null); and `error`, where allowed, only ever
+ * `true`, on a case that expects null.
  *
  * Copyright (c) 2026 MeedyaSuite
  * Licensed under the MIT License. See LICENSE file in the project root.
@@ -76,100 +80,241 @@ const EXPECTED_SECTIONS = [
 ];
 
 /** The top-level keys in the fixture file that are metadata about the file
- * itself, not a section of cases - never checked for required case fields,
- * and not counted as "unknown" when checkSections() looks for stray keys. */
+ * itself, not a section of cases - never counted as "unknown" when
+ * checkSections() looks for stray keys. checkTopLevel() checks each one
+ * against TOP_LEVEL_FIELDS below. */
 const METADATA_KEYS = ['$schema', 'policy', 'policy_version', 'fixtures_version', 'data_version'];
 
 /**
- * The shape every case in each section MUST have, taken directly from the
- * fixture schema (bcp47-language-policy-v1.schema.json): 'required' fields,
- * 'optional' ones, and - because the schema says `additionalProperties:
- * false` everywhere - nothing else. 'objects' names fields holding a nested
- * object with its own shape ('nullable' ones may also be null), 'lists'
- * fields holding a list of objects of one shape, and 'maps' fields holding
- * an object with free-form keys (localised names) whose keys are not
- * checked. 'refusal' marks the three case shapes that may carry
- * `error: true`.
- *
- * Before policy revision 4 this runner only checked each case's top-level
- * required fields: a nested `expected` object, the items and tracks inside
- * a case, and unknown fields went unchecked - so, for one, a selection
- * track with no `roles` quietly counted as having none, and an `error: true`
- * flag in a section with no refusal cases was silently ignored.
+ * The fixture file's own top-level fields, as the schema gives them:
+ * whether each is required, and the rule its value must meet ('const' - that
+ * exact string; 'version' - a string of three dot-separated numbers;
+ * 'string' - any string). Before Codex's review r7 these were not checked at
+ * all: a file with every one of the four required fields removed ran, and
+ * reported every case as passing.
  */
-const ACCESSIBILITY_SHAPE = ['required' => [], 'optional' => ['audio_description', 'captions']];
-const SELECT_TRACK_SHAPE = ['required' => ['id', 'tag', 'roles'], 'optional' => ['default', 'original']];
+const TOP_LEVEL_FIELDS = [
+    '$schema' => ['required' => false, 'rule' => 'string'],
+    'policy' => ['required' => true, 'rule' => 'const', 'value' => 'MWBM-MEDIA-LANG'],
+    'policy_version' => ['required' => true, 'rule' => 'version'],
+    'fixtures_version' => ['required' => true, 'rule' => 'version'],
+    'data_version' => ['required' => true, 'rule' => 'version'],
+];
+
+/**
+ * The shape every case in each section MUST have, taken directly from the
+ * fixture schema (bcp47-language-policy-v1.schema.json). 'required' and
+ * 'optional' map each field the schema allows to the TYPE its value must
+ * have; because the schema says `additionalProperties: false` everywhere,
+ * no other field is allowed. Types:
+ *
+ *   'string', 'bool', 'int'   - a JSON string, true/false, or whole number
+ *   'list<string>'            - a JSON array of strings
+ *   'map<string>'             - a JSON object whose values are all strings
+ *                               (localised names; its keys are not checked)
+ *   'object'                  - a JSON object with its own shape, given
+ *                               under 'objects'
+ *   'list<object>'            - a JSON array of objects of one shape, given
+ *                               under 'lists'
+ *   'true'                    - only the value true (the schema's `const`)
+ *
+ * A type ending in '|null' may also be null; no other field may be null.
+ * 'refusal' marks the three case shapes that may carry `error: true`, whose
+ * expected answer must then be null.
+ *
+ * History, so none of this is quietly loosened again: before policy
+ * revision 4 this runner only checked each case's top-level required fields
+ * (a nested `expected` object, the items and tracks inside a case, and
+ * unknown fields went unchecked). Until Codex's review r7 it checked which
+ * fields were present but not their TYPES, so `roles: null` on a selection
+ * track silently counted as "no roles", `input: 5` or `channels: 5` reached
+ * the library as a number, and a null where the schema allows none (an
+ * optional `description`, `original` or `default`) passed as "absent".
+ */
+const ACCESSIBILITY_SHAPE = [
+    'required' => [],
+    'optional' => ['audio_description' => 'bool', 'captions' => 'bool'],
+];
+const SELECT_TRACK_SHAPE = [
+    'required' => ['id' => 'string', 'tag' => 'string', 'roles' => 'list<string>'],
+    'optional' => ['default' => 'bool', 'original' => 'bool'],
+];
 const PRESENTATION_CASE_SHAPE = [
     'required' => [
-        'id', 'rules', 'description', 'preferences', 'accessibility', 'display_names', 'collation_keys',
-        'items', 'expected',
+        'id' => 'string',
+        'rules' => 'list<string>',
+        'description' => 'string',
+        'preferences' => 'list<string>',
+        'accessibility' => 'object',
+        'display_names' => 'map<string>',
+        'collation_keys' => 'map<string>',
+        'items' => 'list<object>',
+        'expected' => 'list<string>',
     ],
-    'optional' => ['selected'],
+    'optional' => ['selected' => 'string'],
     'objects' => ['accessibility' => ACCESSIBILITY_SHAPE],
-    'maps' => ['display_names', 'collation_keys'],
     'lists' => [
-        'items' => ['required' => ['id', 'tag'], 'optional' => ['type', 'roles', 'original']],
+        'items' => [
+            'required' => ['id' => 'string', 'tag' => 'string'],
+            'optional' => ['type' => 'string', 'roles' => 'list<string>', 'original' => 'bool'],
+        ],
     ],
 ];
 const CASE_SHAPES = [
-    'canonicalise' => ['required' => ['id', 'rules', 'input', 'expected', 'kind'], 'optional' => ['note']],
-    'legacy_three_letter' => ['required' => ['id', 'rules', 'input', 'expected'], 'optional' => []],
-    'iso639_2_write' => [
-        'required' => ['id', 'rules', 'input', 'expected'],
-        'optional' => ['description'],
-        'objects' => ['expected' => ['required' => ['b', 't'], 'optional' => []]],
+    'canonicalise' => [
+        'required' => [
+            'id' => 'string',
+            'rules' => 'list<string>',
+            'input' => 'string',
+            'expected' => 'string|null',
+            'kind' => 'string',
+        ],
+        'optional' => ['note' => 'string'],
     ],
-    'posix_locale' => ['required' => ['id', 'rules', 'input', 'expected'], 'optional' => ['description']],
+    'legacy_three_letter' => [
+        'required' => [
+            'id' => 'string',
+            'rules' => 'list<string>',
+            'input' => 'string',
+            'expected' => 'string|null',
+        ],
+        'optional' => [],
+    ],
+    'iso639_2_write' => [
+        'required' => ['id' => 'string', 'rules' => 'list<string>', 'input' => 'string', 'expected' => 'object'],
+        'optional' => ['description' => 'string'],
+        'objects' => ['expected' => ['required' => ['b' => 'string', 't' => 'string'], 'optional' => []]],
+    ],
+    'posix_locale' => [
+        'required' => [
+            'id' => 'string',
+            'rules' => 'list<string>',
+            'input' => 'string',
+            'expected' => 'string|null',
+        ],
+        'optional' => ['description' => 'string'],
+    ],
     'sidecar_name (build)' => [
-        'required' => ['id', 'rules', 'mode', 'stem', 'tag', 'roles', 'extension', 'number', 'expected'],
-        'optional' => ['error', 'description'],
+        'required' => [
+            'id' => 'string',
+            'rules' => 'list<string>',
+            'mode' => 'string',
+            'stem' => 'string',
+            'tag' => 'string',
+            'roles' => 'list<string>',
+            'extension' => 'string',
+            'number' => 'int|null',
+            'expected' => 'string|null',
+        ],
+        'optional' => ['error' => 'true', 'description' => 'string'],
         'refusal' => true,
     ],
     'sidecar_name (parse)' => [
-        'required' => ['id', 'rules', 'mode', 'stem', 'filename', 'expected'],
+        'required' => [
+            'id' => 'string',
+            'rules' => 'list<string>',
+            'mode' => 'string',
+            'stem' => 'string',
+            'filename' => 'string',
+            'expected' => 'object|null',
+        ],
         'optional' => [],
         'objects' => [
             'expected' => [
-                'required' => ['tag', 'unrecognised', 'roles', 'number', 'extension'],
+                'required' => [
+                    'tag' => 'string|null',
+                    'unrecognised' => 'string|null',
+                    'roles' => 'list<string>',
+                    'number' => 'int|null',
+                    'extension' => 'string',
+                ],
                 'optional' => [],
-                'nullable' => true,
             ],
         ],
     ],
     'canonical_order' => [
-        'required' => ['id', 'rules', 'description', 'items', 'expected'],
+        'required' => [
+            'id' => 'string',
+            'rules' => 'list<string>',
+            'description' => 'string',
+            'items' => 'list<object>',
+            'expected' => 'list<string>',
+        ],
         'optional' => [],
-        'lists' => ['items' => ['required' => ['tag'], 'optional' => ['id', 'original']]],
+        'lists' => [
+            'items' => ['required' => ['tag' => 'string'], 'optional' => ['id' => 'string', 'original' => 'bool']],
+        ],
     ],
     'track_order' => [
-        'required' => ['id', 'rules', 'description', 'tracks', 'expected'],
+        'required' => [
+            'id' => 'string',
+            'rules' => 'list<string>',
+            'description' => 'string',
+            'tracks' => 'list<object>',
+            'expected' => 'list<string>',
+        ],
         'optional' => [],
-        'lists' => ['tracks' => ['required' => ['id', 'type', 'tag', 'roles'], 'optional' => ['original']]],
+        'lists' => [
+            'tracks' => [
+                'required' => ['id' => 'string', 'type' => 'string', 'tag' => 'string', 'roles' => 'list<string>'],
+                'optional' => ['original' => 'bool'],
+            ],
+        ],
     ],
     'presentation_order' => PRESENTATION_CASE_SHAPE,
     'subtitle_menu' => PRESENTATION_CASE_SHAPE,
     'label' => [
-        'required' => ['id', 'rules', 'type', 'language_name', 'roles', 'role_names', 'channels', 'expected'],
-        'optional' => ['description'],
-        'maps' => ['role_names'],
+        'required' => [
+            'id' => 'string',
+            'rules' => 'list<string>',
+            'type' => 'string',
+            'language_name' => 'string',
+            'roles' => 'list<string>',
+            'role_names' => 'map<string>',
+            'channels' => 'string|null',
+            'expected' => 'string',
+        ],
+        'optional' => ['description' => 'string'],
     ],
     'match' => [
-        'required' => ['id', 'rules', 'preference', 'candidate', 'expected'],
-        'optional' => ['description'],
-        'objects' => ['expected' => ['required' => ['level', 'distance'], 'optional' => []]],
+        'required' => [
+            'id' => 'string',
+            'rules' => 'list<string>',
+            'preference' => 'string',
+            'candidate' => 'string',
+            'expected' => 'object',
+        ],
+        'optional' => ['description' => 'string'],
+        'objects' => ['expected' => ['required' => ['level' => 'string', 'distance' => 'int'], 'optional' => []]],
     ],
     'auto_select_audio' => [
-        'required' => ['id', 'rules', 'description', 'preferences', 'accessibility', 'tracks', 'expected'],
-        'optional' => ['error'],
+        'required' => [
+            'id' => 'string',
+            'rules' => 'list<string>',
+            'description' => 'string',
+            'preferences' => 'list<string>',
+            'accessibility' => 'object',
+            'tracks' => 'list<object>',
+            'expected' => 'string|null',
+        ],
+        'optional' => ['error' => 'true'],
         'objects' => ['accessibility' => ACCESSIBILITY_SHAPE],
         'lists' => ['tracks' => SELECT_TRACK_SHAPE],
         'refusal' => true,
     ],
     'auto_select_subtitle' => [
         'required' => [
-            'id', 'rules', 'description', 'mode', 'preferences', 'accessibility', 'audio', 'tracks', 'expected',
+            'id' => 'string',
+            'rules' => 'list<string>',
+            'description' => 'string',
+            'mode' => 'string',
+            'preferences' => 'list<string>',
+            'accessibility' => 'object',
+            'audio' => 'string|null',
+            'tracks' => 'list<object>',
+            'expected' => 'string|null',
         ],
-        'optional' => ['error'],
+        'optional' => ['error' => 'true'],
         'objects' => ['accessibility' => ACCESSIBILITY_SHAPE],
         'lists' => ['tracks' => SELECT_TRACK_SHAPE],
         'refusal' => true,
@@ -261,12 +406,157 @@ function isJsonObject(mixed $value): bool
     return is_array($value) && ($value === [] || !array_is_list($value));
 }
 
+/** A JSON value's kind in plain words, for error messages. */
+function jsonKind(mixed $value): string
+{
+    return match (true) {
+        $value === null => 'null',
+        is_bool($value) => 'true/false',
+        is_int($value) => 'a whole number',
+        is_float($value) => 'a number with a fraction',
+        is_string($value) => 'a string',
+        is_array($value) && array_is_list($value) => 'a list',
+        default => 'an object',
+    };
+}
+
+/** True for a JSON array (a PHP list) whose every element is a string. */
+function isListOfStrings(mixed $value): bool
+{
+    if (!is_array($value) || !array_is_list($value)) {
+        return false;
+    }
+    foreach ($value as $element) {
+        if (!is_string($element)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Checks the fixture file's own top-level fields against TOP_LEVEL_FIELDS
+ * (policy section 8.1: a harness must fail, not report success, on a file
+ * that breaks the schema), and that the file's data_version is the version
+ * of the reference data file actually given - the same check the Rust
+ * runner makes against the data it embeds, so the two runners refuse the
+ * same files. Stops the run on the first problem.
+ *
+ * @param array<string, mixed> $fixtures
+ */
+function checkTopLevel(array $fixtures, string $dataPath): void
+{
+    foreach (TOP_LEVEL_FIELDS as $field => $rule) {
+        if (!array_key_exists($field, $fixtures)) {
+            if ($rule['required']) {
+                fixtureError('the top level', "missing required field '{$field}'.");
+            }
+            continue;
+        }
+        $value = $fixtures[$field];
+        if (!is_string($value)) {
+            fixtureError("the top level -> {$field}", 'must be a string, not ' . get_debug_type($value) . '.');
+        }
+        if ($rule['rule'] === 'const' && $value !== $rule['value']) {
+            fixtureError("the top level -> {$field}", "must be '{$rule['value']}', not '{$value}'.");
+        }
+        if ($rule['rule'] === 'version' && preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/D', $value) !== 1) {
+            fixtureError(
+                "the top level -> {$field}",
+                "must be a version of three dot-separated numbers such as '1.0.0', not '{$value}'."
+            );
+        }
+    }
+    // Read here directly (not through Policy) so this check does not depend
+    // on the library it is testing. A data file that cannot be read or has
+    // no data_version is left for Policy::loadData() to refuse, with its
+    // own message, a few lines later.
+    $dataRaw = @file_get_contents($dataPath);
+    $data = is_string($dataRaw) ? json_decode($dataRaw, true) : null;
+    if (is_array($data) && is_string($data['data_version'] ?? null)
+        && $data['data_version'] !== $fixtures['data_version']) {
+        fixtureError(
+            'the top level -> data_version',
+            "the cases were computed against reference data '{$fixtures['data_version']}', but the "
+            . "data file given ({$dataPath}) is '{$data['data_version']}'."
+        );
+    }
+}
+
+/**
+ * Checks one value against one type from a shape (see CASE_SHAPES' doc
+ * comment for the type words), recursing into nested objects and lists.
+ * Stops the run on the first problem.
+ *
+ * @param array<string, mixed> $shape the shape the value's field belongs
+ *   to, for its 'objects' and 'lists'.
+ */
+function checkType(mixed $value, string $type, array $shape, string $field, string $where): void
+{
+    $nullable = str_ends_with($type, '|null');
+    $base = $nullable ? substr($type, 0, -strlen('|null')) : $type;
+    if ($value === null) {
+        if (!$nullable) {
+            fixtureError($where, 'is null, which the schema does not allow here.');
+        }
+        return;
+    }
+    $ok = match ($base) {
+        'string' => is_string($value),
+        'bool' => is_bool($value),
+        'int' => is_int($value),
+        'true' => $value === true,
+        'list<string>' => isListOfStrings($value),
+        'map<string>' => isJsonObject($value) && array_filter($value, 'is_string') === $value,
+        'object' => isJsonObject($value),
+        'list<object>' => is_array($value) && array_is_list($value),
+        default => fixtureError($where, "this runner has no rule for the type '{$type}' (a bug in the runner)."),
+    };
+    if (!$ok) {
+        if ($base === 'true') {
+            fixtureError($where, "'error' may only be true (the schema's const); leave it out instead.");
+        }
+        $expected = match ($base) {
+            'string' => 'a string',
+            'bool' => 'true or false',
+            'int' => 'a whole number',
+            'list<string>' => 'a list of strings',
+            'map<string>' => 'an object whose values are all strings',
+            'object' => 'a JSON object',
+            default => 'a list',
+        };
+        // Say what was found instead; where the value is the right kind of
+        // container with a wrong thing inside it, name that thing.
+        $found = 'it is ' . jsonKind($value);
+        if (in_array($base, ['list<string>', 'map<string>'], true) && is_array($value)
+            && ($base === 'list<string>') === array_is_list($value)) {
+            foreach ($value as $key => $element) {
+                if (!is_string($element)) {
+                    $which = $base === 'list<string>' ? "item {$key}" : "'{$key}'";
+                    $found = "{$which} is " . jsonKind($element);
+                    break;
+                }
+            }
+        }
+        fixtureError($where, "must be {$expected}" . ($nullable ? ' or null' : '') . ", but {$found}.");
+    }
+    if ($base === 'object') {
+        checkShape($value, $shape['objects'][$field], $where);
+    } elseif ($base === 'list<object>') {
+        foreach ($value as $index => $item) {
+            checkShape($item, $shape['lists'][$field], "{$where}[{$index}]");
+        }
+    }
+}
+
 /**
  * Checks one object against one shape from CASE_SHAPES (see its doc
- * comment), recursing into nested objects and lists, and stops the run on
- * the first problem. Uses array_key_exists(), not isset(): a required field
- * whose value is legitimately null (several are, such as 'expected' on a
- * refusal case) still counts as present; only an ABSENT key is an error.
+ * comment): every required field present, no field the schema does not
+ * allow, and every field's value of the type the schema gives it -
+ * recursing into nested objects and lists. Stops the run on the first
+ * problem. Uses array_key_exists(), not isset(): a required field whose
+ * value is legitimately null (several are, such as 'expected' on a refusal
+ * case) still counts as present; only an ABSENT key is an error.
  *
  * @param array<string, mixed> $shape
  */
@@ -276,14 +566,14 @@ function checkShape(mixed $value, array $shape, string $where): void
         fixtureError($where, 'is not a JSON object.');
     }
     $missing = array_values(array_filter(
-        $shape['required'],
+        array_keys($shape['required']),
         static fn (string $field): bool => !array_key_exists($field, $value)
     ));
     if ($missing !== []) {
         fixtureError($where, 'missing required field(s): ' . implode(', ', $missing));
     }
-    $allowed = array_merge($shape['required'], $shape['optional']);
-    $unknown = array_values(array_diff(array_keys($value), $allowed));
+    $types = $shape['required'] + $shape['optional'];
+    $unknown = array_values(array_diff(array_keys($value), array_keys($types)));
     if ($unknown !== []) {
         fixtureError(
             $where,
@@ -291,39 +581,36 @@ function checkShape(mixed $value, array $shape, string $where): void
             . (in_array('error', $unknown, true) ? ' (this section has no refusal cases)' : '')
         );
     }
-    foreach ($shape['objects'] ?? [] as $field => $inner) {
-        if (!array_key_exists($field, $value)) {
-            continue;
-        }
-        if ($value[$field] === null && ($inner['nullable'] ?? false)) {
-            continue;
-        }
-        checkShape($value[$field], $inner, "{$where} -> {$field}");
+    foreach ($value as $field => $fieldValue) {
+        checkType($fieldValue, $types[$field], $shape, (string) $field, "{$where} -> {$field}");
     }
-    foreach ($shape['maps'] ?? [] as $field) {
-        if (array_key_exists($field, $value) && !isJsonObject($value[$field])) {
-            fixtureError("{$where} -> {$field}", 'is not a JSON object.');
-        }
+    if (($shape['refusal'] ?? false) && array_key_exists('error', $value) && $value['expected'] !== null) {
+        fixtureError($where, "carries error: true but its expected answer is not null.");
     }
-    foreach ($shape['lists'] ?? [] as $field => $inner) {
-        if (!array_key_exists($field, $value)) {
-            continue;
-        }
-        if (!is_array($value[$field]) || !array_is_list($value[$field])) {
-            fixtureError("{$where} -> {$field}", 'is not a list.');
-        }
-        foreach ($value[$field] as $index => $item) {
-            checkShape($item, $inner, "{$where} -> {$field}[{$index}]");
-        }
-    }
-    if ($shape['refusal'] ?? false) {
-        if (array_key_exists('error', $value)) {
-            if ($value['error'] !== true) {
-                fixtureError($where, "'error' may only be true (the schema's const); leave it out instead.");
+}
+
+/**
+ * Checks, once, that every shape in CASE_SHAPES is complete: each field
+ * typed 'object' or 'list<object>' has its nested shape, so checkType()
+ * can never meet a nested value with nothing to check it against. A fault
+ * here is a bug in this runner, not in the fixture file.
+ *
+ * @param array<string, mixed> $shape
+ */
+function checkShapeTable(array $shape, string $name): void
+{
+    foreach ($shape['required'] + $shape['optional'] as $field => $type) {
+        $base = str_ends_with($type, '|null') ? substr($type, 0, -strlen('|null')) : $type;
+        if ($base === 'object') {
+            if (!isset($shape['objects'][$field])) {
+                fixtureError("this runner's shape '{$name}'", "field '{$field}' has no nested shape.");
             }
-            if ($value['expected'] !== null) {
-                fixtureError($where, "carries error: true but its expected answer is not null.");
+            checkShapeTable($shape['objects'][$field], "{$name} -> {$field}");
+        } elseif ($base === 'list<object>') {
+            if (!isset($shape['lists'][$field])) {
+                fixtureError("this runner's shape '{$name}'", "field '{$field}' has no item shape.");
             }
+            checkShapeTable($shape['lists'][$field], "{$name} -> {$field}[]");
         }
     }
 }
@@ -416,6 +703,10 @@ if (!is_array($fixtures)) {
     exit(1);
 }
 
+foreach (CASE_SHAPES as $shapeName => $shape) {
+    checkShapeTable($shape, $shapeName);
+}
+checkTopLevel($fixtures, $args['data']);
 checkSections($fixtures);
 checkCaseShapes($fixtures);
 
