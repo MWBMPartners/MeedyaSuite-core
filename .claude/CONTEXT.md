@@ -1,12 +1,17 @@
 # MeedyaSuite-core — Project Context
 
 > Snapshot maintained for Claude Code sessions. Reflects the actual state of `main`, not aspirational state.
-> Last updated: 2026-09-28 — the workspace and per-crate test counts and the crate table below
-> now include the **`meedya-lang`** crate (shared implementation of the Media Language & BCP 47
-> Policy, `MWBM-MEDIA-LANG`), built on its own branch `feature/bcp47-language-policy` — not yet
-> merged into `feature/work-in-progress`, so treat the counts here as "workspace state including
-> that branch", not as `feature/work-in-progress` itself, until the two are reconciled. Previous
-> note: 2026-09-23 — standing rules re-issued (see CLAUDE.md); no code change since 2026-09-09,
+> Last updated: 2026-09-28 — `meedya-lyrics` and `meedya-metadata` brought into line with policy
+> **MWBM-MEDIA-LANG** (the shared `meedya-lang` crate's LANG-002/LANG-003/TRACK-070 rules):
+> `embed::DEFAULT_LANGUAGE` no longer guesses English, `xml:lang` is read through the shared
+> reader, and `CommonTag::Language` is written per format instead of passed through unchanged.
+> Workspace and per-crate test counts re-measured. All of this is on branch
+> `feature/bcp47-language-policy` — not yet merged into `feature/work-in-progress`, so treat the
+> counts here as "workspace state including that branch", not as `feature/work-in-progress`
+> itself, until the two are reconciled. Previous note: 2026-09-28 (earlier the same day) — the
+> workspace and per-crate test counts and the crate table below first came to include the
+> **`meedya-lang`** crate itself (shared implementation of the policy). Earlier still: 2026-09-23
+> — standing rules re-issued (see CLAUDE.md); no code change since 2026-09-09,
 > when the **`meedya-audio-analysis`** crate (tempo + key, #16) landed. Earlier: 2026-09-01
 > branch-consolidation pass — four WIP branches merged into `feature/work-in-progress`. See
 > [HANDOFF.md](HANDOFF.md) §0 for in-flight state and [HISTORY.md](HISTORY.md) for the
@@ -29,10 +34,10 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | Crate | Purpose | Status | Tests |
 |---|---|---|---|
 | [meedya-codecs](../crates/meedya-codecs/) | Audio/video/subtitle codecs, container formats, HDR, spatial audio, classification, FFprobe + MediaInfo integration | **Implemented** | 47 |
-| [meedya-metadata](../crates/meedya-metadata/) | Two coexisting tag I/O surfaces: `lofty`-backed (multi-format) and `mp4ameta`-backed (sandbox-safe). Tag registry, JSON path extraction, codec ID tags, playback bounds, cross-repo `identifier_types` registry (#65). | **Implemented** | 115 |
+| [meedya-metadata](../crates/meedya-metadata/) | Two coexisting tag I/O surfaces: `lofty`-backed (multi-format) and `mp4ameta`-backed (sandbox-safe). Tag registry, JSON path extraction, codec ID tags, playback bounds, cross-repo `identifier_types` registry (#65). | **Implemented** | 120 |
 | [meedya-tags-extended](../crates/meedya-tags-extended/) | Multi-format DJ metadata (lofty). `ExtendedTags`/`MusicalKey`/`CuePoint`/`LoopPoint`/`BeatGrid`. Standard BPM+key+comment + Mixed In Key reader (`mik`). Other proprietary readers pending. | **Implemented (foundation + MIK)** | 180 |
 | [meedya-library-import](../crates/meedya-library-import/) | External library ingestion: iTunes XML, CUE sheets. Emits normalized `LibraryEntry` records. | **Implemented** | 30 |
-| [meedya-lyrics](../crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O, plain-text and SYLT tag-embed. | **Implemented** | 130 |
+| [meedya-lyrics](../crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O, plain-text and SYLT tag-embed. | **Implemented** | 145 |
 | [meedya-providers](../crates/meedya-providers/) | Provider framework: traits, capabilities, rate limiting, credentials, cover art, fuzzy match scoring, Lucene/Solr query escaping (`lucene`). In-repo `MetadataProvider` impls (feature-gated): MusicBrainz, Spotify, Apple Music, Deezer, TMDB, TheTVDB, OMDb, Apple TV, iTunes Store, Apple Podcasts, ISRC, EIDR, ISWC. | **Implemented** | 59 (199 all-features) |
 | [meedya-audio-analysis](../crates/meedya-audio-analysis/) | Tempo (BPM) and musical key detection from the audio itself. Refuses to answer rather than guess when it is not sure. Shares one decode pass between the two, then takes two different frequency analyses because tempo needs fine timing and key needs fine pitch. | **Implemented** | 67 |
 | [meedya-fingerprint](../crates/meedya-fingerprint/) | AcoustID client + ReplayGain EBU R128 analyser (bounded FFmpeg subprocess). Pure-Rust Chromaprint fingerprint generation (no fpcalc) behind the non-default `chromaprint` feature. | **Implemented** | 10 (15 all-features) |
@@ -40,11 +45,11 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 4 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 716 tests with default features, 863 with `--all-features`** (the CI configuration) on `feature/bcp47-language-policy`. All passing, 0 failing.
+**Total: 736 tests with default features, 883 with `--all-features`** (the CI configuration) on `feature/bcp47-language-policy`. All passing, 0 failing.
 
-> **Measured, not carried forward.** From `cargo test --workspace [--all-features]` run on 2026-09-28, after adding `meedya-lang` (72 tests). The previous measurement (before `meedya-lang`) was 644 / 791. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
+> **Measured, not carried forward.** From `cargo test --workspace [--all-features]` run on 2026-09-28, after bringing `meedya-lyrics` and `meedya-metadata` into line with policy MWBM-MEDIA-LANG (`meedya-lyrics` +15 tests, `meedya-metadata` +5). The previous measurement (after adding `meedya-lang`, before this fix) was 716 / 863; before `meedya-lang`, 644 / 791. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
 
-Per-crate, `--all-features`: `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-lang` 72 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 115 · `meedya-providers` 199 · `meedya-tags-extended` 180. `meedya-providers` measures 59 with default features (provider impls are feature-gated).
+Per-crate, `--all-features`: `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-lang` 72 · `meedya-library-import` 30 · `meedya-lyrics` 145 · `meedya-metadata` 120 · `meedya-providers` 199 · `meedya-tags-extended` 180. `meedya-providers` measures 59 with default features (provider impls are feature-gated).
 
 > **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 
@@ -58,7 +63,7 @@ Public surface: `AudioCodec` (42+ variants), `VideoCodec` (21+), `ContainerForma
 
 Two surfaces coexist by design:
 
-- **`lofty`-backed**: `common_tags` (CommonTag enum — `#[non_exhaustive]` as of #65/0.2.0, STANDARD_NAMESPACES), `tag_io` (read_tags, write_tags, write_registry_tags, write_acoustid_tags, write_replaygain_tags, TagMap), `tag_registry` (TagDefinition, TagRegistry, TagScope, TagValueType, AtomTarget), `json_path`.
+- **`lofty`-backed**: `common_tags` (CommonTag enum — `#[non_exhaustive]` as of #65/0.2.0, STANDARD_NAMESPACES), `tag_io` (read_tags, write_tags, write_registry_tags, write_acoustid_tags, write_replaygain_tags, TagMap), `tag_registry` (TagDefinition, TagRegistry, TagScope, TagValueType, AtomTarget), `json_path`. **`CommonTag::Language` follows policy MWBM-MEDIA-LANG's TRACK-070** (feature/bcp47-language-policy): `write_tags` reads the caller's value with `meedya-lang`'s LANG-002 reader first — ID3v2 (no full-tag field) gets the ISO 639-2 terminology code or `und`; every other format gets the canonical BCP 47 tag or the original text, unchanged, when unrecognised. `read_tags` is unchanged (raw text); a reader MUST pass it through `meedya_lang::from_legacy_three_letter` before treating it as a language.
 - **`template`** (#47) — filename template engine (`Template`, `TemplateError`, `TagSource` trait), root re-exported. `{name}` placeholders, `|`-piped transforms (sanitize/ascii/lower/upper/title/trim/round/fallback:VAR/max:N), `:NN` width specifiers.
 - **`identifier_types`** (#65) — cross-repo identifier-type registry loaded from [identifier_types.toml](../crates/meedya-metadata/identifier_types.toml) (scope→slug→validation vocabulary; DATA, not an enum). `IdentifierType`/`IdentifierScope`/`IdentifierStatus`/`IdentifierValidation`; `identifier_types()`/`identifier_type()`/`active_identifier_slugs()`; raw artifact re-exported as `IDENTIFIER_TYPES_TOML`. Guard-held: `crates/meedya-metadata/tests/identifier_registry_guard.rs` declares the expected active/reserved slug sets and fails CI if the artifact drifts from that declaration or from `CommonTag::identifier_slug()`.
 - **`mp4ameta`-backed (sandbox-safe)**: `registry` (TAG_REGISTRY static loaded from [tags.toml](../crates/meedya-metadata/tags.toml)), `writer` (`write_tags_from_registry`, `write_local_tags`, `extract_isrc_from_vendor`), `codec_tags` (CodecKind enum + per-codec writers), `playback_bounds` (`set_playback_start/stop`, `get_playback_*_ms`, `clear_*`).
@@ -86,7 +91,8 @@ Two surfaces coexist by design:
 - [src/provider/](../crates/meedya-lyrics/src/provider/) — `LyricsProvider` trait + `LrclibProvider`.
 - [src/lrc.rs](../crates/meedya-lyrics/src/lrc.rs) — LRC parser/writer (`[mm:ss.xx]`).
 - [src/sidecar.rs](../crates/meedya-lyrics/src/sidecar.rs) — `.lrc` sidecar writes.
-- [src/embed.rs](../crates/meedya-lyrics/src/embed.rs) — Two embed paths: `embed()` writes plain text via `meedya-metadata::CommonTag::Lyrics` (USLT/©lyr/LYRICS); `embed_synced()` writes ID3v2 SYLT frames (errors on non-ID3v2 containers). UTF-16 BOM, MS timestamp format, lyrics content type.
+- [src/embed.rs](../crates/meedya-lyrics/src/embed.rs) — Two embed paths: `embed()` writes plain text via `meedya-metadata::CommonTag::Lyrics` (USLT/©lyr/LYRICS); `embed_synced()` writes ID3v2 SYLT frames (errors on non-ID3v2 containers). UTF-16 BOM, MS timestamp format, lyrics content type. `DEFAULT_LANGUAGE` is `*b"XXX"` (ID3's "language not known" marker, policy MWBM-MEDIA-LANG's LANG-003) — it used to be `*b"eng"`, silently guessing English. `id3_language(value)` turns a real BCP 47 tag or old three-letter code into the right bytes via `meedya-lang`'s LANG-002 reader.
+- [src/lyricsfile_ttml.rs](../crates/meedya-lyrics/src/lyricsfile_ttml.rs) — `xml:lang`/`lang` on `<tt>` is read through `meedya_lang::from_legacy_three_letter` (LANG-002): a recognised value is stored canonicalised (`EN-gb` → `en-GB`), an unrecognised one is kept exactly as found (never replaced with `und` or a guess), and an absent attribute stays absent.
 
 ### meedya-providers
 
@@ -159,8 +165,8 @@ Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `p
 
 ```bash
 cargo build --workspace          # all 11 crates
-cargo test  --workspace          # 716 tests
-cargo test  --workspace --all-features   # 863 tests (the CI configuration)
+cargo test  --workspace          # 736 tests
+cargo test  --workspace --all-features   # 883 tests (the CI configuration)
 cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```

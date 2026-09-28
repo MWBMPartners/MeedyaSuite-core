@@ -6,7 +6,7 @@
 >
 > **This is not a Swagger/OpenAPI spec.** `MeedyaSuite-core` is a Rust library workspace, not a web service. There are no HTTP endpoints. If you need an HTTP-shaped contract, build one in your downstream app on top of these crates.
 >
-> **Last refreshed**: 2026-09-28 (`feature/bcp47-language-policy`: new `meedya-lang` crate — shared implementation of the Media Language & BCP 47 Policy, `MWBM-MEDIA-LANG` — added to the workspace; test counts re-measured). See the [maintenance section](#maintenance) for how this stays in sync with the code.
+> **Last refreshed**: 2026-09-28 (`feature/bcp47-language-policy`: `meedya-lyrics` and `meedya-metadata` brought into line with the Media Language & BCP 47 Policy, `MWBM-MEDIA-LANG` — `embed::DEFAULT_LANGUAGE`/`embed::id3_language`, `xml:lang` reading, and `CommonTag::Language` writing all now go through the shared `meedya-lang` crate rather than guessing or passing values through unchanged; test counts re-measured). See the [maintenance section](#maintenance) for how this stays in sync with the code.
 
 ---
 
@@ -45,18 +45,18 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-fingerprint` | `acoustid`, `chromaprint` (feature-gated, non-default), `replaygain` | 10 | Stable |
 | `meedya-lang` | `tag`, `canonical`, `roles`, `tracks`, `presentation`, `matching`, `select`, `sidecar` | 72 | Stable — fixture-conformance tested against `tests/fixtures/bcp47-language-policy-v1.json` (268 cases) |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
-| `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 130 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
-| `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `template`, `writer` | 115 | Stable (two co-existing surfaces + identifier-types registry + filename template engine) |
+| `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 145 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
+| `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `template`, `writer` | 120 | Stable (two co-existing surfaces + identifier-types registry + filename template engine) |
 | `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 59 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `ai_content`, `conflict_policy`, `genre_hierarchy`, `io`, `mik`, `model`, `play_history`, `quick_tag`, `sidecar_json`, `standard`, `stems` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 716 tests** with default features, **863** with `--all-features` (the CI configuration). All passing, 0 failing.
+**Total: 736 tests** with default features, **883** with `--all-features` (the CI configuration). All passing, 0 failing.
 
-> These are **measured** figures — `cargo test --workspace [--all-features]` run against `feature/bcp47-language-policy` on 2026-09-28, after adding the new `meedya-lang` crate (72 tests, identical either way — it has no feature flags) — not carried forward from a previous edit. For reference, the previous measurement (before `meedya-lang`) was 644 / 791.
+> These are **measured** figures — `cargo test --workspace [--all-features]` run against `feature/bcp47-language-policy` on 2026-09-28, after bringing `meedya-lyrics` and `meedya-metadata` into line with policy MWBM-MEDIA-LANG (LANG-002/LANG-003/TRACK-070 — `meedya-lyrics` +15 tests, `meedya-metadata` +5) — not carried forward from a previous edit. For reference, the previous measurement (after `meedya-lang` was added, before this fix) was 716 / 863; before `meedya-lang`, 644 / 791.
 >
 > Earlier revisions of this file accumulated a long narrative of incremental count deltas (466 → 511 → 533 → 546 → 664 …) which had drifted from reality. That narration has been removed: the only trustworthy number is one you just measured. Guarding these counts automatically in CI is tracked in issue #71.
 
-Per-crate, `--all-features` (measured): `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-lang` 72 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 115 · `meedya-providers` 199 · `meedya-tags-extended` 180.
+Per-crate, `--all-features` (measured): `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-lang` 72 · `meedya-library-import` 30 · `meedya-lyrics` 145 · `meedya-metadata` 120 · `meedya-providers` 199 · `meedya-tags-extended` 180.
 
 ---
 
@@ -526,7 +526,7 @@ LRCLIB client, LRC parser/writer, sidecar + tag-embed writes.
 #### Public re-exports
 
 ```rust
-pub use embed::{embed, embed_synced, DEFAULT_LANGUAGE};
+pub use embed::{embed, embed_synced, id3_language, DEFAULT_LANGUAGE};
 pub use error::{Error, Result};
 pub use lyrics::{Lyrics, SyncedLine};
 pub use provider::lrclib::LrclibProvider;
@@ -565,7 +565,8 @@ Implementation: `LrclibProvider` (calls lrclib.net).
 - **`sidecar::write(media: &Path, lyrics: &Lyrics) -> Result<Option<PathBuf>>`** — writes a `.lrc` file next to `media`. Returns `Ok(None)` (not an error) when `lyrics` has no synced lines to write; `Ok(Some(path))` with the sidecar path on success.
 - **`embed::embed(media: &Path, lyrics: &Lyrics) -> Result<bool>`** — plain-text tag-embed via `meedya-metadata` (USLT for ID3v2, `LYRICS` for Vorbis, `©lyr` for MP4).
 - **`embed::embed_synced(media: &Path, lyrics: &Lyrics, lang: [u8; 3]) -> Result<()>`** — synchronised ID3v2 SYLT frame. ID3v2-only by design; errors with `Error::UnsupportedForSync` on other formats. Encoding: UTF-16 with BOM; timestamp format: milliseconds. Recommended pattern: call both `embed()` and `embed_synced()` — the former handles cross-format plain text, the latter adds SYLT where applicable.
-- **`embed::DEFAULT_LANGUAGE`** — `*b"eng"`, the ISO-639-2 default for callers without a known language code.
+- **`embed::DEFAULT_LANGUAGE`** — `*b"XXX"`, ID3's own "language not known" marker (policy MWBM-MEDIA-LANG's LANG-003: an unknown language is never guessed). Changed from `*b"eng"` — the old value silently claimed English.
+- **`embed::id3_language(value: &str) -> [u8; 3]`** — turns a BCP 47 tag or an old three-letter code into the ISO 639-2 terminology code the SYLT frame's language field wants, via the shared `meedya-lang` reader; falls back to `DEFAULT_LANGUAGE` when `value` does not resolve to a real language. Use this to build `embed_synced`'s `lang` argument instead of hand-writing three bytes.
 
 #### `lrc` module
 
@@ -706,7 +707,7 @@ Downstream crates matching on `CommonTag` must add a `_ =>` wildcard arm (a comp
 | `MusicBrainzWorkId` | `MusicBrainz Work Id` | `MUSICBRAINZ_WORKID` | `TXXX:MusicBrainz Work Id` |
 | `Iswc` | `ISWC` | `ISWC` | `TXXX:ISWC` (lofty has no dedicated ISWC key) |
 | `Subtitle` | `SUBTITLE` | `SUBTITLE` | `TIT3` |
-| `Language` | `LANGUAGE` | `LANGUAGE` | `TLAN` |
+| `Language` | `LANGUAGE`¹ | `LANGUAGE`¹ | `TLAN`¹ |
 | `Lyricist` | `LYRICIST` | `LYRICIST` | `TEXT` |
 | `Conductor` | `CONDUCTOR` | `CONDUCTOR` | `TPE3` |
 | `Remixer` | `REMIXER` | `REMIXER` | `TPE4` |
@@ -716,6 +717,8 @@ Downstream crates matching on `CommonTag` must add a `_ =>` wildcard arm (a comp
 | `Mixer` | `MIXER` | `MIXER` | `TIPL:mix` |
 
 `Performer` and `Translator` were deliberately **excluded**: `Performer` has no lofty 0.22 ID3v2 write mapping (ID3v2 models it as the multi-valued, instrument-qualified TMCL frame — a flat-string variant would silently no-op on MP3); `Translator` has no standard frame in any container and stays an iHymns-domain concept in its own mirror.
+
+¹ **`Language`'s write is not a plain pass-through** (policy MWBM-MEDIA-LANG, TRACK-070). `write_tags` reads the caller's value with the LANG-002 reader (`meedya_lang::from_legacy_three_letter`) first: on ID3v2 (which has no full-tag language field — only `TLAN`) it writes the ISO 639-2 **terminology** three-letter code, or `und` when the value is not recognised or has no ISO 639-2 code of its own; on every other format (Vorbis/MP4 `LANGUAGE`, a free-text field) it writes the canonical BCP 47 tag, or the caller's original text unchanged when the reader could not make sense of it. `read_tags` is unchanged — it returns whatever text the file holds — so **a caller reading `CommonTag::Language` back MUST pass it through `meedya_lang::from_legacy_three_letter` before treating it as a language**; the raw value could be a three-letter code, a BCP 47 tag, or text another tool wrote.
 
 ```rust
 impl CommonTag {

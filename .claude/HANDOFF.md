@@ -32,6 +32,14 @@ were active). So this is a deliberate, owner-approved exception to "one branch o
   `.github/HANDOFF.md` (branch `feature/bcp47-language-policy` there).
 - The doc test-count guard (`scripts/check-doc-test-counts.sh`) will need its numbers updated
   when the crate's tests land — measure, never guess.
+- **`meedya-lyrics` and `meedya-metadata` brought into line with the policy** (28 Sept 2026,
+  commits `649bde2`/`767fe7e`/`aeec2fe`): `embed::DEFAULT_LANGUAGE` no longer guesses English
+  (it is `XXX`, ID3's own "not known" marker) and a new `embed::id3_language()` helper builds a
+  real one from any language value; TTML `xml:lang` is read through the LANG-002 reader instead
+  of stored raw; `CommonTag::Language` is written per TRACK-070 (ISO 639-2 terminology code, or
+  `und`, on ID3v2; the canonical tag, or the original text unchanged, everywhere else) instead
+  of being passed straight through. +20 tests (736 / 883 measured, doc-count guard passes). Not
+  yet independently reviewed. Does not reach MeedyaDL, which pins `meedya-lyrics` from `main`.
 
 
 ### 0.1 In one paragraph
