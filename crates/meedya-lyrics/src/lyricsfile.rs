@@ -324,7 +324,14 @@ impl Lyricsfile {
     /// about bare words — and it keeps multi-line lyrics one line per line,
     /// readable and editable by hand, as LRCGET writes them. Text the
     /// library would not write as a block (a line break next to a space at
-    /// the end of a line, say) is quoted like the rest.
+    /// the end of a line, say) is quoted like the rest — and so is text
+    /// holding a carriage return, NEXT LINE (U+0085), LINE SEPARATOR
+    /// (U+2028) or PARAGRAPH SEPARATOR (U+2029), even where the library
+    /// would write a block: a block holds such a character as it is, and
+    /// readers disagree about it (a YAML 1.1 reader turns some of them into
+    /// `\n`; js-yaml, a YAML 1.2 reader, read the indent after U+2028 into
+    /// the text). Quoted, each is an escape every reader reads back exactly.
+    /// (Found by Codex's review of revisions 5–7.)
     ///
     /// A caller who serialises the struct with `serde_yaml` directly gets
     /// none of this; use this method.
@@ -476,7 +483,8 @@ impl Lyricsfile {
     }
 
     /// `true` when this Lyricsfile has at least one word with non-empty
-    /// `syllables`. Strict superset of [`has_word_level_timing`] — a
+    /// `syllables`. Strict superset of
+    /// [`has_word_level_timing`](Self::has_word_level_timing) — a
     /// syllable-level file is by definition also word-level. Consumers
     /// pick the richer export (e.g. syllable Enhanced LRC) when this
     /// returns `true`.
@@ -542,11 +550,30 @@ fn yaml_quoted(value: &str) -> String {
     out
 }
 
-/// `true` when the YAML library writes `value` as a block (`|-` and the
-/// lines below it) — which only text holding a line break can be; see
-/// [`Lyricsfile::to_yaml`] for why such text is left that way.
+/// The line breaks other than a plain `\n` that YAML 1.1 knows —
+/// carriage return, NEXT LINE (U+0085), LINE SEPARATOR (U+2028) and
+/// PARAGRAPH SEPARATOR (U+2029). Text holding any of them is never left as
+/// a block; see [`is_written_as_block`].
+const OTHER_LINE_BREAKS: [char; 4] = ['\r', '\u{85}', '\u{2028}', '\u{2029}'];
+
+/// `true` when `value` is left as the block (`|-` and the lines below it)
+/// the YAML library writes it as — which only text holding a line break
+/// can be; see [`Lyricsfile::to_yaml`] for why such text is left that way.
+///
+/// Never for text holding one of [`OTHER_LINE_BREAKS`], even when the
+/// library would write a block: in a block such a character is written as
+/// it is, and not every reader reads it back as it was. (Codex's review of
+/// revisions 5–7 found this; measured on the Rust side for U+2028 and
+/// U+2029 — the library writes `"a\nb\u{2028}c"` as a block holding the
+/// character itself, with the next line's indent after it, and js-yaml, a
+/// YAML 1.2 reader, read that back with the indent's spaces in the text
+/// (`"a\nb\u{2028}  c"`), or failed on it; YAML 1.1 readers such as
+/// PyYAML read NEXT LINE and a carriage return in a block as `\n`. The
+/// library already escaped `\r` and U+0085 itself, but that is its choice,
+/// not a promise, so all four are quoted here.) Quoted, each is written as
+/// an escape (`\u2028`), which every reader reads back exactly.
 fn is_written_as_block(value: &str) -> Result<bool> {
-    if !value.contains('\n') {
+    if !value.contains('\n') || value.contains(OTHER_LINE_BREAKS) {
         return Ok(false);
     }
     let alone = serde_yaml::to_string(value).map_err(|e| Error::LyricsfileYaml(e.to_string()))?;
@@ -1220,6 +1247,51 @@ lines:
             "{yaml}"
         );
         assert_eq!(Lyricsfile::parse(&yaml).expect("parse"), lf);
+    }
+
+    #[test]
+    fn other_line_breaks_are_quoted_even_where_a_block_would_be_chosen() {
+        // Codex's review of revisions 5–7: text with an ordinary line break
+        // can be written as a block, which skipped the quoting, and a block
+        // holds these characters as they are. Measured before the fix: the
+        // library already escaped `\r` and U+0085 itself, but wrote
+        // `"a\nb\u{2028}c"` (and U+2029 the same) as a block holding the
+        // character, which js-yaml read back with extra spaces in the text,
+        // or failed on. Each character is tested alone and after an
+        // ordinary line break, in every text field at once, through the
+        // real `to_yaml` and `parse`, and must be written as an escape.
+        for c in OTHER_LINE_BREAKS {
+            for value in [
+                format!("{c}"),
+                format!("a{c}b"),
+                format!("a\nb{c}c"),
+                format!("line one\n{c}"),
+                format!("a{c}\nb\n"),
+            ] {
+                let mut lf = everywhere(&value);
+                lf.version = value.clone();
+                let yaml = lf.to_yaml().expect("to_yaml");
+                assert!(
+                    !yaml.contains(c),
+                    "{value:?}: the character is written as it is, not escaped: {yaml}"
+                );
+                assert_eq!(
+                    Lyricsfile::parse(&yaml).expect("parse"),
+                    lf,
+                    "{value:?}: {yaml}"
+                );
+                // In `language` itself: not a language, so `und`, with
+                // the text kept whole in `language_original`.
+                let mut lf = Lyricsfile::new("T", "A");
+                lf.metadata.language = Some(value.clone());
+                let back = Lyricsfile::parse(&lf.to_yaml().expect("to_yaml")).expect("parse");
+                assert_eq!(back.metadata.language.as_deref(), Some("und"));
+                assert_eq!(
+                    back.metadata.language_original.as_deref(),
+                    Some(value.as_str())
+                );
+            }
+        }
     }
 
     #[test]

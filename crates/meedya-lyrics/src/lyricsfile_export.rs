@@ -40,8 +40,8 @@ impl Lyricsfile {
     /// Export to standard LRC. Word-level timing is collapsed to line
     /// level. Instrumental Lyricsfiles emit `[au: instrumental]`.
     ///
-    /// When [`LyricsfileMetadata::offset_ms`] is set, emits an
-    /// `[offset:NNN]` header tag at the top of the document — the
+    /// When [`LyricsfileMetadata::offset_ms`](crate::LyricsfileMetadata::offset_ms)
+    /// is set, emits an `[offset:NNN]` header tag at the top of the document — the
     /// standard LRC calibration tag every major player honours
     /// (LRCGET, Plex, foobar2000, MusicBee, Synchronicity). Positive
     /// values shift lyrics later relative to the audio, negative
@@ -63,8 +63,8 @@ impl Lyricsfile {
     /// timestamps; lines without fall back to plain LRC.
     ///
     /// Like [`to_lrc`], emits an `[offset:NNN]` header tag at the top
-    /// when [`LyricsfileMetadata::offset_ms`] is set, so player-side
-    /// calibration survives a Lyricsfile → Enhanced LRC export.
+    /// when [`LyricsfileMetadata::offset_ms`](crate::LyricsfileMetadata::offset_ms)
+    /// is set, so player-side calibration survives a Lyricsfile → Enhanced LRC export.
     ///
     /// [`to_lrc`]: Self::to_lrc
     pub fn to_enhanced_lrc(&self) -> String {
