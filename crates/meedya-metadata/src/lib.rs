@@ -27,6 +27,9 @@
 pub mod codec_tags;
 pub mod common_tags;
 mod error;
+// Private: reads a file's ID3v2 language (`TLAN`) frames straight from
+// its bytes, for `tag_io` (see that file's top comment for why).
+mod id3v2_language_frames;
 pub mod identifier_types;
 pub mod json_path;
 pub mod playback_bounds;

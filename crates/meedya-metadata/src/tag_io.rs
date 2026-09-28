@@ -37,6 +37,24 @@
 //   written there, whole; everything else still goes through the
 //   format-neutral `Tag`, exactly as before.
 //
+// A third fault, found by the stand-in review of revision 6: a file can
+// ALREADY hold one `TLAN` frame per language — this crate wrote files that
+// way before revision 6, and `meedya-tags-extended`'s `TagFile::save`
+// still does (#100). ID3v2 allows only one frame of each name, and lofty,
+// reading such a file, keeps only the LAST `TLAN` frame, so the next save
+// through this module wrote the file back with that one language and
+// deleted the rest. (This file used to say those languages were "already
+// lost" before any save here. They were not — mutagen still read all of
+// them, and ffprobe the first — and it was this module's own save that
+// deleted them.) `edit_and_save` and `read_tags` therefore read the file's
+// `TLAN` frames straight from its bytes first (module
+// `id3v2_language_frames`), and when there are several, put every
+// language back into lofty's tag, in file order — so the save writes them
+// all into one frame, and `read_tags` returns them all. A file whose
+// repeated frames cannot be read that way (compressed, encrypted, an
+// unknown text encoding…) is refused rather than saved, because the save
+// would delete languages.
+//
 // Which tag a language is compared against (the stand-in review of
 // revision 6): `read_tags` reads a file's main tag, or failing that any
 // tag it has — so for a WAV file holding only a RIFF INFO list, or an MP3
@@ -61,6 +79,7 @@ use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem, TagType};
 
 use crate::common_tags::CommonTag;
 use crate::error::MetadataError;
+use crate::id3v2_language_frames::{read_tlan_frames, TlanFrames};
 use crate::json_path;
 use crate::tag_registry::{TagRegistry, TagScope};
 
@@ -89,7 +108,13 @@ const MP4_LANGUAGE: AtomIdent<'static> = AtomIdent::Freeform {
 /// one entry per language — except on APE, where the tag stores the list
 /// as one value with null characters between the languages, and that one
 /// value is returned as it is. On MP4 every `data` atom of the language
-/// atom is returned (see the top of this file for why that needed care).
+/// atom is returned, and on an ID3v2 file (MP3, WAV, AIFF, AAC) that holds
+/// one `TLAN` frame per language, the languages of every frame are
+/// returned, in file order (see the top of this file for why both needed
+/// care). In the rare case that such repeated frames cannot be read (the
+/// cases `id3v2_language_frames` lists), this returns what lofty reads —
+/// the last frame's languages — and logs a warning; a write to that file
+/// is refused, so it cannot delete the others.
 pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
     if !path.exists() {
         return Err(MetadataError::FileNotFound(path.display().to_string()));
@@ -108,7 +133,15 @@ pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
                 result.insert(CommonTag::Language, values);
             }
         }
-        OpenedFile::Other(tagged_file) => {
+        OpenedFile::Other(mut tagged_file) => {
+            // Several `TLAN` frames: every language they list (top of this
+            // file). Reading never fails over them — see the doc comment.
+            if let Err(e) = merge_split_language_frames(&mut tagged_file, path) {
+                log::warn!(
+                    "{}: reporting the last TLAN frame's languages only: {e}",
+                    path.display()
+                );
+            }
             // Try primary tag first, fall back to any available tag
             if let Some(tag) = read_source(&tagged_file) {
                 collect_common_tags(tag, &mut result);
@@ -441,12 +474,69 @@ pub fn write_registry_tags(
     })
 }
 
+/// Keeps every language of the file at `path` through the save that is
+/// about to be made of `tagged_file` (read from that same file, not yet
+/// saved). **Call it just before every save of a lofty `TaggedFile` that
+/// may carry an ID3v2 tag** — every save in `tag_io` does the same, and so
+/// does `meedya-lyrics`' `embed_synced`. It does two things:
+///
+/// - When the file holds one `TLAN` frame PER language (as this crate
+///   wrote files before revision 6, and as `meedya-tags-extended`'s
+///   `TagFile::save` still does — #100), lofty has read only the last of
+///   them. The frames are read straight from the file's bytes, and every
+///   language they list, in file order, replaces what lofty read. (Found
+///   by the stand-in review of revision 6: the next save used to delete
+///   every language but the last. See the top of this file.)
+/// - Then [`gather_languages_before_saving`] joins the languages into one
+///   item, so the save writes them all into ONE `TLAN` frame.
+///
+/// Fails, without changing `tagged_file`, when the file seems to hold
+/// several `TLAN` frames that cannot be read (a compressed or encrypted
+/// frame, an unknown text encoding, an unsynchronised tag…): saving would
+/// delete languages, so do not save. The error
+/// ([`MetadataError::WriteError`]) says why, in plain words. It also fails
+/// when the file cannot be read ([`MetadataError::IoError`]).
+pub fn keep_languages_whole_before_saving(
+    tagged_file: &mut TaggedFile,
+    path: &Path,
+) -> Result<(), MetadataError> {
+    merge_split_language_frames(tagged_file, path)?;
+    gather_languages_before_saving(tagged_file);
+    Ok(())
+}
+
+/// When the file at `path` holds its languages in several `TLAN` frames,
+/// replaces the languages lofty read into `tagged_file`'s ID3v2 tag (the
+/// last frame's only) with every language of every frame, in file order,
+/// one item per language — exactly what lofty would have read had they
+/// been in one frame. Does nothing when the file has no ID3v2 tag, or at
+/// most one `TLAN` frame. See [`keep_languages_whole_before_saving`] for
+/// when it fails.
+fn merge_split_language_frames(
+    tagged_file: &mut TaggedFile,
+    path: &Path,
+) -> Result<(), MetadataError> {
+    if tagged_file.tag(TagType::Id3v2).is_none() {
+        return Ok(());
+    }
+    if let TlanFrames::Several(values) = read_tlan_frames(path, tagged_file.file_type())? {
+        if let Some(tag) = tagged_file.tag_mut(TagType::Id3v2) {
+            tag.remove_key(&ItemKey::Language);
+            for value in values {
+                tag.push(TagItem::new(ItemKey::Language, ItemValue::Text(value)));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Gathers every language item in `tagged_file`'s ID3v2 tag (and APE tag)
 /// into ONE item, the values separated by null characters, so that saving
 /// writes one `TLAN` frame (one APE `Language` item) holding every
-/// language, instead of one frame per language. **Call it just before
-/// every save of a `TaggedFile` that may carry an ID3v2 tag** — every save
-/// in `tag_io` does, and so does `meedya-lyrics`' `embed_synced`.
+/// language, instead of one frame per language. Use
+/// [`keep_languages_whole_before_saving`] before a save instead: it calls
+/// this, and first puts back the languages of a file that already holds
+/// several `TLAN` frames, which this function cannot see.
 ///
 /// Why it is needed: lofty reads one `TLAN` frame holding `por\0deu\0zho`
 /// (ID3v2.4's own way of listing several values) as three separate
@@ -462,15 +552,19 @@ pub fn write_registry_tags(
 /// It does nothing when a tag holds one language item or none, or when
 /// any of its language items is not text (there is nothing it could join
 /// those with, so they are left exactly as they are). What it CANNOT do:
-/// bring back languages a file had already lost — a file saved before
-/// this fix may hold several `TLAN` frames, and lofty reads only the last
-/// of them, so the others are gone before this function ever sees them.
-/// Nor does it reach `meedya-tags-extended`'s `TagFile::save`: that crate
-/// is built on an older lofty (0.21), whose `TaggedFile` is a different
-/// type this function cannot take, so a file saved through it still has
-/// several languages split into several frames (measured on a real MP3;
-/// left for a separate change, since moving that crate to lofty 0.22
-/// changes the lofty types its public API hands out).
+/// see the languages of a file that already holds several `TLAN` frames.
+/// lofty reads only the last of those frames, so this function sees one
+/// language, and a save would then delete the others from the file. (This
+/// comment used to call those languages "already lost"; they were not —
+/// they were still in the file, where mutagen read them all — until the
+/// save. [`keep_languages_whole_before_saving`] reads them from
+/// the file first; found by the stand-in review of revision 6.) Nor does
+/// it reach `meedya-tags-extended`'s `TagFile::save`: that crate is built
+/// on an older lofty (0.21), whose `TaggedFile` is a different type this
+/// function cannot take, so a file saved through it still has several
+/// languages split into several frames (#100; measured on a real MP3).
+/// Every save in `tag_io`, and `embed_synced`, reads such a file's frames
+/// back whole.
 pub fn gather_languages_before_saving(tagged_file: &mut TaggedFile) {
     for tag_type in [TagType::Id3v2, TagType::Ape] {
         let Some(tag) = tagged_file.tag_mut(tag_type) else {
@@ -553,8 +647,13 @@ struct LanguageField {
 ///   replacement if `edit` asked for one, otherwise every `data` atom the
 ///   file had. A file written before this fix, with one atom per
 ///   language, is therefore rewritten in the usual one-atom form.
-/// - **Every other format**: `edit` gets the main tag (created if the file
-///   has none), a replacement is stored with `put_languages`, and
+/// - **Every other format**: a file holding its languages in several
+///   `TLAN` frames has them all put back first (the step
+///   [`keep_languages_whole_before_saving`] takes; the whole write is
+///   refused, nothing saved, when they cannot be read), so both what
+///   "unchanged" is measured against and what is saved hold every
+///   language. Then `edit` gets the main tag (created if the file has
+///   none), a replacement is stored with `put_languages`, and
 ///   [`gather_languages_before_saving`] runs just before the save.
 fn edit_and_save<T>(
     path: &Path,
@@ -589,6 +688,11 @@ fn edit_and_save<T>(
             Ok(out)
         }
         OpenedFile::Other(mut tagged_file) => {
+            // Before anything reads the languages: a file with several
+            // `TLAN` frames gets every language back (or the write is
+            // refused, the file untouched). See the top of this file.
+            merge_split_language_frames(&mut tagged_file, path)?;
+
             let as_read = read_source(&tagged_file)
                 .map(languages_in)
                 .unwrap_or_default();
@@ -2386,6 +2490,154 @@ mod tests {
         // Any later save puts them in one atom, in the same order.
         write_tags(&path, &[(CommonTag::Title, "Changed Title".into())]).expect("title");
         assert_eq!(mp4_language_atoms(&path), [three]);
+    }
+
+    // ------------------------------------------------------------------
+    // A file that ALREADY holds one TLAN frame per language (stand-in
+    // review of revision 6). This crate wrote files that way before
+    // revision 6, and `meedya-tags-extended`'s `TagFile::save` still does
+    // (#100). lofty reads only the last such frame, and the next save here
+    // deleted the others — reproduced on the reviewer's real MP3, WAV and
+    // AIFF files (split with `TagFile::save` itself) before the fix.
+    // ------------------------------------------------------------------
+
+    /// Writes three languages to a fresh file, then splits them into three
+    /// `TLAN` frames the way `TagFile::save` does: lofty reads the one
+    /// frame as three items and saves one frame per item. (Done here with
+    /// lofty 0.22 directly, which splits exactly as `TagFile::save`'s lofty
+    /// 0.21 does, because this crate cannot depend on
+    /// `meedya-tags-extended` without changing the workspace lock file;
+    /// the real `TagFile::save` was used on the reviewer's files.)
+    fn file_with_three_tlan_frames(
+        dir: &Path,
+        extension: &str,
+        fixture: Fixture,
+    ) -> std::path::PathBuf {
+        let path = dir.join(format!("split.{extension}"));
+        std::fs::write(&path, fixture()).expect("write fixture");
+        write_tags(&path, &[(CommonTag::Language, THREE_LANGUAGES.into())]).expect("write");
+        let tagged_file = Probe::open(&path).expect("open").read().expect("read");
+        tagged_file
+            .save_to_path(&path, WriteOptions::default())
+            .expect("split save");
+        let bytes = std::fs::read(&path).expect("read");
+        assert_eq!(occurrences(&bytes, b"TLAN"), 3, "{extension}: three frames");
+        path
+    }
+
+    #[test]
+    fn languages_split_into_several_tlan_frames_survive_every_later_write() {
+        let fixtures: [(&str, Fixture); 3] = [
+            ("mp3", minimal_untagged_mp3),
+            ("wav", minimal_untagged_wav),
+            ("aiff", minimal_untagged_aiff),
+        ];
+        let three = ["por", "deu", "zho"].map(String::from);
+        for (extension, fixture) in fixtures {
+            for (write_name, unrelated_write) in unrelated_writes() {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let path = file_with_three_tlan_frames(dir.path(), extension, fixture);
+                // lofty alone sees only the last frame…
+                assert_eq!(languages_of(&path, TagType::Id3v2), ["zho"], "{extension}");
+                // …`read_tags` returns every frame's language, in order.
+                assert_eq!(
+                    read_tags(&path).expect("read")[&CommonTag::Language],
+                    three,
+                    "{extension}: read_tags"
+                );
+
+                unrelated_write(&path);
+
+                assert_eq!(
+                    read_tags(&path).expect("read")[&CommonTag::Language],
+                    three,
+                    "{extension} after {write_name}: every language, in order"
+                );
+                assert_eq!(
+                    occurrences(&std::fs::read(&path).expect("read"), b"TLAN"),
+                    1,
+                    "{extension} after {write_name}: merged into one frame"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn split_languages_carried_back_unchanged_are_kept_whole() {
+        // Read, change the title, write the languages back as read: they
+        // are unchanged (all three, as `read_tags` returns them), and the
+        // save merges them into one frame.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = file_with_three_tlan_frames(dir.path(), "mp3", minimal_untagged_mp3);
+        change_title_and_write_back(&path).expect("write");
+        let after = read_tags(&path).expect("read");
+        assert_eq!(after[&CommonTag::Title], ["New Title"]);
+        assert_eq!(after[&CommonTag::Language], ["por", "deu", "zho"]);
+        assert_eq!(
+            occurrences(&std::fs::read(&path).expect("read"), b"TLAN"),
+            1
+        );
+    }
+
+    #[test]
+    fn keep_languages_whole_before_saving_puts_back_every_frame() {
+        // The public step a caller saving its own lofty `TaggedFile` takes.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = file_with_three_tlan_frames(dir.path(), "mp3", minimal_untagged_mp3);
+        let mut tagged_file = Probe::open(&path).expect("open").read().expect("read");
+        keep_languages_whole_before_saving(&mut tagged_file, &path).expect("readable");
+        tagged_file
+            .save_to_path(&path, WriteOptions::default())
+            .expect("save");
+        let bytes = std::fs::read(&path).expect("read");
+        assert_eq!(occurrences(&bytes, b"TLAN"), 1);
+        assert_eq!(
+            read_tags(&path).expect("read")[&CommonTag::Language],
+            ["por", "deu", "zho"]
+        );
+    }
+
+    #[test]
+    fn several_tlan_frames_that_cannot_be_read_refuse_the_write() {
+        // An MP3 whose ID3v2.4 tag is marked "unsynchronised" (an old
+        // encoding lofty undoes but `id3v2_language_frames` does not) and
+        // holds two TLAN frames: lofty reads only `fra`, so saving would
+        // delete `eng`. The write is refused and the file left untouched.
+        let frame = |text: &[u8]| {
+            let mut out = b"TLAN".to_vec();
+            out.extend_from_slice(&[0, 0, 0, u8::try_from(text.len() + 1).expect("fits")]);
+            out.extend_from_slice(&[0, 0, 3]);
+            out.extend_from_slice(text);
+            out
+        };
+        let body = [frame(b"eng"), frame(b"fra"), vec![0u8; 8]].concat();
+        let mut bytes = b"ID3\x04\x00\x80".to_vec();
+        bytes.extend_from_slice(&[0, 0, 0, u8::try_from(body.len()).expect("fits")]);
+        bytes.extend(body);
+        bytes.extend(minimal_untagged_mp3());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("unsync.mp3");
+        std::fs::write(&path, &bytes).expect("write fixture");
+        assert_eq!(
+            languages_of(&path, TagType::Id3v2),
+            ["fra"],
+            "lofty sees one"
+        );
+
+        let result = write_tags(&path, &[(CommonTag::Title, "T".into())]);
+        let message = match result {
+            Err(MetadataError::WriteError(message)) => message,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(message.contains("unsynchronised"), "{message}");
+        assert!(message.contains("Nothing was written"), "{message}");
+        assert_eq!(std::fs::read(&path).expect("read"), bytes);
+        // Reading still works: it reports what lofty reads.
+        assert_eq!(
+            read_tags(&path).expect("read")[&CommonTag::Language],
+            ["fra"]
+        );
     }
 
     // ------------------------------------------------------------------

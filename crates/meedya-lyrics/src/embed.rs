@@ -209,9 +209,15 @@ pub fn embed_synced(media: &Path, lyrics: &Lyrics, lang: [u8; 3]) -> Result<()> 
     // the conversion just above hands them back as one item per language,
     // and saving would write each as a frame of its own — a reader keeps
     // only the last, so adding lyrics used to cut three languages down to
-    // one (found by the stand-in review of revision 5). The shared helper
-    // puts them back into one item, as every save in `tag_io` does.
-    tag_io::gather_languages_before_saving(&mut tagged);
+    // one (found by the stand-in review of revision 5). And a file that
+    // ALREADY holds one `TLAN` frame per language (split by an older save,
+    // or by `meedya-tags-extended`'s `TagFile::save`) was read by lofty as
+    // its last frame only, so this save deleted the rest (found by the
+    // stand-in review of revision 6). The shared helper reads such frames
+    // from the file and puts every language back into one item, as every
+    // save in `tag_io` does; when they cannot be read it refuses, and
+    // nothing is saved.
+    tag_io::keep_languages_whole_before_saving(&mut tagged, media)?;
 
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -465,6 +471,48 @@ mod tests {
         let tlan_frames = bytes.windows(4).filter(|w| *w == b"TLAN").count();
         assert_eq!(tlan_frames, 1, "exactly one TLAN frame");
         assert_eq!(bytes.windows(4).filter(|w| *w == b"SYLT").count(), 1);
+    }
+
+    #[test]
+    fn embed_synced_keeps_languages_already_split_into_several_tlan_frames() {
+        // Found by the stand-in review of revision 6: a file ALREADY
+        // holding one TLAN frame per language (as `meedya-tags-extended`'s
+        // `TagFile::save` leaves it — reproduced here with lofty directly,
+        // which splits the same way) came out of `embed_synced` with only
+        // the last language, because lofty reads only the last frame.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("split.mp3");
+        std::fs::write(&path, minimal_untagged_mp3()).expect("write fixture");
+        tag_io::write_tags(
+            &path,
+            &[(CommonTag::Language, "pt-BR\0ger\0zh-Hant".into())],
+        )
+        .expect("three languages");
+        let split = lofty::read_from_path(&path).expect("read");
+        split
+            .save_to_path(&path, WriteOptions::default())
+            .expect("split save");
+        let tlan_frames = |path: &Path| {
+            let bytes = std::fs::read(path).expect("read file");
+            bytes.windows(4).filter(|w| *w == b"TLAN").count()
+        };
+        assert_eq!(tlan_frames(&path), 3, "split into three frames first");
+
+        let lyrics = Lyrics {
+            plain: None,
+            synced: Some(vec![SyncedLine {
+                at: Duration::from_millis(500),
+                text: "hello".into(),
+            }]),
+        };
+        embed_synced(&path, &lyrics, id3_language("pt-BR")).expect("embed_synced");
+
+        let read_back = tag_io::read_tags(&path).expect("read_tags");
+        assert_eq!(
+            read_back.get(&CommonTag::Language).map(Vec::as_slice),
+            Some(["por", "deu", "zho"].map(String::from).as_slice())
+        );
+        assert_eq!(tlan_frames(&path), 1, "merged into one TLAN frame");
     }
 
     #[test]
