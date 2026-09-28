@@ -114,14 +114,26 @@ pub struct LyricsfileMetadata {
     /// BCP 47 tag (a language plus a script subtag), not an ISO 639 code
     /// on its own — ISO 639 only ever supplies the first part of a tag.
     ///
-    /// Always a real tag, never free text. When the source gave a language
-    /// this crate does not recognise (`xml:lang="zzz"`), this is `und` —
+    /// Always a real tag, never free text, when it comes from this crate:
+    /// [`Lyricsfile::from_ttml`] and [`Lyricsfile::parse`] both read the
+    /// source's language through the LANG-002 reader
+    /// (`meedya_lang::from_legacy_three_letter`). A recognised value is
+    /// stored canonical (`EN-gb` → `en-GB`, `eng` → `en`). When the source
+    /// gave a language this crate does not recognise (`xml:lang="zzz"`,
+    /// `language: English` in a hand-written file), this is `und` —
     /// LANG-002: "The structured value is `und`, and the original text
     /// SHOULD be kept alongside" — and the text the source gave is kept in
     /// [`language_original`](Self::language_original), never guessed at
     /// (COMPAT-040). (Until Codex's review r7 the unrecognised text itself
     /// was stored here, so a reader of this field could not trust it to be
-    /// a language.) `None` when the source gave no language at all.
+    /// a language; until the stand-in review of revision 5, `parse` still
+    /// stored whatever text a file held.) `None` when the source gave no
+    /// language at all. A caller who builds the struct by hand can put
+    /// anything here; nothing checks it until the next `parse`.
+    ///
+    /// [`Lyricsfile::to_yaml`] always writes this value in quotes
+    /// (`language: 'no'`), because a YAML 1.1 reader such as PyYAML reads
+    /// an unquoted `no` — Norwegian — as the value false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 
@@ -131,10 +143,18 @@ pub struct LyricsfileMetadata {
     /// lost and a person can fix it). `None` whenever `language` is a
     /// recognised tag or absent.
     ///
+    /// When a file given to [`Lyricsfile::parse`] already has this field,
+    /// it is kept exactly as the file gives it, whatever `language` says:
+    /// if `language` is then unrecognised too, `language` becomes `und` and
+    /// its own text is not kept (the file already names its original text,
+    /// and there is nowhere to keep a second one); if `language` is
+    /// recognised, both are kept as they are. Written in quotes by
+    /// [`Lyricsfile::to_yaml`], like `language`.
+    ///
     /// **Not part of LRCGET's Lyricsfile 1.0 schema** — a MeedyaSuite
     /// addition, written to YAML only when present
     /// (`skip_serializing_if`), so a file with a recognised language (the
-    /// usual case) is byte-for-byte what it was before this field existed.
+    /// usual case) has no such key.
     /// Extra keys are allowed: this module's forward-compatibility policy
     /// (top of this file) is that a reader ignores fields it does not
     /// know, the same reasoning `LyricsfileWord::syllables` already relies
@@ -258,14 +278,88 @@ impl Lyricsfile {
 
     /// Serialise to a YAML string. Always emits `version:
     /// "<LYRICSFILE_VERSION>"` as the first field.
+    ///
+    /// `metadata.language` and `metadata.language_original` are always
+    /// written in quotes (`language: 'no'`). The YAML library this crate
+    /// uses follows YAML 1.2, where `no` is just text, so it writes `no`
+    /// bare; but YAML 1.1 readers — PyYAML, and older Ruby and JavaScript
+    /// libraries — read a bare `no`, `yes`, `on`, `off`, `y` or `n` as true
+    /// or false, so Norwegian (`no`) would come back as the value false.
+    /// Quoted, every reader reads the text. (Found by the stand-in review
+    /// of revision 5.) Other fields are written as the library writes them.
+    /// A caller who serialises the struct with `serde_yaml` directly gets
+    /// no quoting; use this method.
     pub fn to_yaml(&self) -> Result<String> {
-        serde_yaml::to_string(self).map_err(|e| Error::LyricsfileYaml(e.to_string()))
+        // Each of the two values is replaced by a stand-in word that the
+        // YAML library always writes bare, on one line; each stand-in is
+        // then replaced by its value, quoted. A stand-in is used only when
+        // it occurs exactly once in the output (lyrics could, in theory,
+        // contain the same letters) — otherwise the next number is tried,
+        // so a stand-in is never mistaken for, or replaced inside, text.
+        let values = [
+            self.metadata.language.as_deref(),
+            self.metadata.language_original.as_deref(),
+        ];
+        for attempt in 0..1000u32 {
+            let stand_ins = [
+                format!("meedya-lyricsfile-language-{attempt}"),
+                format!("meedya-lyricsfile-language-original-{attempt}"),
+            ];
+            let mut copy = self.clone();
+            copy.metadata.language = values[0].map(|_| stand_ins[0].clone());
+            copy.metadata.language_original = values[1].map(|_| stand_ins[1].clone());
+            let mut yaml =
+                serde_yaml::to_string(&copy).map_err(|e| Error::LyricsfileYaml(e.to_string()))?;
+            // Neither stand-in may appear anywhere but in its own place —
+            // not elsewhere in the output, and not inside either value
+            // (which would put a second copy in once the first is
+            // replaced).
+            let unique = stand_ins.iter().zip(values).all(|(stand_in, value)| {
+                yaml.matches(stand_in.as_str()).count() == usize::from(value.is_some())
+            }) && !values
+                .iter()
+                .flatten()
+                .any(|value| stand_ins.iter().any(|w| value.contains(w.as_str())));
+            if !unique {
+                continue;
+            }
+            for (stand_in, value) in stand_ins.iter().zip(values) {
+                if let Some(value) = value {
+                    yaml = yaml.replacen(stand_in.as_str(), &yaml_quoted(value), 1);
+                }
+            }
+            return Ok(yaml);
+        }
+        Err(Error::LyricsfileYaml(
+            "could not find a stand-in word for the language that the lyrics do not already \
+             contain"
+                .to_string(),
+        ))
     }
 
     /// Parse a YAML string. Unknown fields are silently ignored
     /// (forward-compat).
+    ///
+    /// **The language is read through the LANG-002 reader**
+    /// (`meedya_lang::from_legacy_three_letter`), as it is for TTML, so
+    /// `metadata.language` is a real tag or `None` whatever the file says
+    /// (policy MWBM-MEDIA-LANG; the stand-in review of revision 5 found
+    /// `parse` storing the file's text as it was):
+    ///
+    /// - absent (or `null`): stays `None`;
+    /// - recognised: stored canonical (`EN-gb` → `en-GB`, `eng` → `en`);
+    /// - not recognised (`English`, `zzz`, an empty value): stored as
+    ///   `und`, and the file's text is moved to
+    ///   `metadata.language_original` — unless the file already has a
+    ///   `language_original`, which is then kept as it is (the
+    ///   unrecognised text is not kept a second time).
+    ///
+    /// A `language_original` in the file is never changed or removed.
     pub fn parse(yaml: &str) -> Result<Self> {
-        serde_yaml::from_str(yaml).map_err(|e| Error::LyricsfileYaml(e.to_string()))
+        let mut lyricsfile: Self =
+            serde_yaml::from_str(yaml).map_err(|e| Error::LyricsfileYaml(e.to_string()))?;
+        lyricsfile.metadata.read_language();
+        Ok(lyricsfile)
     }
 
     /// Mark this Lyricsfile as instrumental. Clears `lines` and `plain`
@@ -293,6 +387,61 @@ impl Lyricsfile {
             .iter()
             .any(|l| l.words.iter().any(|w| !w.syllables.is_empty()))
     }
+}
+
+impl LyricsfileMetadata {
+    /// Reads `language` through the LANG-002 reader, in place — the rules
+    /// [`Lyricsfile::parse`] documents.
+    fn read_language(&mut self) {
+        let Some(text) = self.language.take() else {
+            return;
+        };
+        match meedya_lang::from_legacy_three_letter(&text) {
+            Some(tag) => self.language = Some(tag.tag),
+            None => {
+                self.language = Some("und".to_string());
+                if self.language_original.is_none() {
+                    self.language_original = Some(text);
+                }
+            }
+        }
+    }
+}
+
+/// `value` as a quoted YAML scalar that every YAML reader, 1.1 or 1.2,
+/// reads back as exactly `value`: single quotes (a `'` inside doubled)
+/// when every character may appear there as it is, otherwise double
+/// quotes with each other character escaped (`\uXXXX` and so on) — for a
+/// line break, a control character, or one YAML does not allow in a file
+/// at all.
+fn yaml_quoted(value: &str) -> String {
+    // YAML's printable characters (YAML 1.2 section 5.1, the same set as
+    // 1.1), less the line breaks 1.1 recognises (U+0085, U+2028, U+2029),
+    // the byte-order mark and the tab (kept simple: escaped).
+    fn as_is(c: char) -> bool {
+        matches!(c,
+            '\u{20}'..='\u{7E}'
+            | '\u{A0}'..='\u{D7FF}'
+            | '\u{E000}'..='\u{FFFD}'
+            | '\u{10000}'..='\u{10FFFF}')
+            && !matches!(c, '\u{2028}' | '\u{2029}' | '\u{FEFF}')
+    }
+    if value.chars().all(as_is) {
+        return format!("'{}'", value.replace('\'', "''"));
+    }
+    let mut out = String::from("\"");
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            c if as_is(c) => out.push(c),
+            c if u32::from(c) <= 0xFF => out.push_str(&format!("\\x{:02X}", u32::from(c))),
+            c if u32::from(c) <= 0xFFFF => out.push_str(&format!("\\u{:04X}", u32::from(c))),
+            c => out.push_str(&format!("\\U{:08X}", u32::from(c))),
+        }
+    }
+    out.push('"');
+    out
 }
 
 // ============================================================
@@ -595,6 +744,123 @@ lines:
     fn malformed_yaml_returns_lyricsfile_yaml_error() {
         let err = Lyricsfile::parse("not yaml at all: :\n  :").unwrap_err();
         assert!(matches!(err, Error::LyricsfileYaml(_)), "got: {err:?}");
+    }
+
+    // ------------------------------------------------------------
+    // The language, read and written (policy MWBM-MEDIA-LANG; the
+    // stand-in review of revision 5)
+    // ------------------------------------------------------------
+
+    /// The `(language, language_original)` `parse` gives for a document
+    /// whose metadata carries `fields` (YAML lines, already indented).
+    fn parsed_language(fields: &str) -> (Option<String>, Option<String>) {
+        let yaml = format!(
+            "version: \"1.0\"\nmetadata:\n  title: T\n  artist: A\n  instrumental: false\n{fields}"
+        );
+        let lf = Lyricsfile::parse(&yaml).expect("parse");
+        (lf.metadata.language, lf.metadata.language_original)
+    }
+
+    #[test]
+    fn parse_reads_the_language_through_the_policy_reader() {
+        let some = |s: &str| Some(s.to_string());
+        // Recognised: stored canonical; nothing else kept.
+        assert_eq!(
+            parsed_language("  language: EN-gb\n"),
+            (some("en-GB"), None)
+        );
+        assert_eq!(parsed_language("  language: eng\n"), (some("en"), None));
+        // Not recognised: `und`, the text moved to `language_original`.
+        assert_eq!(
+            parsed_language("  language: English\n"),
+            (some("und"), some("English"))
+        );
+        assert_eq!(parsed_language("  language: ''\n"), (some("und"), some("")));
+        // Absent, or null: stays absent.
+        assert_eq!(parsed_language(""), (None, None));
+        assert_eq!(parsed_language("  language: null\n"), (None, None));
+        // A `language_original` the file already has is kept as it is —
+        // with an unrecognised language (which becomes `und`, its own text
+        // not kept a second time) and with a recognised one.
+        assert_eq!(
+            parsed_language("  language: zzz\n  language_original: Zed\n"),
+            (some("und"), some("Zed"))
+        );
+        assert_eq!(
+            parsed_language("  language: EN\n  language_original: English\n"),
+            (some("en"), some("English"))
+        );
+    }
+
+    #[test]
+    fn yaml_1_1_boolean_words_are_quoted_and_round_trip() {
+        // A YAML 1.1 reader (PyYAML) reads a bare `no` — Norwegian — as
+        // false, and the same for the other five words. Recognised
+        // languages among them go in `language`; the rest are not
+        // languages, so they are kept in `language_original` beside `und`.
+        let cases = [
+            ("no", true),
+            ("on", true),
+            ("yes", true),
+            ("off", false),
+            ("y", false),
+            ("n", false),
+        ];
+        for (word, recognised) in cases {
+            let mut lf = Lyricsfile::new("T", "A");
+            if recognised {
+                lf.metadata.language = Some(word.into());
+            } else {
+                lf.metadata.language = Some("und".into());
+                lf.metadata.language_original = Some(word.into());
+            }
+            let yaml = lf.to_yaml().expect("to_yaml");
+            let line = if recognised {
+                format!("  language: '{word}'\n")
+            } else {
+                format!("  language_original: '{word}'\n")
+            };
+            assert!(yaml.contains(&line), "{word}: {yaml}");
+            assert!(yaml.contains("  language: '"), "{word}: {yaml}");
+            assert_eq!(Lyricsfile::parse(&yaml).expect("parse"), lf, "{word}");
+        }
+    }
+
+    #[test]
+    fn a_language_value_of_any_text_round_trips_quoted() {
+        // An apostrophe (doubled inside single quotes), and characters
+        // single quotes cannot hold as they are (a line break, a tab, a
+        // control character, U+0085 and U+2028, which YAML 1.1 counts as
+        // line breaks) — those take double quotes with escapes.
+        for text in [
+            "it's",
+            "two\nlines",
+            "tab\there",
+            "bell\u{7}",
+            "next\u{85}line",
+            "sep\u{2028}arator",
+            "back\\slash \"quoted\"",
+            "Français — 日本語",
+            "meedya-lyricsfile-language-0",
+        ] {
+            let mut lf = Lyricsfile::new("T", "A");
+            lf.metadata.language = Some("und".into());
+            lf.metadata.language_original = Some(text.into());
+            let yaml = lf.to_yaml().expect("to_yaml");
+            assert_eq!(
+                Lyricsfile::parse(&yaml).expect("parse"),
+                lf,
+                "{text:?}: {yaml}"
+            );
+        }
+        // The stand-in word the quoting uses, also in the lyrics: the
+        // language is still written in its own place.
+        let mut lf = Lyricsfile::new("T", "A");
+        lf.metadata.language = Some("fr".into());
+        lf.plain = Some("meedya-lyricsfile-language-0 meedya-lyricsfile-language-1".into());
+        let yaml = lf.to_yaml().expect("to_yaml");
+        assert!(yaml.contains("  language: 'fr'\n"), "{yaml}");
+        assert_eq!(Lyricsfile::parse(&yaml).expect("parse"), lf);
     }
 
     #[test]

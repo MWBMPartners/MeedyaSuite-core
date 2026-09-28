@@ -839,13 +839,14 @@ mod tests {
         )
         .unwrap();
         let yaml = unrecognised.to_yaml().unwrap();
-        assert!(yaml.contains("language: und"), "got: {yaml}");
-        assert!(yaml.contains("language_original: zzz"), "got: {yaml}");
+        assert!(yaml.contains("language: 'und'"), "got: {yaml}");
+        assert!(yaml.contains("language_original: 'zzz'"), "got: {yaml}");
         let back = Lyricsfile::parse(&yaml).unwrap();
         assert_eq!(back, unrecognised);
 
-        // The usual case writes no extra key, so its YAML is exactly what
-        // it was before `language_original` existed.
+        // The usual case writes no extra key. (Both language values are
+        // written in quotes since the stand-in review of revision 5 — see
+        // `Lyricsfile::to_yaml`.)
         let recognised = Lyricsfile::from_ttml(
             r#"<tt xml:lang="en"><body><div><p begin="00:00:01.000">hi</p></div></body></tt>"#,
             "t",
@@ -853,7 +854,7 @@ mod tests {
         )
         .unwrap();
         let yaml = recognised.to_yaml().unwrap();
-        assert!(yaml.contains("language: en"), "got: {yaml}");
+        assert!(yaml.contains("language: 'en'"), "got: {yaml}");
         assert!(!yaml.contains("language_original"), "got: {yaml}");
     }
 

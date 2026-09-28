@@ -133,7 +133,9 @@ fn yaml_output_is_self_documenting_and_human_readable() {
             || yaml.contains("album: 25")
     );
     assert!(yaml.contains("duration_ms: 295000"));
-    assert!(yaml.contains("language: en"));
+    // Language values are always quoted, so a YAML 1.1 reader does not
+    // read Norwegian (`no`) as false — see `Lyricsfile::to_yaml`.
+    assert!(yaml.contains("language: 'en'"));
     assert!(yaml.contains("instrumental: false"));
 }
 
