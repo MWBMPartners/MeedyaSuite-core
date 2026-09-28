@@ -615,6 +615,8 @@ layout, localised:
 `English (United Kingdom) — Audio Description — 5.1`
 
 - The parts are joined with ` — ` (space, em dash, space).
+- A part that is empty (no localised name, no channel layout) is left out,
+  with its separator.
 - Roles appear once each, in TRACK-050's order.
 - An embedded track title MUST NOT be used as the main label when language
   data exists. It MAY be shown in a details view.
@@ -1050,7 +1052,7 @@ Also settled before release (28 Sept 2026), after independent reviews of
 the Rust and Swift implementations, each with a test case and no change to
 any existing case's answer:
 
-- seven points the text had left open — a malformed preference matches
+- eight points the text had left open — a malformed preference matches
   nothing, not even an identical malformed value, and a user whose
   preferences are all malformed counts as having none (MATCH-010,
   AUTO-010); "canonical order" in automatic selection means stored order
@@ -1059,7 +1061,8 @@ any existing case's answer:
   commentary ranks before other (AUTO-020); a private-use or grandfathered
   audio tag can match a forced track with exactly that tag (AUTO-030); a
   sidecar builder reads the language it is given with LANG-002's reader
-  (TEXT-030); a label lists each role once (UI-070); and a malformed value
+  (TEXT-030); a label lists each role once (UI-070); a label leaves out an
+  empty part, with its separator (UI-070); and a malformed value
   keeps its text after LANG-001 step 1's trim, so a value of only
   whitespace keeps the empty text (LANG-026).
 
