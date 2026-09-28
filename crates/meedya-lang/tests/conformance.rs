@@ -9,26 +9,42 @@
 // stopping at the first mismatch.
 //
 // This test deliberately builds its own small wrapper types implementing
-// this crate's traits (`LanguageItem`, `TrackItem`, `PresentationItem`,
-// `SelectableTrack`) from the fixture JSON, rather than reaching into the
-// crate's internals — it exercises exactly the surface a real consumer
-// (MeedyaDL, MeedyaManager) would use.
+// this crate's traits (`LanguageItem`, `RoleItem`, `TrackItem`,
+// `PresentationItem`, `SelectableTrack`) from the fixture JSON, rather
+// than reaching into the crate's internals — it exercises exactly the
+// surface a real consumer (MeedyaDL, MeedyaManager) would use.
 //
 // Policy 8.1 requires this runner to FAIL — never quietly pass — on an
 // unknown section, a missing or empty section it needs, or a case
-// missing a field the schema requires. Two things make that true here:
-// serde's derive already refuses to deserialise a struct whose non-
-// `Option` field is absent from the JSON, which covers most required
-// fields for free; and `require_present`, below, closes the one gap that
-// leaves — a field the SCHEMA requires to be present but whose VALUE may
-// be `null` (an `Option<T>` field in Rust cannot tell "the key was
-// missing" apart from "the key was present and null" on its own).
+// missing a field the schema requires. How that is made true here:
+//
+// * Each case is read on its own (`parse_section`), so a failure names
+//   the case. Every case struct, and every object nested inside one,
+//   carries `#[serde(deny_unknown_fields)]`, mirroring the schema's
+//   `additionalProperties: false`: a field the schema does not allow —
+//   an `error: true` flag in a section that has no refusal cases, say —
+//   fails loudly instead of being ignored.
+// * A field the schema requires but allows to be `null` is read with
+//   `deserialize_with = "Option::deserialize"`. A plain `Option<T>` field
+//   quietly reads a MISSING key as `None`, exactly like an explicit
+//   `null`; with that attribute a missing key is an error. Before policy
+//   revision 4 the nested `expected` object of a sidecar parse case, and
+//   the `roles` of a selection track (`#[serde(default)]`), could be left
+//   out and still pass — an independent review found both.
+// * `error`, where the schema allows it, may only be `true` (its schema
+//   `const`), and a case carrying it must expect `null`.
+// * Required fields that may not be null are ordinary (non-`Option`)
+//   fields, which serde already refuses to leave out.
+// * The `harness_refuses` tests at the bottom prove each of those by
+//   running this same harness on a deliberately damaged copy of the case
+//   file and requiring it to fail, for the stated reason.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use serde::Deserialize;
-use serde_json::Value;
+use serde::de::{DeserializeOwned, Error as _};
+use serde::{Deserialize, Deserializer};
+use serde_json::{Map, Value};
 
 use meedya_lang::{
     build_sidecar_name, canonicalise, embedded_data_version, from_legacy_three_letter,
@@ -43,66 +59,67 @@ use meedya_lang::{
 // Fixture-shape robustness helpers (policy 8.1)
 // ---------------------------------------------------------------------
 
-/// Panics unless every one of `keys` is present (as a JSON object key —
-/// `null` counts as present, only a missing key does not) on `case`.
-/// This is the check an `Option<T>` struct field cannot do by itself: a
-/// case that OMITS a required-but-nullable field would deserialise into
-/// exactly the same Rust value (`None`) as one that explicitly writes
-/// `"field": null`, which is precisely the ambiguity policy 8.1 requires
-/// the harness to resolve rather than paper over.
-fn require_present(case: &Value, keys: &[&str], id_hint: &str) {
-    let obj = case
-        .as_object()
-        .unwrap_or_else(|| panic!("{id_hint}: fixture case is not a JSON object"));
-    for key in keys {
-        assert!(
-            obj.contains_key(*key),
-            "{id_hint}: fixture case is missing required field {key:?}"
-        );
-    }
-}
-
-fn case_id_hint(case: &Value, section: &str) -> String {
+fn case_id_hint(case: &Value, section: &str, index: usize) -> String {
     case.get("id")
         .and_then(Value::as_str)
         .map(|id| format!("{section}/{id}"))
-        .unwrap_or_else(|| format!("{section}/<no id>"))
+        .unwrap_or_else(|| format!("{section}/<case {index}, no id>"))
+}
+
+/// Reads every case of one section into `T`, one case at a time, so a
+/// failure names the case (serde cannot give a line number for some of
+/// these shapes). Panics — failing the run — on the first case that does
+/// not match `T`, which mirrors the schema.
+fn parse_section<T: DeserializeOwned>(top: &Map<String, Value>, section: &str) -> Vec<T> {
+    let cases = top
+        .get(section)
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("fixture file has no array section {section:?}"));
+    cases
+        .iter()
+        .enumerate()
+        .map(|(index, case)| {
+            serde_json::from_value(case.clone()).unwrap_or_else(|e| {
+                panic!(
+                    "{}: fixture case does not match the schema — {e}. Policy 8.1: a harness \
+                     must fail, not quietly default or ignore, when a case lacks a field the \
+                     schema requires or carries one it does not allow",
+                    case_id_hint(case, section, index)
+                )
+            })
+        })
+        .collect()
+}
+
+/// `error` may only ever be `true` (the schema's `const`): a case that
+/// should not be refused leaves the field out.
+fn only_true<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    if bool::deserialize(deserializer)? {
+        Ok(true)
+    } else {
+        Err(D::Error::custom(
+            "`error` may only be true (the schema's const); leave it out rather than writing false",
+        ))
+    }
+}
+
+/// A case that carries `error: true` must expect `null` (the schema's
+/// `if error then expected: null`) — otherwise it is unclear what it tests.
+fn require_null_expected_on_error(id: &str, error: bool, expected_is_null: bool) {
+    assert!(
+        !error || expected_is_null,
+        "{id}: fixture case carries error: true but its expected answer is not null"
+    );
 }
 
 // ---------------------------------------------------------------------
-// Fixture file shape
+// Fixture file shape — one struct per case shape in the schema
 // ---------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct Fixtures {
-    policy: String,
-    policy_version: String,
-    #[allow(dead_code)]
-    fixtures_version: String,
-    data_version: String,
-    canonicalise: Vec<CanonicaliseCase>,
-    legacy_three_letter: Vec<SimpleCase>,
-    iso639_2_write: Vec<Iso639WriteCase>,
-    posix_locale: Vec<SimpleCase>,
-    sidecar_name: Vec<SidecarCase>,
-    canonical_order: Vec<OrderCase>,
-    track_order: Vec<TrackOrderCase>,
-    presentation_order: Vec<PresentationCase>,
-    subtitle_menu: Vec<PresentationCase>,
-    label: Vec<LabelCase>,
-    #[serde(rename = "match")]
-    match_cases: Vec<MatchCase>,
-    auto_select_audio: Vec<AutoAudioCase>,
-    auto_select_subtitle: Vec<AutoSubtitleCase>,
-}
 
 /// Every section name this harness knows how to run, in the order the
 /// policy's own table (8.1) lists them. Used for two checks: that the
-/// fixture file does not carry a section this harness has never heard of
-/// (which would otherwise be silently ignored by `Fixtures`' lack of
-/// `deny_unknown_fields` at the field level — checked explicitly instead,
-/// see `every_conformance_case_passes`), and that none of the sections
-/// this harness needs is empty.
+/// fixture file does not carry a section this harness has never heard of,
+/// and that none of the sections this harness needs is missing or empty.
 const KNOWN_SECTIONS: &[&str] = &[
     "canonicalise",
     "legacy_three_letter",
@@ -119,39 +136,81 @@ const KNOWN_SECTIONS: &[&str] = &[
     "auto_select_subtitle",
 ];
 
+/// The top-level keys that describe the file rather than holding cases.
+const METADATA_KEYS: &[&str] = &[
+    "$schema",
+    "policy",
+    "policy_version",
+    "fixtures_version",
+    "data_version",
+];
+
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CanonicaliseCase {
     id: String,
+    #[allow(dead_code)]
+    rules: Vec<String>,
     input: String,
+    #[serde(deserialize_with = "Option::deserialize")]
     expected: Option<String>,
     kind: String,
+    #[allow(dead_code)]
+    note: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct SimpleCase {
+#[serde(deny_unknown_fields)]
+struct LegacyCase {
     id: String,
+    #[allow(dead_code)]
+    rules: Vec<String>,
     input: String,
+    #[serde(deserialize_with = "Option::deserialize")]
     expected: Option<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PosixCase {
+    id: String,
+    #[allow(dead_code)]
+    rules: Vec<String>,
+    #[allow(dead_code)]
+    description: Option<String>,
+    input: String,
+    #[serde(deserialize_with = "Option::deserialize")]
+    expected: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Iso639WriteExpected {
     b: String,
     t: String,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Iso639WriteCase {
     id: String,
+    #[allow(dead_code)]
+    rules: Vec<String>,
+    #[allow(dead_code)]
+    description: Option<String>,
     input: String,
     expected: Iso639WriteExpected,
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 struct SidecarExpected {
+    #[serde(deserialize_with = "Option::deserialize")]
     tag: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     unrecognised: Option<String>,
     roles: Vec<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     number: Option<u32>,
     extension: String,
 }
@@ -167,28 +226,38 @@ struct SidecarExpected {
 /// `InvalidSidecarNumber` in `sidecar.rs`. `Build::expected` is
 /// `Option<String>` because an `error: true` case sets it to `null`.
 #[derive(Deserialize)]
-#[serde(tag = "mode", rename_all = "lowercase")]
+#[serde(tag = "mode", rename_all = "lowercase", deny_unknown_fields)]
 enum SidecarCase {
     Build {
         id: String,
+        #[allow(dead_code)]
+        rules: Vec<String>,
+        #[allow(dead_code)]
+        description: Option<String>,
         stem: String,
         tag: String,
         roles: Vec<String>,
         extension: String,
+        #[serde(deserialize_with = "Option::deserialize")]
         number: Option<i64>,
+        #[serde(deserialize_with = "Option::deserialize")]
         expected: Option<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "only_true")]
         error: bool,
     },
     Parse {
         id: String,
+        #[allow(dead_code)]
+        rules: Vec<String>,
         stem: String,
         filename: String,
+        #[serde(deserialize_with = "Option::deserialize")]
         expected: Option<SidecarExpected>,
     },
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OrderItem {
     id: Option<String>,
     tag: String,
@@ -196,13 +265,19 @@ struct OrderItem {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OrderCase {
     id: String,
+    #[allow(dead_code)]
+    rules: Vec<String>,
+    #[allow(dead_code)]
+    description: String,
     items: Vec<OrderItem>,
     expected: Vec<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TrackDef {
     id: String,
     #[serde(rename = "type")]
@@ -213,13 +288,21 @@ struct TrackDef {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TrackOrderCase {
     id: String,
+    #[allow(dead_code)]
+    rules: Vec<String>,
+    #[allow(dead_code)]
+    description: String,
     tracks: Vec<TrackDef>,
     expected: Vec<String>,
 }
 
+/// Accessibility preferences; an absent key means false (the schema's own
+/// convention for these test cases).
 #[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct AccessibilityDef {
     audio_description: Option<bool>,
     captions: Option<bool>,
@@ -235,21 +318,33 @@ impl AccessibilityDef {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PresentationItemDef {
     id: String,
     tag: String,
     #[serde(rename = "type")]
     kind: Option<String>,
+    // Optional in the schema: "Absent means none."
     #[serde(default)]
     roles: Vec<String>,
     original: Option<bool>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PresentationCase {
     id: String,
+    #[allow(dead_code)]
+    rules: Vec<String>,
+    #[allow(dead_code)]
+    description: String,
     preferences: Vec<String>,
     accessibility: AccessibilityDef,
+    /// Present only to show that selection changes nothing (UI-050); the
+    /// ordering function takes no selection input, so it is never read.
+    #[allow(dead_code)]
+    selected: Option<String>,
+    #[allow(dead_code)]
     display_names: HashMap<String, String>,
     collation_keys: HashMap<String, String>,
     items: Vec<PresentationItemDef>,
@@ -257,62 +352,91 @@ struct PresentationCase {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LabelCase {
     id: String,
+    #[allow(dead_code)]
+    rules: Vec<String>,
+    #[allow(dead_code)]
+    description: Option<String>,
     #[serde(rename = "type")]
     kind: String,
     language_name: String,
     roles: Vec<String>,
     role_names: HashMap<String, String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     channels: Option<String>,
     expected: String,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MatchExpected {
     level: String,
     distance: usize,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MatchCase {
     id: String,
+    #[allow(dead_code)]
+    rules: Vec<String>,
+    #[allow(dead_code)]
+    description: Option<String>,
     preference: String,
     candidate: String,
     expected: MatchExpected,
 }
 
+/// One track in a selection case. `roles` is required by the schema and so
+/// is required here: before policy revision 4 it carried
+/// `#[serde(default)]`, and a track that left it out quietly counted as
+/// having no roles.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SelectTrackDef {
     id: String,
     tag: String,
-    #[serde(default)]
     roles: Vec<String>,
     default: Option<bool>,
     original: Option<bool>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AutoAudioCase {
     id: String,
+    #[allow(dead_code)]
+    rules: Vec<String>,
+    #[allow(dead_code)]
+    description: String,
     preferences: Vec<String>,
     accessibility: AccessibilityDef,
     tracks: Vec<SelectTrackDef>,
+    #[serde(deserialize_with = "Option::deserialize")]
     expected: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "only_true")]
     error: bool,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AutoSubtitleCase {
     id: String,
+    #[allow(dead_code)]
+    rules: Vec<String>,
+    #[allow(dead_code)]
+    description: String,
     mode: String,
     preferences: Vec<String>,
     accessibility: AccessibilityDef,
+    #[serde(deserialize_with = "Option::deserialize")]
     audio: Option<String>,
     tracks: Vec<SelectTrackDef>,
+    #[serde(deserialize_with = "Option::deserialize")]
     expected: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "only_true")]
     error: bool,
 }
 
@@ -321,15 +445,8 @@ struct AutoSubtitleCase {
 // ---------------------------------------------------------------------
 
 fn role_from_str(s: &str) -> Role {
-    match s {
-        "alternate" => Role::Alternate,
-        "audio_description" => Role::AudioDescription,
-        "commentary" => Role::Commentary,
-        "sdh" => Role::Sdh,
-        "forced" => Role::Forced,
-        "other" => Role::Other,
-        other => panic!("fixture uses an unknown role {other:?}"),
-    }
+    s.parse()
+        .unwrap_or_else(|_| panic!("fixture uses an unknown role {s:?}"))
 }
 
 fn roles_from_strs(strs: &[String]) -> Vec<Role> {
@@ -481,62 +598,85 @@ impl SelectableTrack for SelectTestTrack {
     }
 }
 
-/// The harness's stand-in for a real localised-name collation (the
-/// fixture schema's own words: "the harness's compare_groups compares
-/// collation_keys as plain strings then the subtag"). Real callers pass
-/// a closure backed by platform locale data instead — this crate holds
-/// no name data of its own.
-fn compare_groups_for<'a>(
+fn select_tracks_from(defs: &[SelectTrackDef]) -> Vec<SelectTestTrack> {
+    defs.iter()
+        .map(|t| SelectTestTrack {
+            id: t.id.clone(),
+            tag: canonicalise(&t.tag),
+            roles: roles_from_strs(&t.roles),
+            default: t.default.unwrap_or(false),
+            original: t.original.unwrap_or(false),
+        })
+        .collect()
+}
+
+fn presentation_items_from(defs: &[PresentationItemDef]) -> Vec<PresentationTestItem> {
+    defs.iter()
+        .map(|it| PresentationTestItem {
+            id: it.id.clone(),
+            tag: canonicalise(&it.tag),
+            kind: it.kind.as_deref().map(presentation_kind_from_str),
+            roles: roles_from_strs(&it.roles),
+            original: it.original.unwrap_or(false),
+        })
+        .collect()
+}
+
+/// The harness's stand-in for a real localised-name collation: it compares
+/// the case's `collation_keys` as plain strings, and NOTHING else. Equal
+/// keys compare `Equal`, and it is the crate's job to break that tie by
+/// primary language code (UI-040) — as it is for a real collator, which
+/// compares names only. (Before policy revision 4 this closure broke the
+/// tie itself, which hid a crate that did not; `present-23` now checks the
+/// crate.) Real callers pass a closure backed by platform locale data; the
+/// crate holds no name data of its own.
+fn compare_names_for<'a>(
     collation_keys: &'a HashMap<String, String>,
 ) -> impl Fn(&str, &str) -> Ordering + 'a {
     move |a: &str, b: &str| {
         let ka = collation_keys.get(a).map(String::as_str).unwrap_or(a);
         let kb = collation_keys.get(b).map(String::as_str).unwrap_or(b);
-        ka.cmp(kb).then_with(|| a.cmp(b))
+        ka.cmp(kb)
     }
 }
 
 // ---------------------------------------------------------------------
-// The test
+// The harness
 // ---------------------------------------------------------------------
 
-#[test]
-fn every_conformance_case_passes() {
-    let raw = std::fs::read_to_string(concat!(
+/// What one run of the harness found.
+struct Report {
+    failures: Vec<String>,
+    cases_in_file: usize,
+    stability_checks_in_file: usize,
+}
+
+fn fixture_text() -> String {
+    std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../tests/fixtures/bcp47-language-policy-v1.json"
     ))
-    .expect("could not read tests/fixtures/bcp47-language-policy-v1.json");
+    .expect("could not read tests/fixtures/bcp47-language-policy-v1.json")
+}
 
-    // Parsed twice, deliberately: once loosely (`serde_json::Value`) so
-    // this harness can check the fixture's own SHAPE (no unknown
-    // section, no section this harness needs left empty, no case missing
-    // a field the schema requires — policy 8.1) independently of
-    // whichever Rust types happen to make a value optional; once
-    // strictly (`Fixtures`) for the typed data every case below actually
-    // runs against.
+/// Runs every case in `raw` (the text of a fixture file). Panics — failing
+/// the run outright — on anything wrong with the FILE (policy 8.1);
+/// returns every case whose ANSWER was wrong in `Report::failures`.
+fn run_conformance(raw: &str) -> Report {
     let raw_value: Value =
-        serde_json::from_str(&raw).expect("fixture file is not valid JSON at all");
-    let top_level = raw_value
+        serde_json::from_str(raw).expect("fixture file is not valid JSON at all");
+    let top = raw_value
         .as_object()
         .expect("fixture file's top level is not a JSON object");
-    for key in top_level.keys() {
-        if key == "$schema"
-            || key == "policy"
-            || key == "policy_version"
-            || key == "fixtures_version"
-            || key == "data_version"
-        {
-            continue;
-        }
+    for key in top.keys() {
         assert!(
-            KNOWN_SECTIONS.contains(&key.as_str()),
+            METADATA_KEYS.contains(&key.as_str()) || KNOWN_SECTIONS.contains(&key.as_str()),
             "fixture file has a section {key:?} this harness does not know how to run — \
              policy 8.1 requires failing on an unknown section, not silently ignoring it"
         );
     }
     for section in KNOWN_SECTIONS {
-        let arr = top_level
+        let arr = top
             .get(*section)
             .and_then(Value::as_array)
             .unwrap_or_else(|| panic!("fixture file has no array section {section:?}"));
@@ -547,48 +687,49 @@ fn every_conformance_case_passes() {
         );
     }
 
-    let fixtures: Fixtures =
-        serde_json::from_str(&raw).expect("fixture file did not match the expected schema shape");
-
-    assert_eq!(fixtures.policy, "MWBM-MEDIA-LANG");
-    assert_eq!(fixtures.policy_version, "1.0.0");
+    let text = |key: &str| {
+        top.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("fixture file has no string {key:?}"))
+    };
+    assert_eq!(text("policy"), "MWBM-MEDIA-LANG");
+    assert_eq!(text("policy_version"), "1.0.0");
+    let _ = text("fixtures_version");
     assert_eq!(
-        fixtures.data_version,
+        text("data_version"),
         embedded_data_version(),
         "fixtures were computed against a different reference-data version than this crate embeds"
     );
 
+    let canonicalise_cases: Vec<CanonicaliseCase> = parse_section(top, "canonicalise");
+    let legacy_cases: Vec<LegacyCase> = parse_section(top, "legacy_three_letter");
+    let iso_cases: Vec<Iso639WriteCase> = parse_section(top, "iso639_2_write");
+    let posix_cases: Vec<PosixCase> = parse_section(top, "posix_locale");
+    let sidecar_cases: Vec<SidecarCase> = parse_section(top, "sidecar_name");
+    let order_cases: Vec<OrderCase> = parse_section(top, "canonical_order");
+    let track_cases: Vec<TrackOrderCase> = parse_section(top, "track_order");
+    let presentation_cases: Vec<PresentationCase> = parse_section(top, "presentation_order");
+    let menu_cases: Vec<PresentationCase> = parse_section(top, "subtitle_menu");
+    let label_cases: Vec<LabelCase> = parse_section(top, "label");
+    let match_cases: Vec<MatchCase> = parse_section(top, "match");
+    let audio_cases: Vec<AutoAudioCase> = parse_section(top, "auto_select_audio");
+    let subtitle_cases: Vec<AutoSubtitleCase> = parse_section(top, "auto_select_subtitle");
+
     let mut failures: Vec<String> = Vec::new();
     let mut cases_run: usize = 0;
-    let cases_in_file = fixtures.canonicalise.len()
-        + fixtures.legacy_three_letter.len()
-        + fixtures.iso639_2_write.len()
-        + fixtures.posix_locale.len()
-        + fixtures.sidecar_name.len()
-        + fixtures.canonical_order.len()
-        + fixtures.track_order.len()
-        + fixtures.presentation_order.len()
-        + fixtures.subtitle_menu.len()
-        + fixtures.label.len()
-        + fixtures.match_cases.len()
-        + fixtures.auto_select_audio.len()
-        + fixtures.auto_select_subtitle.len();
+    let cases_in_file: usize = KNOWN_SECTIONS
+        .iter()
+        .map(|s| top[*s].as_array().map_or(0, Vec::len))
+        .sum();
 
     // -- canonicalise (LANG-001, LANG-026) --------------------------------
-    // Plus a stability check added in the policy's second revision: for
-    // every case whose expected answer is a real tag (not malformed),
-    // canonicalising that answer AGAIN must return it completely
-    // unchanged — canonical form is meant to be a fixed point, not
-    // something that can still be transformed further. Tracked with its
-    // own counter, asserted against the file's own count of such cases
-    // further down, exactly like the section-skip guard above.
+    // Plus a stability check: for every case whose expected answer is a
+    // real tag (not malformed), canonicalising that answer AGAIN must
+    // return it completely unchanged — canonical form is a fixed point.
+    // Tracked with its own counter, asserted against the file's own count
+    // of such cases further down, exactly like the section-skip guard.
     let mut stability_checks_run: usize = 0;
-    for (idx, case) in fixtures.canonicalise.iter().enumerate() {
-        require_present(
-            &raw_value["canonicalise"][idx],
-            &["id", "rules", "input", "expected", "kind"],
-            &case_id_hint(&raw_value["canonicalise"][idx], "canonicalise"),
-        );
+    for case in &canonicalise_cases {
         cases_run += 1;
         let got = canonicalise(&case.input);
         let got_kind = match got.kind {
@@ -627,22 +768,13 @@ fn every_conformance_case_passes() {
             }
         }
     }
-    let stability_checks_in_file = fixtures
-        .canonicalise
+    let stability_checks_in_file = canonicalise_cases
         .iter()
         .filter(|c| c.expected.is_some())
         .count();
 
     // -- legacy_three_letter (LANG-002, LANG-003) -------------------------
-    for (idx, case) in fixtures.legacy_three_letter.iter().enumerate() {
-        require_present(
-            &raw_value["legacy_three_letter"][idx],
-            &["id", "rules", "input", "expected"],
-            &case_id_hint(
-                &raw_value["legacy_three_letter"][idx],
-                "legacy_three_letter",
-            ),
-        );
+    for case in &legacy_cases {
         cases_run += 1;
         let got = from_legacy_three_letter(&case.input).map(|t| t.tag);
         if got != case.expected {
@@ -654,12 +786,7 @@ fn every_conformance_case_passes() {
     }
 
     // -- iso639_2_write (TRACK-070) ----------------------------------------
-    for (idx, case) in fixtures.iso639_2_write.iter().enumerate() {
-        require_present(
-            &raw_value["iso639_2_write"][idx],
-            &["id", "rules", "input", "expected"],
-            &case_id_hint(&raw_value["iso639_2_write"][idx], "iso639_2_write"),
-        );
+    for case in &iso_cases {
         cases_run += 1;
         let tag = canonicalise(&case.input);
         let got = iso639_2_write(&tag);
@@ -677,12 +804,7 @@ fn every_conformance_case_passes() {
     }
 
     // -- posix_locale (LANG-004) ------------------------------------------
-    for (idx, case) in fixtures.posix_locale.iter().enumerate() {
-        require_present(
-            &raw_value["posix_locale"][idx],
-            &["id", "rules", "input", "expected"],
-            &case_id_hint(&raw_value["posix_locale"][idx], "posix_locale"),
-        );
+    for case in &posix_cases {
         cases_run += 1;
         let got = from_posix_locale(&case.input).map(|t| t.tag);
         if got != case.expected {
@@ -694,9 +816,7 @@ fn every_conformance_case_passes() {
     }
 
     // -- sidecar_name (TEXT-030) -------------------------------------------
-    for (idx, case) in fixtures.sidecar_name.iter().enumerate() {
-        let raw_case = &raw_value["sidecar_name"][idx];
-        let id_hint = case_id_hint(raw_case, "sidecar_name");
+    for case in &sidecar_cases {
         cases_run += 1;
         match case {
             SidecarCase::Build {
@@ -708,22 +828,9 @@ fn every_conformance_case_passes() {
                 number,
                 expected,
                 error,
+                ..
             } => {
-                require_present(
-                    raw_case,
-                    &[
-                        "id",
-                        "rules",
-                        "mode",
-                        "stem",
-                        "tag",
-                        "roles",
-                        "extension",
-                        "number",
-                        "expected",
-                    ],
-                    &id_hint,
-                );
+                require_null_expected_on_error(id, *error, expected.is_none());
                 let roles = roles_from_strs(roles);
                 let got = build_sidecar_name(stem, tag, &roles, extension, *number);
                 if *error {
@@ -734,6 +841,10 @@ fn every_conformance_case_passes() {
                         ));
                     }
                 } else {
+                    assert!(
+                        expected.is_some(),
+                        "{id}: a build case that is not refused must expect a file name, not null"
+                    );
                     match (&got, expected) {
                         (Ok(name), Some(exp)) if name == exp => {}
                         _ => failures.push(format!(
@@ -748,12 +859,8 @@ fn every_conformance_case_passes() {
                 stem,
                 filename,
                 expected,
+                ..
             } => {
-                require_present(
-                    raw_case,
-                    &["id", "rules", "mode", "stem", "filename", "expected"],
-                    &id_hint,
-                );
                 let got = parse_sidecar_name(stem, filename);
                 match (&got, expected) {
                     (None, None) => {}
@@ -783,12 +890,7 @@ fn every_conformance_case_passes() {
     }
 
     // -- canonical_order (LANG-010 to LANG-027) ---------------------------
-    for (idx, case) in fixtures.canonical_order.iter().enumerate() {
-        require_present(
-            &raw_value["canonical_order"][idx],
-            &["id", "rules", "description", "items", "expected"],
-            &case_id_hint(&raw_value["canonical_order"][idx], "canonical_order"),
-        );
+    for case in &order_cases {
         cases_run += 1;
         let mut items: Vec<OrderTestItem> = case
             .items
@@ -810,12 +912,7 @@ fn every_conformance_case_passes() {
     }
 
     // -- track_order (TRACK-050, TRACK-060) --------------------------------
-    for (idx, case) in fixtures.track_order.iter().enumerate() {
-        require_present(
-            &raw_value["track_order"][idx],
-            &["id", "rules", "description", "tracks", "expected"],
-            &case_id_hint(&raw_value["track_order"][idx], "track_order"),
-        );
+    for case in &track_cases {
         cases_run += 1;
         let mut tracks: Vec<TrackTestItem> = case
             .tracks
@@ -839,34 +936,9 @@ fn every_conformance_case_passes() {
     }
 
     // -- presentation_order (UI-020 to UI-050) -----------------------------
-    for (idx, case) in fixtures.presentation_order.iter().enumerate() {
-        require_present(
-            &raw_value["presentation_order"][idx],
-            &[
-                "id",
-                "rules",
-                "description",
-                "preferences",
-                "accessibility",
-                "display_names",
-                "collation_keys",
-                "items",
-                "expected",
-            ],
-            &case_id_hint(&raw_value["presentation_order"][idx], "presentation_order"),
-        );
+    for case in &presentation_cases {
         cases_run += 1;
-        let mut items: Vec<PresentationTestItem> = case
-            .items
-            .iter()
-            .map(|it| PresentationTestItem {
-                id: it.id.clone(),
-                tag: canonicalise(&it.tag),
-                kind: it.kind.as_deref().map(presentation_kind_from_str),
-                roles: roles_from_strs(&it.roles),
-                original: it.original.unwrap_or(false),
-            })
-            .collect();
+        let mut items = presentation_items_from(&case.items);
         let context = PresentationContext {
             preferences: preferences_from_strs(&case.preferences),
             accessibility: case.accessibility.resolve(),
@@ -874,9 +946,8 @@ fn every_conformance_case_passes() {
         sort_for_presentation(
             &mut items,
             &context,
-            compare_groups_for(&case.collation_keys),
+            compare_names_for(&case.collation_keys),
         );
-        let _ = &case.display_names; // supplied by the fixture; names themselves are never checked here (the crate holds no name data — see PresentationCase's schema doc)
         let got: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
         if got != case.expected {
             failures.push(format!(
@@ -887,34 +958,9 @@ fn every_conformance_case_passes() {
     }
 
     // -- subtitle_menu (UI-060) --------------------------------------------
-    for (idx, case) in fixtures.subtitle_menu.iter().enumerate() {
-        require_present(
-            &raw_value["subtitle_menu"][idx],
-            &[
-                "id",
-                "rules",
-                "description",
-                "preferences",
-                "accessibility",
-                "display_names",
-                "collation_keys",
-                "items",
-                "expected",
-            ],
-            &case_id_hint(&raw_value["subtitle_menu"][idx], "subtitle_menu"),
-        );
+    for case in &menu_cases {
         cases_run += 1;
-        let mut items: Vec<PresentationTestItem> = case
-            .items
-            .iter()
-            .map(|it| PresentationTestItem {
-                id: it.id.clone(),
-                tag: canonicalise(&it.tag),
-                kind: it.kind.as_deref().map(presentation_kind_from_str),
-                roles: roles_from_strs(&it.roles),
-                original: it.original.unwrap_or(false),
-            })
-            .collect();
+        let mut items = presentation_items_from(&case.items);
         let context = PresentationContext {
             preferences: preferences_from_strs(&case.preferences),
             accessibility: case.accessibility.resolve(),
@@ -922,7 +968,7 @@ fn every_conformance_case_passes() {
         let menu = subtitle_menu(
             &mut items,
             &context,
-            compare_groups_for(&case.collation_keys),
+            compare_names_for(&case.collation_keys),
         );
         let got: Vec<String> = menu
             .iter()
@@ -940,21 +986,7 @@ fn every_conformance_case_passes() {
     }
 
     // -- label (UI-070) ------------------------------------------------------
-    for (idx, case) in fixtures.label.iter().enumerate() {
-        require_present(
-            &raw_value["label"][idx],
-            &[
-                "id",
-                "rules",
-                "type",
-                "language_name",
-                "roles",
-                "role_names",
-                "channels",
-                "expected",
-            ],
-            &case_id_hint(&raw_value["label"][idx], "label"),
-        );
+    for case in &label_cases {
         cases_run += 1;
         let track_type = match case.kind.as_str() {
             "audio" => TrackType::Audio,
@@ -968,18 +1000,14 @@ fn every_conformance_case_passes() {
             &case.language_name,
             &roles,
             |r| {
-                let key = match r {
-                    Role::Alternate => "alternate",
-                    Role::AudioDescription => "audio_description",
-                    Role::Commentary => "commentary",
-                    Role::Sdh => "sdh",
-                    Role::Forced => "forced",
-                    Role::Other => "other",
-                };
                 role_names
-                    .get(key)
+                    .get(r.as_str())
                     .unwrap_or_else(|| {
-                        panic!("label case {} has no role_names entry for {key}", case.id)
+                        panic!(
+                            "label case {} has no role_names entry for {}",
+                            case.id,
+                            r.as_str()
+                        )
                     })
                     .clone()
             },
@@ -994,12 +1022,7 @@ fn every_conformance_case_passes() {
     }
 
     // -- match (MATCH-010 to MATCH-040) --------------------------------------
-    for (idx, case) in fixtures.match_cases.iter().enumerate() {
-        require_present(
-            &raw_value["match"][idx],
-            &["id", "rules", "preference", "candidate", "expected"],
-            &case_id_hint(&raw_value["match"][idx], "match"),
-        );
+    for case in &match_cases {
         cases_run += 1;
         let pref = canonicalise(&case.preference);
         let cand = canonicalise(&case.candidate);
@@ -1020,32 +1043,10 @@ fn every_conformance_case_passes() {
     }
 
     // -- auto_select_audio (AUTO-010, AUTO-020, AUTO-040) --------------------
-    for (idx, case) in fixtures.auto_select_audio.iter().enumerate() {
-        require_present(
-            &raw_value["auto_select_audio"][idx],
-            &[
-                "id",
-                "rules",
-                "description",
-                "preferences",
-                "accessibility",
-                "tracks",
-                "expected",
-            ],
-            &case_id_hint(&raw_value["auto_select_audio"][idx], "auto_select_audio"),
-        );
+    for case in &audio_cases {
         cases_run += 1;
-        let tracks: Vec<SelectTestTrack> = case
-            .tracks
-            .iter()
-            .map(|t| SelectTestTrack {
-                id: t.id.clone(),
-                tag: canonicalise(&t.tag),
-                roles: roles_from_strs(&t.roles),
-                default: t.default.unwrap_or(false),
-                original: t.original.unwrap_or(false),
-            })
-            .collect();
+        require_null_expected_on_error(&case.id, case.error, case.expected.is_none());
+        let tracks = select_tracks_from(&case.tracks);
         let preferences = preferences_from_strs(&case.preferences);
         let accessibility = case.accessibility.resolve();
 
@@ -1084,46 +1085,16 @@ fn every_conformance_case_passes() {
     }
 
     // -- auto_select_subtitle (AUTO-010, AUTO-030, AUTO-040) -----------------
-    for (idx, case) in fixtures.auto_select_subtitle.iter().enumerate() {
-        require_present(
-            &raw_value["auto_select_subtitle"][idx],
-            &[
-                "id",
-                "rules",
-                "description",
-                "mode",
-                "preferences",
-                "accessibility",
-                "audio",
-                "tracks",
-                "expected",
-            ],
-            &case_id_hint(
-                &raw_value["auto_select_subtitle"][idx],
-                "auto_select_subtitle",
-            ),
-        );
+    for case in &subtitle_cases {
         cases_run += 1;
-        let tracks: Vec<SelectTestTrack> = case
-            .tracks
-            .iter()
-            .map(|t| SelectTestTrack {
-                id: t.id.clone(),
-                tag: canonicalise(&t.tag),
-                roles: roles_from_strs(&t.roles),
-                default: t.default.unwrap_or(false),
-                original: t.original.unwrap_or(false),
-            })
-            .collect();
+        require_null_expected_on_error(&case.id, case.error, case.expected.is_none());
+        let tracks = select_tracks_from(&case.tracks);
         let preferences = preferences_from_strs(&case.preferences);
         let accessibility = case.accessibility.resolve();
-        let mode = match case.mode.as_str() {
-            "automatic" => SubtitleMode::Automatic,
-            "always" => SubtitleMode::Always,
-            "forced_only" => SubtitleMode::ForcedOnly,
-            "off" => SubtitleMode::Off,
-            other => panic!("case {} has an unknown mode {other:?}", case.id),
-        };
+        let mode: SubtitleMode = case
+            .mode
+            .parse()
+            .unwrap_or_else(|_| panic!("case {} has an unknown mode {:?}", case.id, case.mode));
         let audio = case.audio.as_ref().map(|a| canonicalise(a));
 
         let got = select_subtitle(&tracks, audio.as_ref(), &preferences, mode, &accessibility);
@@ -1173,12 +1144,212 @@ fn every_conformance_case_passes() {
          {stability_checks_in_file} canonicalise cases with a non-null expected answer"
     );
 
-    assert!(
-        failures.is_empty(),
-        "{} of {} conformance cases (including {} stability checks) failed:\n{}",
-        failures.len(),
-        cases_in_file + stability_checks_in_file,
+    Report {
+        failures,
+        cases_in_file,
         stability_checks_in_file,
-        failures.join("\n")
+    }
+}
+
+#[test]
+fn every_conformance_case_passes() {
+    let report = run_conformance(&fixture_text());
+    assert!(
+        report.failures.is_empty(),
+        "{} of {} conformance cases (including {} stability checks) failed:\n{}",
+        report.failures.len(),
+        report.cases_in_file + report.stability_checks_in_file,
+        report.stability_checks_in_file,
+        report.failures.join("\n")
     );
+}
+
+// ---------------------------------------------------------------------
+// The harness refuses a damaged case file (policy 8.1)
+// ---------------------------------------------------------------------
+//
+// Each test damages a copy of the real case file in one way and requires
+// the harness to FAIL, for the stated reason (`should_panic(expected =
+// …)` checks the message). If a future change made the harness quietly
+// accept any of these, the test would fail — which is the point.
+
+mod harness_refuses {
+    use super::*;
+
+    /// The real case file with one case edited by `edit`.
+    fn with_case(section: &str, id: &str, edit: impl FnOnce(&mut Value)) -> String {
+        let mut fixtures: Value = serde_json::from_str(&fixture_text()).unwrap();
+        let case = fixtures[section]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|c| c["id"] == id)
+            .unwrap_or_else(|| panic!("no case {section}/{id} to damage"));
+        edit(case);
+        serde_json::to_string(&fixtures).unwrap()
+    }
+
+    /// The real case file with its top level edited by `edit`.
+    fn with_top(edit: impl FnOnce(&mut Map<String, Value>)) -> String {
+        let mut fixtures: Value = serde_json::from_str(&fixture_text()).unwrap();
+        edit(fixtures.as_object_mut().unwrap());
+        serde_json::to_string(&fixtures).unwrap()
+    }
+
+    fn remove(value: &mut Value, key: &str) {
+        assert!(
+            value.as_object_mut().unwrap().remove(key).is_some(),
+            "no {key} to remove"
+        );
+    }
+
+    #[test]
+    fn the_undamaged_file_is_accepted() {
+        // The control: the same path the damaged copies take, undamaged.
+        let report = run_conformance(&with_top(|_| {}));
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "sidecar_name/sidecar-07: fixture case does not match the schema — missing field `number`"
+    )]
+    fn a_parse_case_missing_its_expected_number() {
+        run_conformance(&with_case("sidecar_name", "sidecar-07", |c| {
+            remove(&mut c["expected"], "number")
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "missing field `unrecognised`")]
+    fn a_parse_case_missing_its_expected_unrecognised() {
+        run_conformance(&with_case("sidecar_name", "sidecar-07", |c| {
+            remove(&mut c["expected"], "unrecognised")
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "missing field `tag`")]
+    fn a_parse_case_missing_its_expected_tag() {
+        run_conformance(&with_case("sidecar_name", "sidecar-07", |c| {
+            remove(&mut c["expected"], "tag")
+        }));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "auto_select_audio/audio-01: fixture case does not match the schema — missing field `roles`"
+    )]
+    fn a_selection_track_missing_its_roles() {
+        run_conformance(&with_case("auto_select_audio", "audio-01", |c| {
+            remove(&mut c["tracks"][0], "roles")
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "missing field `roles`")]
+    fn a_subtitle_selection_track_missing_its_roles() {
+        run_conformance(&with_case("auto_select_subtitle", "subs-01", |c| {
+            remove(&mut c["tracks"][0], "roles")
+        }));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "legacy_three_letter/legacy-18: fixture case does not match the schema — unknown field `error`"
+    )]
+    fn an_error_flag_in_a_section_without_refusal_cases() {
+        run_conformance(&with_case("legacy_three_letter", "legacy-18", |c| {
+            c["error"] = Value::Bool(true);
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown field `error`")]
+    fn an_error_flag_on_a_parse_case() {
+        run_conformance(&with_case("sidecar_name", "sidecar-07", |c| {
+            c["error"] = Value::Bool(true);
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown field `error`")]
+    fn an_error_flag_in_the_match_section() {
+        run_conformance(&with_case("match", "match-01", |c| {
+            c["error"] = Value::Bool(true);
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "`error` may only be true")]
+    fn an_error_flag_set_to_false() {
+        run_conformance(&with_case("auto_select_audio", "audio-01", |c| {
+            c["error"] = Value::Bool(false);
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "carries error: true but its expected answer is not null")]
+    fn an_error_case_that_still_expects_an_answer() {
+        run_conformance(&with_case("auto_select_audio", "audio-01", |c| {
+            c["error"] = Value::Bool(true);
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "missing field `channels`")]
+    fn a_label_case_missing_its_nullable_channels() {
+        run_conformance(&with_case("label", "label-02", |c| remove(c, "channels")));
+    }
+
+    #[test]
+    #[should_panic(expected = "missing field `audio`")]
+    fn a_subtitle_case_missing_its_nullable_audio() {
+        run_conformance(&with_case("auto_select_subtitle", "subs-15", |c| {
+            remove(c, "audio")
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown field `lang`")]
+    fn an_unknown_field_inside_a_track() {
+        run_conformance(&with_case("track_order", "tracks-01", |c| {
+            c["tracks"][0]["lang"] = Value::String("en".into());
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "missing field `t`")]
+    fn a_write_case_missing_one_form() {
+        run_conformance(&with_case("iso639_2_write", "write-01", |c| {
+            remove(&mut c["expected"], "t")
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "does not know how to run")]
+    fn an_unknown_section() {
+        run_conformance(&with_top(|top| {
+            top.insert(
+                "frobnicate".into(),
+                serde_json::json!([{ "id": "frob-01" }]),
+            );
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "fixture section \"label\" is empty")]
+    fn an_empty_section() {
+        run_conformance(&with_top(|top| {
+            top.insert("label".into(), serde_json::json!([]));
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "fixture file has no array section \"match\"")]
+    fn a_missing_section() {
+        run_conformance(&with_top(|top| {
+            top.remove("match");
+        }));
+    }
 }

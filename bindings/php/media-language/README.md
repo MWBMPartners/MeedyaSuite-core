@@ -228,8 +228,12 @@ the case id, what was expected and what was actually returned. Before a
 single case runs, the runner also refuses outright — rather than quietly
 running a smaller or differently-shaped test — if the fixture file has a
 section this runner has never heard of, is missing a section it needs, has
-a section with nothing in it, or has a case that is missing a field the
-schema requires.
+a section with nothing in it, or has a case that does not match the
+schema's shape: a missing required field (including inside a nested
+`expected` object and in every item and track), a field the schema does
+not allow (so an `"error": true` in a section that has no refusal cases is
+refused, not ignored), or an `error` flag that is not `true` or sits on a
+case that does not expect `null`. Each refusal names the case and the field.
 
 Needing no PHP extension applies here too — `php -n` (every extension
 disabled) runs this file exactly the same as an ordinary `php`.

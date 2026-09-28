@@ -33,8 +33,13 @@
  * success - on an unknown section, a missing or empty section it needs, or
  * a case that is missing a field the schema requires: those checks run
  * before a single case is executed (see checkSections() and
- * requireFields() below), so a broken fixture file is caught immediately
- * rather than producing a confusing, partial run.
+ * checkCaseShapes() below), so a broken fixture file is caught immediately
+ * rather than producing a confusing, partial run. checkCaseShapes() checks
+ * every case against the schema's own shape - required fields, including
+ * inside nested objects and in every item and track; no field the schema
+ * does not allow (so an `error` flag in a section that has no refusal cases
+ * is refused, not ignored); and `error`, where allowed, only ever `true`,
+ * on a case that expects null.
  *
  * Copyright (c) 2026 MeedyaSuite
  * Licensed under the MIT License. See LICENSE file in the project root.
@@ -76,40 +81,100 @@ const EXPECTED_SECTIONS = [
 const METADATA_KEYS = ['$schema', 'policy', 'policy_version', 'fixtures_version', 'data_version'];
 
 /**
- * The fields every case in each section MUST have, taken directly from the
- * fixture schema's own `required` lists (bcp47-language-policy-v1.schema.json).
- * `sidecar_name` and `presentation_order`/`subtitle_menu` cases are checked
- * against the right list for their own shape (build vs parse; the shared
- * presentationCase shape) inside their own loops below, not from this table.
+ * The shape every case in each section MUST have, taken directly from the
+ * fixture schema (bcp47-language-policy-v1.schema.json): 'required' fields,
+ * 'optional' ones, and - because the schema says `additionalProperties:
+ * false` everywhere - nothing else. 'objects' names fields holding a nested
+ * object with its own shape ('nullable' ones may also be null), 'lists'
+ * fields holding a list of objects of one shape, and 'maps' fields holding
+ * an object with free-form keys (localised names) whose keys are not
+ * checked. 'refusal' marks the three case shapes that may carry
+ * `error: true`.
  *
- * @var array<string, list<string>>
+ * Before policy revision 4 this runner only checked each case's top-level
+ * required fields: a nested `expected` object, the items and tracks inside
+ * a case, and unknown fields went unchecked - so, for one, a selection
+ * track with no `roles` quietly counted as having none, and an `error: true`
+ * flag in a section with no refusal cases was silently ignored.
  */
-const REQUIRED_FIELDS = [
-    'canonicalise' => ['id', 'rules', 'input', 'expected', 'kind'],
-    'legacy_three_letter' => ['id', 'rules', 'input', 'expected'],
-    'iso639_2_write' => ['id', 'rules', 'input', 'expected'],
-    'posix_locale' => ['id', 'rules', 'input', 'expected'],
-    'canonical_order' => ['id', 'rules', 'description', 'items', 'expected'],
-    'track_order' => ['id', 'rules', 'description', 'tracks', 'expected'],
-    'label' => ['id', 'rules', 'type', 'language_name', 'roles', 'role_names', 'channels', 'expected'],
-    'match' => ['id', 'rules', 'preference', 'candidate', 'expected'],
-    'auto_select_audio' => ['id', 'rules', 'description', 'preferences', 'accessibility', 'tracks', 'expected'],
-    'auto_select_subtitle' => [
-        'id', 'rules', 'description', 'mode', 'preferences', 'accessibility', 'audio', 'tracks', 'expected',
+const ACCESSIBILITY_SHAPE = ['required' => [], 'optional' => ['audio_description', 'captions']];
+const SELECT_TRACK_SHAPE = ['required' => ['id', 'tag', 'roles'], 'optional' => ['default', 'original']];
+const PRESENTATION_CASE_SHAPE = [
+    'required' => [
+        'id', 'rules', 'description', 'preferences', 'accessibility', 'display_names', 'collation_keys',
+        'items', 'expected',
+    ],
+    'optional' => ['selected'],
+    'objects' => ['accessibility' => ACCESSIBILITY_SHAPE],
+    'maps' => ['display_names', 'collation_keys'],
+    'lists' => [
+        'items' => ['required' => ['id', 'tag'], 'optional' => ['type', 'roles', 'original']],
     ],
 ];
-
-/** The fixture schema's presentationCase shape, shared by presentation_order
- * and subtitle_menu (both are literally `$ref`s to the same $defs entry). */
-const PRESENTATION_CASE_FIELDS = [
-    'id', 'rules', 'description', 'preferences', 'accessibility', 'display_names', 'collation_keys', 'items',
-    'expected',
+const CASE_SHAPES = [
+    'canonicalise' => ['required' => ['id', 'rules', 'input', 'expected', 'kind'], 'optional' => ['note']],
+    'legacy_three_letter' => ['required' => ['id', 'rules', 'input', 'expected'], 'optional' => []],
+    'iso639_2_write' => [
+        'required' => ['id', 'rules', 'input', 'expected'],
+        'optional' => ['description'],
+        'objects' => ['expected' => ['required' => ['b', 't'], 'optional' => []]],
+    ],
+    'posix_locale' => ['required' => ['id', 'rules', 'input', 'expected'], 'optional' => ['description']],
+    'sidecar_name (build)' => [
+        'required' => ['id', 'rules', 'mode', 'stem', 'tag', 'roles', 'extension', 'number', 'expected'],
+        'optional' => ['error', 'description'],
+        'refusal' => true,
+    ],
+    'sidecar_name (parse)' => [
+        'required' => ['id', 'rules', 'mode', 'stem', 'filename', 'expected'],
+        'optional' => [],
+        'objects' => [
+            'expected' => [
+                'required' => ['tag', 'unrecognised', 'roles', 'number', 'extension'],
+                'optional' => [],
+                'nullable' => true,
+            ],
+        ],
+    ],
+    'canonical_order' => [
+        'required' => ['id', 'rules', 'description', 'items', 'expected'],
+        'optional' => [],
+        'lists' => ['items' => ['required' => ['tag'], 'optional' => ['id', 'original']]],
+    ],
+    'track_order' => [
+        'required' => ['id', 'rules', 'description', 'tracks', 'expected'],
+        'optional' => [],
+        'lists' => ['tracks' => ['required' => ['id', 'type', 'tag', 'roles'], 'optional' => ['original']]],
+    ],
+    'presentation_order' => PRESENTATION_CASE_SHAPE,
+    'subtitle_menu' => PRESENTATION_CASE_SHAPE,
+    'label' => [
+        'required' => ['id', 'rules', 'type', 'language_name', 'roles', 'role_names', 'channels', 'expected'],
+        'optional' => ['description'],
+        'maps' => ['role_names'],
+    ],
+    'match' => [
+        'required' => ['id', 'rules', 'preference', 'candidate', 'expected'],
+        'optional' => ['description'],
+        'objects' => ['expected' => ['required' => ['level', 'distance'], 'optional' => []]],
+    ],
+    'auto_select_audio' => [
+        'required' => ['id', 'rules', 'description', 'preferences', 'accessibility', 'tracks', 'expected'],
+        'optional' => ['error'],
+        'objects' => ['accessibility' => ACCESSIBILITY_SHAPE],
+        'lists' => ['tracks' => SELECT_TRACK_SHAPE],
+        'refusal' => true,
+    ],
+    'auto_select_subtitle' => [
+        'required' => [
+            'id', 'rules', 'description', 'mode', 'preferences', 'accessibility', 'audio', 'tracks', 'expected',
+        ],
+        'optional' => ['error'],
+        'objects' => ['accessibility' => ACCESSIBILITY_SHAPE],
+        'lists' => ['tracks' => SELECT_TRACK_SHAPE],
+        'refusal' => true,
+    ],
 ];
-
-/** sidecar_name is the one section whose cases come in two different
- * required-field shapes (the schema's `oneOf`), keyed by 'mode'. */
-const SIDECAR_BUILD_FIELDS = ['id', 'rules', 'mode', 'stem', 'tag', 'roles', 'extension', 'number', 'expected'];
-const SIDECAR_PARSE_FIELDS = ['id', 'rules', 'mode', 'stem', 'filename', 'expected'];
 
 /**
  * @param array<int, string> $argv
@@ -182,35 +247,109 @@ function checkSections(array $fixtures): void
     }
 }
 
-/**
- * Fails the whole run immediately if $case is missing any field in
- * $fields. Uses array_key_exists(), not isset() - a required field whose
- * value is legitimately null (several fields in this schema allow null,
- * such as 'expected' on an error case) still counts as present; only an
- * ABSENT key is a fixture error. Reading a case's fields with plain array
- * access (`$case['foo']`) before this check would, at best, produce a PHP
- * warning that a careless CI setup could miss, and at worst silently read
- * null and let a case pass or fail for the wrong reason.
- *
- * @param array<string, mixed> $case
- * @param list<string> $fields
- */
-function requireFields(array $case, array $fields, string $section): void
+/** Stops the whole run with a fixture-shape error (policy section 8.1). */
+function fixtureError(string $where, string $problem): never
 {
-    $missing = [];
-    foreach ($fields as $field) {
-        if (!array_key_exists($field, $case)) {
-            $missing[] = $field;
+    fwrite(STDERR, "Fixture error in {$where}: {$problem}\n");
+    exit(1);
+}
+
+/** True for a JSON object decoded as a PHP array (an empty `{}` decodes to
+ * `[]`, which counts; a non-empty list does not). */
+function isJsonObject(mixed $value): bool
+{
+    return is_array($value) && ($value === [] || !array_is_list($value));
+}
+
+/**
+ * Checks one object against one shape from CASE_SHAPES (see its doc
+ * comment), recursing into nested objects and lists, and stops the run on
+ * the first problem. Uses array_key_exists(), not isset(): a required field
+ * whose value is legitimately null (several are, such as 'expected' on a
+ * refusal case) still counts as present; only an ABSENT key is an error.
+ *
+ * @param array<string, mixed> $shape
+ */
+function checkShape(mixed $value, array $shape, string $where): void
+{
+    if (!isJsonObject($value)) {
+        fixtureError($where, 'is not a JSON object.');
+    }
+    $missing = array_values(array_filter(
+        $shape['required'],
+        static fn (string $field): bool => !array_key_exists($field, $value)
+    ));
+    if ($missing !== []) {
+        fixtureError($where, 'missing required field(s): ' . implode(', ', $missing));
+    }
+    $allowed = array_merge($shape['required'], $shape['optional']);
+    $unknown = array_values(array_diff(array_keys($value), $allowed));
+    if ($unknown !== []) {
+        fixtureError(
+            $where,
+            'field(s) the schema does not allow here: ' . implode(', ', $unknown)
+            . (in_array('error', $unknown, true) ? ' (this section has no refusal cases)' : '')
+        );
+    }
+    foreach ($shape['objects'] ?? [] as $field => $inner) {
+        if (!array_key_exists($field, $value)) {
+            continue;
+        }
+        if ($value[$field] === null && ($inner['nullable'] ?? false)) {
+            continue;
+        }
+        checkShape($value[$field], $inner, "{$where} -> {$field}");
+    }
+    foreach ($shape['maps'] ?? [] as $field) {
+        if (array_key_exists($field, $value) && !isJsonObject($value[$field])) {
+            fixtureError("{$where} -> {$field}", 'is not a JSON object.');
         }
     }
-    if ($missing !== []) {
-        $id = is_string($case['id'] ?? null) ? $case['id'] : '(no id)';
-        fwrite(
-            STDERR,
-            "Fixture error in '{$section}' case '{$id}': missing required field(s): "
-            . implode(', ', $missing) . "\n"
-        );
-        exit(1);
+    foreach ($shape['lists'] ?? [] as $field => $inner) {
+        if (!array_key_exists($field, $value)) {
+            continue;
+        }
+        if (!is_array($value[$field]) || !array_is_list($value[$field])) {
+            fixtureError("{$where} -> {$field}", 'is not a list.');
+        }
+        foreach ($value[$field] as $index => $item) {
+            checkShape($item, $inner, "{$where} -> {$field}[{$index}]");
+        }
+    }
+    if ($shape['refusal'] ?? false) {
+        if (array_key_exists('error', $value)) {
+            if ($value['error'] !== true) {
+                fixtureError($where, "'error' may only be true (the schema's const); leave it out instead.");
+            }
+            if ($value['expected'] !== null) {
+                fixtureError($where, "carries error: true but its expected answer is not null.");
+            }
+        }
+    }
+}
+
+/**
+ * Checks every case in every section against its shape before anything
+ * runs (policy section 8.1). sidecar_name cases are checked against the
+ * build or parse shape their own 'mode' names.
+ *
+ * @param array<string, mixed> $fixtures
+ */
+function checkCaseShapes(array $fixtures): void
+{
+    foreach (EXPECTED_SECTIONS as $section) {
+        foreach ($fixtures[$section] as $index => $case) {
+            $id = is_array($case) && is_string($case['id'] ?? null) ? $case['id'] : "(case {$index}, no id)";
+            $shapeName = $section;
+            if ($section === 'sidecar_name') {
+                $mode = is_array($case) ? ($case['mode'] ?? null) : null;
+                if ($mode !== 'build' && $mode !== 'parse') {
+                    fixtureError("'sidecar_name' case '{$id}'", "'mode' must be 'build' or 'parse'.");
+                }
+                $shapeName = "sidecar_name ({$mode})";
+            }
+            checkShape($case, CASE_SHAPES[$shapeName], "'{$shapeName}' case '{$id}'");
+        }
     }
 }
 
@@ -278,6 +417,7 @@ if (!is_array($fixtures)) {
 }
 
 checkSections($fixtures);
+checkCaseShapes($fixtures);
 
 $declaredTotal = 0;
 foreach (EXPECTED_SECTIONS as $section) {
@@ -293,7 +433,6 @@ try {
 
 // --- canonicalise (LANG-001, LANG-026) --------------------------------
 foreach ($fixtures['canonicalise'] as $case) {
-    requireFields($case, REQUIRED_FIELDS['canonicalise'], 'canonicalise');
     $casesRun++;
     $tag = Policy::canonicalise($case['input']);
     $actual = [$tag->isMalformed() ? null : $tag->tag, $tag->kind->value];
@@ -314,21 +453,18 @@ foreach ($fixtures['canonicalise'] as $case) {
 
 // --- legacy_three_letter (LANG-002, LANG-003) --------------------------
 foreach ($fixtures['legacy_three_letter'] as $case) {
-    requireFields($case, REQUIRED_FIELDS['legacy_three_letter'], 'legacy_three_letter');
     $casesRun++;
     check($case['id'], Policy::fromLegacyThreeLetter($case['input']), $case['expected']);
 }
 
 // --- iso639_2_write (TRACK-070) ------------------------------------------
 foreach ($fixtures['iso639_2_write'] as $case) {
-    requireFields($case, REQUIRED_FIELDS['iso639_2_write'], 'iso639_2_write');
     $casesRun++;
     check($case['id'], Policy::iso6392CodesForWriting($case['input']), $case['expected']);
 }
 
 // --- posix_locale (LANG-004) --------------------------------------------
 foreach ($fixtures['posix_locale'] as $case) {
-    requireFields($case, REQUIRED_FIELDS['posix_locale'], 'posix_locale');
     $casesRun++;
     check($case['id'], Policy::fromPosixLocale($case['input']), $case['expected']);
 }
@@ -337,7 +473,6 @@ foreach ($fixtures['posix_locale'] as $case) {
 foreach ($fixtures['sidecar_name'] as $case) {
     $casesRun++;
     if ($case['mode'] === 'build') {
-        requireFields($case, SIDECAR_BUILD_FIELDS, 'sidecar_name (build)');
         if ($case['error'] ?? false) {
             checkRefused(
                 $case['id'],
@@ -360,7 +495,6 @@ foreach ($fixtures['sidecar_name'] as $case) {
         );
         check($case['id'], $name, $case['expected']);
     } else {
-        requireFields($case, SIDECAR_PARSE_FIELDS, 'sidecar_name (parse)');
         $parsed = Policy::parseSidecarName($case['stem'], $case['filename']);
         // The case file checks five parts. parseSidecarName() also returns
         // 'ignored' (the parts TEXT-030 says SHOULD be reported), which the
@@ -381,7 +515,6 @@ foreach ($fixtures['sidecar_name'] as $case) {
 
 // --- canonical_order (LANG-010 to LANG-027) -----------------------------
 foreach ($fixtures['canonical_order'] as $case) {
-    requireFields($case, REQUIRED_FIELDS['canonical_order'], 'canonical_order');
     $casesRun++;
     $items = array_map(
         static fn (array $item): array => [
@@ -398,7 +531,6 @@ foreach ($fixtures['canonical_order'] as $case) {
 
 // --- track_order (TRACK-050, TRACK-060) ---------------------------------
 foreach ($fixtures['track_order'] as $case) {
-    requireFields($case, REQUIRED_FIELDS['track_order'], 'track_order');
     $casesRun++;
     $ordered = Policy::sortTrackOrder($case['tracks']);
     $ids = array_map(static fn (array $t): string => $t['id'], $ordered);
@@ -423,7 +555,6 @@ function presentationGroupCompare(array $collationKeys): callable
 
 // --- presentation_order (UI-020 to UI-050) ------------------------------
 foreach ($fixtures['presentation_order'] as $case) {
-    requireFields($case, PRESENTATION_CASE_FIELDS, 'presentation_order');
     $casesRun++;
     $ordered = Policy::sortPresentation(
         $case['items'],
@@ -437,7 +568,6 @@ foreach ($fixtures['presentation_order'] as $case) {
 
 // --- subtitle_menu (UI-060) ---------------------------------------------
 foreach ($fixtures['subtitle_menu'] as $case) {
-    requireFields($case, PRESENTATION_CASE_FIELDS, 'subtitle_menu');
     $casesRun++;
     $ordered = Policy::sortSubtitleMenu(
         $case['items'],
@@ -451,7 +581,6 @@ foreach ($fixtures['subtitle_menu'] as $case) {
 
 // --- label (UI-070) ------------------------------------------------------
 foreach ($fixtures['label'] as $case) {
-    requireFields($case, REQUIRED_FIELDS['label'], 'label');
     $casesRun++;
     $label = Policy::buildLabel(
         $case['type'],
@@ -465,7 +594,6 @@ foreach ($fixtures['label'] as $case) {
 
 // --- match (MATCH-010 to MATCH-040) --------------------------------------
 foreach ($fixtures['match'] as $case) {
-    requireFields($case, REQUIRED_FIELDS['match'], 'match');
     $casesRun++;
     $result = Policy::matchTags($case['preference'], $case['candidate']);
     $actual = ['level' => $result->level->value, 'distance' => $result->distance];
@@ -474,7 +602,6 @@ foreach ($fixtures['match'] as $case) {
 
 // --- auto_select_audio (AUTO-010, AUTO-020, AUTO-040) --------------------
 foreach ($fixtures['auto_select_audio'] as $case) {
-    requireFields($case, REQUIRED_FIELDS['auto_select_audio'], 'auto_select_audio');
     $casesRun++;
     if ($case['error'] ?? false) {
         // AUTO-010: duplicate identifiers must be refused, never guessed
@@ -501,7 +628,6 @@ foreach ($fixtures['auto_select_audio'] as $case) {
 
 // --- auto_select_subtitle (AUTO-010, AUTO-030, AUTO-040) -----------------
 foreach ($fixtures['auto_select_subtitle'] as $case) {
-    requireFields($case, REQUIRED_FIELDS['auto_select_subtitle'], 'auto_select_subtitle');
     $casesRun++;
     $mode = SubtitleMode::from($case['mode']);
     if ($case['error'] ?? false) {
