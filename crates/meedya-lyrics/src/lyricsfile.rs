@@ -129,7 +129,11 @@ pub struct LyricsfileMetadata {
     /// a language; until the stand-in review of revision 5, `parse` still
     /// stored whatever text a file held.) `None` when the source gave no
     /// language at all. A caller who builds the struct by hand can put
-    /// anything here; nothing checks it until the next `parse`.
+    /// anything here; nothing checks it in memory, but
+    /// [`Lyricsfile::to_yaml`] reads it the way `parse` does before writing
+    /// it, so a file never says `language: English` — it says `und`, with
+    /// `English` kept in `language_original` (from the stand-in review of
+    /// revision 6; until then `to_yaml` wrote the text as it was).
     ///
     /// [`Lyricsfile::to_yaml`] always writes this value in quotes
     /// (`language: 'no'`), because a YAML 1.1 reader such as PyYAML reads
@@ -137,19 +141,26 @@ pub struct LyricsfileMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 
-    /// The language text exactly as the source gave it, kept ONLY when it
-    /// was not recognised — in which case [`language`](Self::language) is
-    /// `und` (LANG-002: the original text is kept alongside, so nothing is
-    /// lost and a person can fix it). `None` whenever `language` is a
-    /// recognised tag or absent.
+    /// The language text exactly as the source gave it, when it was not
+    /// recognised — in which case [`language`](Self::language) is `und`
+    /// (LANG-002: the original text is kept alongside, so nothing is lost
+    /// and a person can fix it).
     ///
-    /// When a file given to [`Lyricsfile::parse`] already has this field,
-    /// it is kept exactly as the file gives it, whatever `language` says:
-    /// if `language` is then unrecognised too, `language` becomes `und` and
-    /// its own text is not kept (the file already names its original text,
-    /// and there is nowhere to keep a second one); if `language` is
-    /// recognised, both are kept as they are. Written in quotes by
-    /// [`Lyricsfile::to_yaml`], like `language`.
+    /// This paragraph describes what [`Lyricsfile::from_ttml`] gives: this
+    /// field is set ONLY when `xml:lang` was not recognised, and is `None`
+    /// whenever `language` is a recognised tag or absent. ([`Lyricsfile::from_lrc`]
+    /// never sets either field: LRC has no language.)
+    ///
+    /// [`Lyricsfile::parse`] differs, because a file may already have this
+    /// field: it is kept exactly as the file gives it, whatever `language`
+    /// says. If `language` is then unrecognised too, `language` becomes
+    /// `und` and its own text is not kept (the file already names its
+    /// original text, and there is nowhere to keep a second one). If
+    /// `language` is recognised, both are kept as they are — so after
+    /// `parse`, unlike after `from_ttml`, a recognised `language` CAN come
+    /// with a `language_original`. [`Lyricsfile::to_yaml`] applies the same
+    /// rules as `parse` to what it writes, and writes this field in quotes,
+    /// like `language`.
     ///
     /// **Not part of LRCGET's Lyricsfile 1.0 schema** — a MeedyaSuite
     /// addition, written to YAML only when present
@@ -279,6 +290,17 @@ impl Lyricsfile {
     /// Serialise to a YAML string. Always emits `version:
     /// "<LYRICSFILE_VERSION>"` as the first field.
     ///
+    /// **The language is written as [`parse`](Self::parse) would read it.**
+    /// Before writing, `to_yaml` reads `metadata.language` through the same
+    /// LANG-002 reader `parse` uses, on its own copy (the struct is not
+    /// changed): a recognised value is written canonical (`eng` → `en`), and
+    /// one it does not recognise (`English`) is written as `und`, with the
+    /// text in `language_original` unless that is already set. So a file
+    /// never holds a language name or an old code in `language`, and
+    /// `parse` reads back exactly what was written. (Until the stand-in
+    /// review of revision 6 `to_yaml` wrote whatever the struct held — a
+    /// caller who built it by hand could export `language: English`.)
+    ///
     /// `metadata.language` and `metadata.language_original` are always
     /// written in quotes (`language: 'no'`). The YAML library this crate
     /// uses follows YAML 1.2, where `no` is just text, so it writes `no`
@@ -296,9 +318,13 @@ impl Lyricsfile {
         // it occurs exactly once in the output (lyrics could, in theory,
         // contain the same letters) — otherwise the next number is tried,
         // so a stand-in is never mistaken for, or replaced inside, text.
+        // What `parse` would make of the language — on a copy of the
+        // metadata, so `self` is not changed.
+        let mut metadata = self.metadata.clone();
+        metadata.read_language();
         let values = [
-            self.metadata.language.as_deref(),
-            self.metadata.language_original.as_deref(),
+            metadata.language.as_deref(),
+            metadata.language_original.as_deref(),
         ];
         for attempt in 0..1000u32 {
             let stand_ins = [
@@ -790,6 +816,47 @@ lines:
             parsed_language("  language: EN\n  language_original: English\n"),
             (some("en"), some("English"))
         );
+    }
+
+    #[test]
+    fn to_yaml_writes_the_language_as_parse_reads_it() {
+        // Found by the stand-in review of revision 6: a struct built by
+        // hand with a language NAME or an old code was exported as it was
+        // (`language: 'English'`), a value `parse` then turned into
+        // something else. Now the file says what `parse` makes of it.
+        let some = |s: &str| Some(s.to_string());
+        let cases = [
+            // (language, language_original) in the struct → in the file
+            ((some("English"), None), ("'und'", some("'English'"))),
+            ((some("eng"), None), ("'en'", None)),
+            ((some("EN-gb"), None), ("'en-GB'", None)),
+            // An original already set is kept; the unrecognised language's
+            // own text is not kept a second time (as in `parse`).
+            ((some("zzz"), some("Zed")), ("'und'", some("'Zed'"))),
+        ];
+        for ((language, original), (written, written_original)) in cases {
+            let mut lf = Lyricsfile::new("T", "A");
+            lf.metadata.language = language.clone();
+            lf.metadata.language_original = original.clone();
+            let yaml = lf.to_yaml().expect("to_yaml");
+            assert!(
+                yaml.contains(&format!("  language: {written}\n")),
+                "{language:?}: {yaml}"
+            );
+            match &written_original {
+                Some(text) => assert!(
+                    yaml.contains(&format!("  language_original: {text}\n")),
+                    "{language:?}: {yaml}"
+                ),
+                None => assert!(!yaml.contains("language_original"), "{language:?}: {yaml}"),
+            }
+            // The struct itself is not changed…
+            assert_eq!(lf.metadata.language, language);
+            assert_eq!(lf.metadata.language_original, original);
+            // …and what `parse` reads back is written again unchanged.
+            let back = Lyricsfile::parse(&yaml).expect("parse");
+            assert_eq!(back.to_yaml().expect("to_yaml"), yaml, "{language:?}");
+        }
     }
 
     #[test]
