@@ -362,6 +362,19 @@ foreach ($fixtures['sidecar_name'] as $case) {
     } else {
         requireFields($case, SIDECAR_PARSE_FIELDS, 'sidecar_name (parse)');
         $parsed = Policy::parseSidecarName($case['stem'], $case['filename']);
+        // The case file checks five parts. parseSidecarName() also returns
+        // 'ignored' (the parts TEXT-030 says SHOULD be reported), which the
+        // case file does not record, so only the five are compared - in the
+        // case file's own key order, since check() compares arrays exactly.
+        if ($parsed !== null) {
+            $parsed = [
+                'tag' => $parsed['tag'],
+                'unrecognised' => $parsed['unrecognised'],
+                'roles' => $parsed['roles'],
+                'number' => $parsed['number'],
+                'extension' => $parsed['extension'],
+            ];
+        }
         check($case['id'], $parsed, $case['expected']);
     }
 }
@@ -578,6 +591,46 @@ $mixedIdentifierResult = Policy::selectAudioTrack(
     []
 );
 check('php-identifier-numeric-before-text', $mixedIdentifierResult, '99');
+$phpSpecificChecksRun++;
+
+// Two reporting additions from policy revision 4 that the shared case file
+// does not record (their answers are SHOULD-level reporting, not part of
+// any case's expected value), mirrored by unit tests in the Rust crate.
+//
+// fromLegacyThreeLetterAll(): one entry per NUL-separated value, in order,
+// null for an unrecognised one (kept in place, not dropped), and entry 0
+// always equal to what fromLegacyThreeLetter() returns.
+check(
+    'php-legacy-all-values',
+    Policy::fromLegacyThreeLetterAll("eng\0fre\0\0zzz\0XXX\0\0\0"),
+    ['en', 'fr', null, null, 'und']
+);
+$phpSpecificChecksRun++;
+foreach (['', " ger \0 fre", "\0eng", "fre-ca\0", "English\0en"] as $legacyInput) {
+    check(
+        'php-legacy-all-first-is-primary',
+        Policy::fromLegacyThreeLetterAll($legacyInput)[0],
+        Policy::fromLegacyThreeLetter($legacyInput),
+        json_encode($legacyInput)
+    );
+    $phpSpecificChecksRun++;
+}
+
+// parseSidecarName()'s 'ignored': the parts that were neither a role word
+// nor a number, as written, in order - a run of ten digits included, an
+// overridden earlier number not.
+check(
+    'php-sidecar-ignored-parts',
+    Policy::parseSidecarName('Film', 'Film.en.x.2.1234567890.CC.old.3.srt'),
+    [
+        'tag' => 'en',
+        'unrecognised' => null,
+        'roles' => ['sdh'],
+        'number' => 3,
+        'ignored' => ['x', '1234567890', 'old'],
+        'extension' => 'srt',
+    ]
+);
 $phpSpecificChecksRun++;
 
 // ---------------------------------------------------------------------

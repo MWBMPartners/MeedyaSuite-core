@@ -80,6 +80,9 @@ $tag = Policy::canonicalise('not a tag');   // $tag->kind === TagKind::Malformed
 
 // Reading an old three-letter field, or an operating-system locale name:
 Policy::fromLegacyThreeLetter('ger');       // 'de'
+Policy::fromLegacyThreeLetter("eng\0fre"); // 'en' - the first (primary) of several values
+Policy::fromLegacyThreeLetterAll("eng\0zzz\0fre"); // ['en', null, 'fr'] - every value, in
+                                            // order; null for one it cannot read
 Policy::fromPosixLocale('sr_RS@latin');     // 'sr-Latn-RS'
 
 // The ISO 639-2 codes to WRITE, in both forms (TRACK-070). Unlike the
@@ -92,8 +95,15 @@ Policy::iso6392CodesForWriting('yue');      // ['b' => 'und', 't' => 'und'] (no 
 Policy::buildSidecarName('Film', 'en-GB', [], 'srt');                  // 'Film.en-GB.srt'
 Policy::buildSidecarName('Film', 'EN', ['forced', 'sdh'], 'srt');      // 'Film.en.sdh.forced.srt'
 Policy::buildSidecarName('Film', 'en', [], 'srt', 3);                  // 'Film.en.3.srt'
-Policy::parseSidecarName('Mr. Robot', 'Mr. Robot.en.sdh.srt');
-// ['tag' => 'en', 'unrecognised' => null, 'roles' => ['sdh'], 'number' => null, 'extension' => 'srt']
+// The builder reads the language the same way a reader will read the name
+// back (LANG-002), so what it writes is what comes back:
+Policy::buildSidecarName('Film', 'fre', [], 'srt');                    // 'Film.fr.srt'
+Policy::buildSidecarName('Film', 'zzz', [], 'srt');                    // 'Film.und.srt' (unrecognised)
+Policy::parseSidecarName('Mr. Robot', 'Mr. Robot.en.sdh.backup.srt');
+// ['tag' => 'en', 'unrecognised' => null, 'roles' => ['sdh'], 'number' => null,
+//  'ignored' => ['backup'], 'extension' => 'srt']
+// 'ignored' lists the parts that were neither a role word nor a number, so
+// they can be reported (TEXT-030 says they SHOULD be).
 // A clash-avoiding number has to be one a reader could make sense of - it
 // throws \InvalidArgumentException for 1, 0, a negative number, or more
 // than nine digits (999999999 is the largest parseSidecarName() will ever
@@ -137,7 +147,8 @@ foreach (Policy::sortSubtitleMenu($items, $preferences, $groupCompare) as $entry
     }
 }
 
-// A menu label, built from already-localised parts (UI-070):
+// A menu label, built from already-localised parts (UI-070) - each role
+// once, in TRACK-050's order:
 Policy::buildLabel('audio', 'English (United Kingdom)', ['audio_description'], [
     'audio_description' => 'Audio Description',
 ], '5.1');
@@ -155,7 +166,8 @@ $match = Policy::matchTags('en-GB', 'en');
 // before "1"; every other identifier sorts after, as plain text). Every
 // track's 'id' MUST be unique - both functions throw
 // \InvalidArgumentException immediately if two tracks share one, rather
-// than silently picking one of them:
+// than silently picking one of them. A malformed preference is ignored,
+// and if every preference is malformed the user counts as having none:
 $chosenAudioId = Policy::selectAudioTrack($audioTracks, ['en-GB'], accessibility: []);
 $chosenSubtitleId = Policy::selectSubtitleTrack(
     $subtitleTracks,
