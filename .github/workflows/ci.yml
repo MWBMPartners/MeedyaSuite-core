@@ -163,3 +163,47 @@ jobs:
       # Replace this with a real frontend build if/when one is added.
       - name: No frontend in this repo
         run: echo "MeedyaSuite-core has no frontend; nothing to build."
+
+  # MWBM-MEDIA-LANG (#99): the shared language policy's machine-readable
+  # parts. The Rust implementation's conformance tests run in the `backend`
+  # job's `cargo test`; this job covers everything cargo cannot see:
+  #   - both JSON files still match their schemas (the schemas are the
+  #     documentation other repositories read, so a drift here misleads them);
+  #   - the copy checker's own tests (an independent review showed the first
+  #     version could report a pass on copies that did not match; the tests
+  #     keep each of those holes closed);
+  #   - the PHP implementation passes every conformance case, on the oldest
+  #     PHP the consuming sites run (8.1) and on a current one.
+  # The data file is NOT regenerated here: its sources (the IANA registry)
+  # only publish their newest version, so regeneration is a deliberate,
+  # recorded act, not something CI can repeat. See
+  # scripts/media-lang/generate_language_data.py.
+  language-policy:
+    name: Language policy (ubuntu-latest)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.1", "8.4"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate the test cases and data against their schemas
+        run: |
+          python -m pip install --quiet "jsonschema==4.23.0"
+          python scripts/media-lang/validate_json.py
+
+      - name: Copy checker tests
+        run: python -m unittest scripts/media-lang/test_check_copies.py
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      - name: PHP conformance (every case)
+        run: php bindings/php/media-language/tests/run-conformance.php
