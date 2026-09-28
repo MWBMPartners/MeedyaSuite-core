@@ -129,9 +129,10 @@ const MP4_LANGUAGE: AtomIdent<'static> = AtomIdent::Freeform {
 /// one `TLAN` frame per language, the languages of every frame are
 /// returned, in file order (see the top of this file for why both needed
 /// care). In the rare case that such repeated frames cannot be read (the
-/// cases `id3v2_language_frames` lists), this returns what lofty reads —
-/// the last frame's languages — and logs a warning; a write to that file
-/// is refused, so it cannot delete the others.
+/// cases `id3v2_language_frames` lists, among them language frames in more
+/// than one ID3v2 tag or ID3 chunk), this returns what lofty reads and logs
+/// a warning; a write to that file is refused, so it cannot delete or
+/// scatter the others.
 pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
     if !path.exists() {
         return Err(MetadataError::FileNotFound(path.display().to_string()));
@@ -605,7 +606,10 @@ fn is_mp4_freeform_key(key_text: &str) -> bool {
 ///
 /// Fails, without changing `tagged_file`, when the file seems to hold
 /// several language frames that cannot be read (a compressed or encrypted
-/// frame, an unknown text encoding, an unsynchronised tag…), or an old
+/// frame, an unknown text encoding, an unsynchronised tag…), language
+/// frames in more than one ID3v2 tag (an MP3 file's tags one after another,
+/// or several ID3 chunks of a WAV or AIFF file: lofty's save rewrites only
+/// one of them, so merging would leave languages in two places), or an old
 /// `TLA` frame inside an ID3v2.4 tag (a language to other programs, which
 /// lofty's save would turn into an ordinary text frame): saving would lose
 /// languages, so do not save. The error ([`MetadataError::WriteError`])
@@ -3731,6 +3735,67 @@ mod tests {
         assert!(message.contains("inside an ID3v2.4 tag"), "{message}");
         assert!(message.contains("Nothing was written"), "{message}");
         assert_eq!(std::fs::read(&path).expect("read"), before);
+    }
+
+    /// One small ID3v2.4 tag holding a Latin-1 `TLAN` frame per value
+    /// (every size here is below 128, where plain and synchsafe agree).
+    fn id3v2_4_tag_of_languages(values: &[&[u8]]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for value in values {
+            body.extend_from_slice(b"TLAN");
+            body.extend_from_slice(&[0, 0, 0, u8::try_from(value.len() + 1).expect("fits")]);
+            body.extend_from_slice(&[0, 0, 0]);
+            body.extend_from_slice(value);
+        }
+        let mut tag = b"ID3\x04\x00\x00".to_vec();
+        tag.extend_from_slice(&[0, 0, 0, u8::try_from(body.len()).expect("fits")]);
+        tag.extend(body);
+        tag
+    }
+
+    #[test]
+    fn language_frames_in_two_id3_tags_or_chunks_refuse_every_write() {
+        // The stand-in review of revision 8: a WAV file with an `id3 `
+        // chunk (`eng`) and an `ID3 ` chunk (`fra`) — mutagen read `eng`,
+        // then `fra, eng` after one title write, and the two chunks kept
+        // swapping — and an MP3 file with two tags one after the other.
+        // lofty rewrites only one of them, so the merge left languages in
+        // two places. Now refused, the file untouched, whatever the write.
+        let mut wav = minimal_untagged_wav();
+        for (name, value) in [(b"id3 ", b"eng"), (b"ID3 ", b"fra")] {
+            let tag = id3v2_4_tag_of_languages(&[value]);
+            wav.extend_from_slice(name);
+            wav.extend_from_slice(&u32::try_from(tag.len()).expect("fits").to_le_bytes());
+            wav.extend(tag);
+        }
+        let riff_size = u32::try_from(wav.len() - 8).expect("fits");
+        wav[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        let mut mp3 = id3v2_4_tag_of_languages(&[b"eng"]);
+        mp3.extend(id3v2_4_tag_of_languages(&[b"fra"]));
+        mp3.extend(minimal_untagged_mp3());
+
+        for (name, bytes) in [("two-chunks.wav", wav), ("two-tags.mp3", mp3)] {
+            let writes: [(&str, Vec<(CommonTag, String)>); 2] = [
+                ("title", vec![(CommonTag::Title, "T".into())]),
+                ("language", vec![(CommonTag::Language, "deu".into())]),
+            ];
+            for (write, tags) in writes {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let path = dir.path().join(name);
+                std::fs::write(&path, &bytes).expect("write fixture");
+                let message = match write_tags(&path, &tags) {
+                    Err(MetadataError::WriteError(message)) => message,
+                    other => panic!("{name}, {write}: expected a refusal, got {other:?}"),
+                };
+                assert!(message.contains("in 2 separate ID3v2 tags"), "{message}");
+                assert!(message.contains("Nothing was written"), "{message}");
+                assert_eq!(
+                    std::fs::read(&path).expect("read"),
+                    bytes,
+                    "{name}, {write}"
+                );
+            }
+        }
     }
 
     #[test]

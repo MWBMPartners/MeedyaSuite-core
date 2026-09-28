@@ -20,7 +20,19 @@
 //
 // lofty offers no way to read the repeated frames, so this module reads
 // them itself, and `tag_io` merges them — every language, in file order —
-// into the one frame lofty then saves. Nothing is deleted.
+// into the one frame lofty then saves, when they are all in ONE ID3v2 tag.
+//
+// Frames spread over MORE than one tag are refused instead. This comment
+// used to end "Nothing is deleted", and for such a file that was not true:
+// an MP3 file can hold several ID3v2 tags one after another, and a WAV or
+// AIFF file several ID3 chunks, and lofty's save rewrites only one of them
+// and leaves the others as they were. The merge then put every language
+// into the rewritten tag while the other still held its own, so the file
+// ended up with its languages in two places, in an order that changed from
+// one save to the next — the stand-in review of revision 8 measured it on
+// a WAV file with an `id3 ` chunk (`eng`) and an `ID3 ` chunk (`fra`):
+// mutagen read `eng`, then `fra, eng` after one save. Such a file is now
+// refused before anything is written (see `tlan_frames_in_tags`).
 //
 // It is deliberately small, and deliberately cautious:
 //
@@ -57,7 +69,8 @@
 //   compressed or encrypted, an unknown text encoding, text that does not
 //   decode, a frame that runs past the end of its tag, a frame whose name
 //   lofty would not accept (it must be three or four capital letters or
-//   digits), an ID3v2.4 frame named `TLA` and a zero. Refusing leaves the
+//   digits), an ID3v2.4 frame named `TLA` and a zero, language frames in
+//   more than one ID3v2 tag (above). Refusing leaves the
 //   file exactly as it was; saving would have lost languages. (A file
 //   split the way this crate split them before revision 6, and
 //   `TagFile::save` still does — lofty's format-neutral save — has none of
@@ -110,8 +123,10 @@ pub(crate) enum TlanFrames {
 ///
 /// Fails with [`MetadataError::WriteError`] when the file seems to hold two
 /// or more language frames but one of them cannot be read (see the top of this
-/// file for which cases); the message says what, in plain words. A file
-/// that cannot be read at all gives [`MetadataError::IoError`].
+/// file for which cases), or when they are in more than one ID3v2 tag (an
+/// MP3 file's tags one after another, or several ID3 chunks of a WAV or AIFF
+/// file); the message says what, in plain words. A file that cannot be read
+/// at all gives [`MetadataError::IoError`].
 pub(crate) fn read_tlan_frames(
     path: &Path,
     file_type: FileType,
@@ -367,6 +382,7 @@ fn tlan_frames_in_tags(tags: &[Vec<u8>]) -> Result<TlanFrames, MetadataError> {
     }
 
     let mut frames = Vec::new();
+    let mut tags_holding_frames = 0;
     for tag in tags
         .iter()
         .filter(|tag| language_names_in(tag) > 0 || may_hold_old_name_in_v2_4(tag))
@@ -382,7 +398,23 @@ fn tlan_frames_in_tags(tags: &[Vec<u8>]) -> Result<TlanFrames, MetadataError> {
                  write to them.)"
             ))
         })?;
+        if !found.is_empty() {
+            tags_holding_frames += 1;
+        }
         frames.extend(found);
+    }
+    if tags_holding_frames > 1 {
+        // See the top of this file: lofty's save rewrites only one of the
+        // tags, so merging would leave the languages in two places.
+        return Err(MetadataError::WriteError(format!(
+            "this file holds language frames (TLAN) in {tags_holding_frames} separate ID3v2 \
+             tags - an MP3 file with tags one after another, or a WAV or AIFF file with more \
+             than one ID3 chunk. lofty, the library this crate saves files with, rewrites only \
+             one of them and leaves the others as they are, so a save would leave the \
+             languages in more than one place, in an order that can change from one save to \
+             the next. Nothing was written. (Such a file needs its tags merged into one by \
+             another tool before this library can write to it.)"
+        )));
     }
     if frames.len() < 2 {
         // The letters were somewhere else (inside a text value, say).
@@ -788,12 +820,33 @@ mod tests {
     }
 
     #[test]
-    fn frames_in_two_tags_are_merged_in_file_order() {
+    fn language_frames_in_two_tags_refuse_the_save() {
+        // They used to be merged into the first tag, while lofty's save left
+        // the second as it was: the languages then sat in two places (the
+        // stand-in review of revision 8). One frame in each tag is enough.
         let first = tag(3, 0, &[text_frame(3, b"TLAN", 0, b"eng")], 0);
         let second = tag(4, 0, &[text_frame(4, b"TLAN", 3, b"fra")], 0);
+        let message = refusal(&[first.clone(), second]);
+        assert!(message.contains("in 2 separate ID3v2 tags"), "{message}");
+        assert!(message.contains("Nothing was written"), "{message}");
+        // A second tag holding no language frame is no reason to refuse.
+        let no_language = tag(4, 0, &[text_frame(4, b"TIT2", 3, b"TLAN")], 0);
+        let two = tag(
+            3,
+            0,
+            &[
+                text_frame(3, b"TLAN", 0, b"eng"),
+                text_frame(3, b"TLAN", 0, b"fra"),
+            ],
+            0,
+        );
         assert_eq!(
-            tlan_frames_in_tags(&[first, second]).expect("read"),
+            tlan_frames_in_tags(&[two, no_language]).expect("read"),
             several(&["eng", "fra"])
+        );
+        assert_eq!(
+            tlan_frames_in_tags(&[first, tag(4, 0, &[], 8)]).expect("read"),
+            TlanFrames::AtMostOne
         );
     }
 
@@ -1137,6 +1190,17 @@ mod tests {
         read_tlan_frames(&path, file_type).expect("read")
     }
 
+    /// The refusal text for the file `bytes`, which must be refused.
+    fn read_refusal(bytes: Vec<u8>, file_type: FileType) -> String {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f");
+        std::fs::write(&path, bytes).expect("write");
+        match read_tlan_frames(&path, file_type) {
+            Err(MetadataError::WriteError(message)) => message,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
     fn split_tag(major: u8) -> Vec<u8> {
         tag(
             major,
@@ -1151,26 +1215,38 @@ mod tests {
 
     #[test]
     fn an_mp3_s_tags_are_found_after_leading_zero_bytes() {
-        // Zero bytes first (lofty skips them), then two tags back to back
-        // — the second's frames count too — then an MPEG frame header.
-        let mut bytes = vec![0u8; 5];
-        bytes.extend(split_tag(4));
-        bytes.extend(tag(3, 0, &[text_frame(3, b"TLAN", 0, b"deu")], 0));
-        bytes.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
-        bytes.extend(vec![0u8; 100]);
-        assert_eq!(read(bytes, FileType::Mpeg), several(&["eng", "fra", "deu"]));
+        // Zero bytes first (lofty skips them), then two tags back to back,
+        // then an MPEG frame header. With the languages in the first tag
+        // only, they are read; with a language in the second too, the
+        // second tag is found as well — so the save is refused.
+        let mp3 = |second: Vec<u8>| {
+            let mut bytes = vec![0u8; 5];
+            bytes.extend(split_tag(4));
+            bytes.extend(second);
+            bytes.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+            bytes.extend(vec![0u8; 100]);
+            bytes
+        };
+        let title = tag(3, 0, &[text_frame(3, b"TIT2", 0, b"Title")], 0);
+        assert_eq!(read(mp3(title), FileType::Mpeg), several(&["eng", "fra"]));
+        let language = tag(3, 0, &[text_frame(3, b"TLAN", 0, b"deu")], 0);
+        let message = read_refusal(mp3(language), FileType::Mpeg);
+        assert!(message.contains("in 2 separate ID3v2 tags"), "{message}");
     }
 
     #[test]
     fn a_footer_is_stepped_over_to_reach_the_next_tag() {
         // An ID3v2.4 tag with the footer flag (0x10), its 10-byte footer,
-        // then a second tag.
+        // then a second tag. Both hold a language, so the save is refused —
+        // which it could only be if the second tag was found past the footer
+        // (missing it, one frame alone would need nothing).
         let mut first = tag(4, 0x10, &[text_frame(4, b"TLAN", 3, b"eng")], 0);
         let footer: Vec<u8> = [b"3DI".as_slice(), &first[3..10]].concat();
         first.extend(footer);
         let mut bytes = first;
         bytes.extend(tag(4, 0, &[text_frame(4, b"TLAN", 3, b"fra")], 0));
-        assert_eq!(read(bytes, FileType::Aac), several(&["eng", "fra"]));
+        let message = read_refusal(bytes, FileType::Aac);
+        assert!(message.contains("in 2 separate ID3v2 tags"), "{message}");
     }
 
     /// A RIFF (`big_endian` false) or FORM file: the 12-byte header, an
@@ -1216,6 +1292,41 @@ mod tests {
             read(chunk_file(true, b"ID3 ", split_tag(3)), FileType::Aiff),
             several(&["eng", "fra"])
         );
+    }
+
+    #[test]
+    fn language_frames_in_two_id3_chunks_refuse_the_save() {
+        // The stand-in review of revision 8's WAV: an `id3 ` chunk holding
+        // `eng`, then an `ID3 ` chunk holding `fra`. Each chunk alone holds
+        // one frame; together they are refused (and so for AIFF).
+        for (big_endian, file_type) in [(false, FileType::Wav), (true, FileType::Aiff)] {
+            let mut bytes = chunk_file(
+                big_endian,
+                b"id3 ",
+                tag(4, 0, &[text_frame(4, b"TLAN", 0, b"eng")], 0),
+            );
+            let second = tag(4, 0, &[text_frame(4, b"TLAN", 0, b"fra")], 0);
+            let size = u32::try_from(second.len()).expect("fits");
+            bytes.extend_from_slice(b"ID3 ");
+            bytes.extend_from_slice(&if big_endian {
+                size.to_be_bytes()
+            } else {
+                size.to_le_bytes()
+            });
+            bytes.extend(second);
+            // The file's own size, at bytes 4 to 8, now covers both chunks.
+            let file_size = u32::try_from(bytes.len() - 8).expect("fits");
+            bytes[4..8].copy_from_slice(&if big_endian {
+                file_size.to_be_bytes()
+            } else {
+                file_size.to_le_bytes()
+            });
+            let message = read_refusal(bytes, file_type);
+            assert!(
+                message.contains("in 2 separate ID3v2 tags"),
+                "{file_type:?}: {message}"
+            );
+        }
     }
 
     #[test]
