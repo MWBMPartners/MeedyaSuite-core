@@ -50,7 +50,10 @@
 // `TLAN` frames straight from its bytes first (module
 // `id3v2_language_frames`), and when there are several, put every
 // language back into lofty's tag, in file order — so the save writes them
-// all into one frame, and `read_tags` returns them all. A file whose
+// all into one frame, and `read_tags` returns them all. Every older name
+// lofty also reads as `TLAN` counts too (`TLA`, and in an ID3v2.3 tag
+// `TLA` followed by a zero byte — found by Codex's review of revisions
+// 5–7, when two such frames still lost a language). A file whose
 // repeated frames cannot be read that way (compressed, encrypted, an
 // unknown text encoding…) is refused rather than saved, because the save
 // would delete languages.
@@ -2595,6 +2598,78 @@ mod tests {
             read_tags(&path).expect("read")[&CommonTag::Language],
             ["por", "deu", "zho"]
         );
+    }
+
+    /// An MP3 whose ID3v2 tag (version `major`, 3 or 4) holds one Latin-1
+    /// language frame per value in `values`, each named `TLA` followed by a
+    /// zero byte — ID3v2.2's name in a four-byte frame header, which lofty
+    /// reads as `TLAN` in an ID3v2.3 tag but not in an ID3v2.4 one. (Every
+    /// size here is below 128, where the plain and synchsafe forms agree.)
+    fn mp3_with_tla_frames(dir: &Path, major: u8, values: &[&[u8]]) -> std::path::PathBuf {
+        let frame = |text: &[u8]| {
+            let mut out = b"TLA\0".to_vec();
+            out.extend_from_slice(&u32::try_from(text.len() + 1).expect("fits").to_be_bytes());
+            out.extend_from_slice(&[0, 0, 0]);
+            out.extend_from_slice(text);
+            out
+        };
+        let mut body: Vec<u8> = values.iter().flat_map(|value| frame(value)).collect();
+        body.extend_from_slice(&[0u8; 16]);
+        let mut bytes = b"ID3".to_vec();
+        bytes.extend_from_slice(&[major, 0, 0]);
+        bytes.extend_from_slice(&[0, 0, 0, u8::try_from(body.len()).expect("fits")]);
+        bytes.extend(body);
+        bytes.extend(minimal_untagged_mp3());
+        let path = dir.join("tla.mp3");
+        std::fs::write(&path, bytes).expect("write fixture");
+        path
+    }
+
+    #[test]
+    fn two_v2_3_tla_frames_survive_an_unrelated_write() {
+        // Codex's review of revisions 5–7: only frames named `TLAN` were
+        // looked for, so this file — two `TLA\0` frames, `eng` and `fra`,
+        // in an ID3v2.3 tag — was let through, and a title-only write kept
+        // `fra` alone (reproduced before the fix).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = mp3_with_tla_frames(dir.path(), 3, &[b"eng", b"fra"]);
+        assert_eq!(
+            languages_of(&path, TagType::Id3v2),
+            ["fra"],
+            "lofty alone sees the last frame only"
+        );
+        assert_eq!(
+            read_tags(&path).expect("read")[&CommonTag::Language],
+            ["eng", "fra"]
+        );
+
+        write_tags(&path, &[(CommonTag::Title, "Changed Title".into())]).expect("title write");
+
+        let after = read_tags(&path).expect("read");
+        assert_eq!(after[&CommonTag::Title], ["Changed Title"]);
+        assert_eq!(after[&CommonTag::Language], ["eng", "fra"]);
+        // Saved as one frame of the current name, holding both.
+        let bytes = std::fs::read(&path).expect("read");
+        assert_eq!(occurrences(&bytes, b"TLAN"), 1);
+        assert_eq!(occurrences(&bytes, b"TLA\0"), 0);
+    }
+
+    #[test]
+    fn a_v2_4_tla_frame_refuses_the_write_and_leaves_the_file_as_it_was() {
+        // In an ID3v2.4 tag lofty does not read a `TLA\0` frame as a
+        // language, but mutagen does, and lofty's save would turn it into
+        // an ordinary text frame (`TXXX:TLA`) — measured on a real file
+        // before this was refused. Refused, even as the only such frame.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = mp3_with_tla_frames(dir.path(), 4, &[b"eng"]);
+        let before = std::fs::read(&path).expect("read");
+        let message = match write_tags(&path, &[(CommonTag::Title, "T".into())]) {
+            Err(MetadataError::WriteError(message)) => message,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(message.contains("inside an ID3v2.4 tag"), "{message}");
+        assert!(message.contains("Nothing was written"), "{message}");
+        assert_eq!(std::fs::read(&path).expect("read"), before);
     }
 
     #[test]

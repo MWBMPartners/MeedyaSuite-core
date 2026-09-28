@@ -24,40 +24,61 @@
 //
 // It is deliberately small, and deliberately cautious:
 //
-// - **A cheap look first.** A frame's four-letter name is never changed in
-//   the file — compression, encryption and unsynchronisation all act on
-//   what follows the frame header, and the name holds no `0xFF` byte for
-//   unsynchronisation to touch — so a tag holding two `TLAN` frames holds
-//   the four bytes `TLAN` at least twice. When the file's ID3v2 tags hold
-//   them fewer than two times in all, there is nothing to merge and the
-//   frames are never parsed. Only a file that may really have the fault
-//   pays for, or can be affected by, the parsing below.
-// - **Only the plain case is read**: frame headers (a four-letter name, a
-//   size — plain in ID3v2.3, "synchsafe" in ID3v2.4, which means seven
-//   bits per byte — and two flag bytes; ID3v2.2's three-letter names and
-//   three-byte sizes too), the text-encoding byte, and the values separated
-//   by null characters. Text is decoded exactly as lofty decodes it, so a
+// - **Every name lofty reads as the language frame counts**: `TLAN`; in an
+//   ID3v2.2 tag, that version's three-letter `TLA`; and in an ID3v2.3 tag
+//   also `TLA` followed by a zero byte — ID3v2.2's name in an ID3v2.3
+//   frame header, which some programs write and lofty reads as `TLAN`.
+//   Frames of any of these names are merged together, in file order.
+//   (Until Codex's review of revisions 5–7 only `TLAN` was looked for in
+//   an ID3v2.3 tag, so a file holding two `TLA`-and-zero frames, `eng` and
+//   `fra`, was let through, and a title-only save kept `fra` alone —
+//   reproduced before the fix.) An ID3v2.4 tag is different: lofty does
+//   not read a `TLA`-and-zero frame there as a language, but mutagen does,
+//   and lofty's save would turn it into an ordinary text frame — so such a
+//   frame refuses the save, even on its own (see `OLD_NAME_IN_V2_4`).
+// - **A cheap look first.** A frame's name is never changed in the file —
+//   compression, encryption and unsynchronisation all act on what follows
+//   the frame header, and the name holds no `0xFF` byte for
+//   unsynchronisation to touch — so a tag holding two language frames holds
+//   the bytes of their names (`TLAN`, or `TLA` and a zero) at least twice
+//   between them. When the file's ID3v2 tags hold them fewer than two times
+//   in all (and no ID3v2.4 tag holds `TLA` and a zero at all), there is
+//   nothing to merge and the frames are never parsed. Only a file that may
+//   really have the fault pays for, or can be affected by, the parsing
+//   below.
+// - **Only the plain case is read**: frame headers (a name, a size — plain
+//   in ID3v2.3, "synchsafe" in ID3v2.4, which means seven bits per byte —
+//   and two flag bytes; ID3v2.2's three-letter names and three-byte sizes
+//   too), the text-encoding byte, and the values separated by null
+//   characters. Names and text are read exactly as lofty reads them, so a
 //   merged value is the value lofty would have read.
 // - **Anything else refuses the save** instead of guessing: a tag that is
-//   unsynchronised or has an extended header, a `TLAN` frame that is
+//   unsynchronised or has an extended header, a language frame that is
 //   compressed or encrypted, an unknown text encoding, text that does not
-//   decode, a frame that runs past the end of its tag, a frame name that is
-//   not four capital letters or digits. Refusing leaves the file exactly as
-//   it was; saving would have deleted languages. (A file split the way
-//   this crate split them before revision 6, and `TagFile::save` still
-//   does — lofty's format-neutral save — has none of these, so the case
-//   that actually happens is always read: checked on real MP3, WAV and
-//   AIFF files split by `TagFile::save`.)
+//   decode, a frame that runs past the end of its tag, a frame whose name
+//   lofty would not accept (it must be three or four capital letters or
+//   digits), an ID3v2.4 frame named `TLA` and a zero. Refusing leaves the
+//   file exactly as it was; saving would have lost languages. (A file split the way this crate split them before
+//   revision 6, and `TagFile::save` still does — lofty's format-neutral
+//   save — has none of these, so the case that actually happens is always
+//   read: checked on real MP3, WAV and AIFF files split by
+//   `TagFile::save`.)
+// - **The merge takes work in step with the number of values**: a set of
+//   the values already kept sits beside the ordered list (`first_of_each`),
+//   so a crafted frame holding 100,000 values costs 100,000 steps, not the
+//   five billion comparisons searching the list for each value took until
+//   Codex's review of revisions 5–7.
 //
 // What it CANNOT do: see a tag lofty would find somewhere unusual — an
 // ID3v2 tag buried after junk bytes at the start of an MP3, or after an APE
 // tag there. That costs nothing, though: lofty's writer only ever replaces
 // the tag at the very start of an MP3 (or the first `ID3 ` chunk of a WAV
 // or AIFF file), so a tag found anywhere else is left in the file as it
-// was, languages and all. Nor does it read an ID3v2.3 tag that names its
-// frames with ID3v2.2's three letters (`TLA` followed by a zero byte).
+// was, languages and all.
 
+use std::collections::HashSet;
 use std::fs::File;
+use std::hash::Hash;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -65,28 +86,30 @@ use lofty::file::FileType;
 
 use crate::error::MetadataError;
 
-/// What a file's `TLAN` frames hold, read from its bytes.
+/// What a file's language frames hold, read from its bytes. A language
+/// frame is a `TLAN` frame, or one of the older names lofty reads as
+/// `TLAN` (see [`language_frame_names`]).
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum TlanFrames {
-    /// The file has no ID3v2 tag, or at most one `TLAN` frame in all of
+    /// The file has no ID3v2 tag, or at most one language frame in all of
     /// its ID3v2 tags — so lofty's own reading already holds every
     /// language, and nothing needs merging.
     AtMostOne,
-    /// Two or more `TLAN` frames: every language they list, in the order
+    /// Two or more language frames: every language they list, in the order
     /// the file holds them (each frame's values in their own order). A
     /// value repeated exactly is kept once, and an empty value is left out:
     /// neither is a language that could be lost.
     Several(Vec<String>),
 }
 
-/// Reads every `TLAN` frame of the ID3v2 tag(s) lofty reads from the file
+/// Reads every language frame of the ID3v2 tag(s) lofty reads from the file
 /// at `path`, of type `file_type` — the tags at the start of an MP3 or AAC
 /// file, and every `ID3 ` chunk of a WAV or AIFF file. Other file types
 /// give [`TlanFrames::AtMostOne`]: lofty does not write an ID3v2 tag into
 /// them.
 ///
 /// Fails with [`MetadataError::WriteError`] when the file seems to hold two
-/// or more `TLAN` frames but one of them cannot be read (see the top of this
+/// or more language frames but one of them cannot be read (see the top of this
 /// file for which cases); the message says what, in plain words. A file
 /// that cannot be read at all gives [`MetadataError::IoError`].
 pub(crate) fn read_tlan_frames(
@@ -223,12 +246,87 @@ fn synchsafe(bytes: [u8; 4]) -> u32 {
 // Reading the frames
 // ============================================================
 
-/// The name of the language frame in a tag of ID3v2 version `major`.
-fn language_frame_name(major: u8) -> &'static [u8] {
-    if major == 2 {
-        b"TLA"
+/// Every form in which a language frame's name is written in the frame
+/// headers of a tag of ID3v2 version `major` — the forms lofty reads as the
+/// language frame (see [`frame_name`]):
+///
+/// - ID3v2.2: `TLA`, that version's three-letter name.
+/// - ID3v2.3: `TLAN`, and also `TLA` followed by a zero byte — ID3v2.2's
+///   name in an ID3v2.3 frame header, which some programs write and lofty
+///   reads as `TLAN`. (Found by Codex's review of revisions 5–7: two such
+///   frames were not counted at all, so a title-only save deleted every
+///   language but the last.)
+/// - ID3v2.4: `TLAN` only. (A `TLA`-and-zero frame there is not one lofty
+///   reads as a language; see [`OLD_NAME_IN_V2_4`] for what happens to it.)
+fn language_frame_names(major: u8) -> &'static [&'static [u8]] {
+    match major {
+        2 => &[b"TLA"],
+        3 => &[b"TLAN", b"TLA\0"],
+        _ => &[b"TLAN"],
+    }
+}
+
+/// ID3v2.2's language frame name, `TLA` followed by a zero byte, as it is
+/// written in an ID3v2.4 frame header. lofty does not read it as a
+/// language there (it converts old names in ID3v2.2 and 2.3 tags only): it
+/// keeps the frame as one of its own and saves its text back as a
+/// user-defined `TXXX` frame named `TLA`. mutagen does read it as the
+/// language (measured with lofty 0.22.4 and mutagen: an ID3v2.4 file holding
+/// such a frame, `eng`, and a `TLAN` frame, `fra`, which mutagen read as
+/// `eng` and `fra`, came out of a title-only save with mutagen reading only
+/// `fra` — and `eng` in `TXXX:TLA`). Such a frame refuses the save: it is a
+/// language to other programs, and the save would take it out of the
+/// language field.
+const OLD_NAME_IN_V2_4: &[u8] = b"TLA\0";
+
+/// What a frame's name makes it, as lofty reads that name.
+#[derive(Debug, PartialEq, Eq)]
+enum FrameName {
+    /// A language frame: lofty reads it as `TLAN`.
+    Language,
+    /// [`OLD_NAME_IN_V2_4`]: a language to other programs, which lofty's
+    /// save would not keep as one. Refuses the save.
+    OldLanguageNameInV2_4,
+    /// Any other frame.
+    Other,
+    /// A name lofty would not accept at all. Refuses the save, because
+    /// the frames after it cannot be trusted to be found.
+    Invalid,
+}
+
+/// What the frame whose header begins `header`, in a tag of ID3v2 version
+/// `major`, is — going by its name, read exactly as lofty reads it (lofty
+/// 0.22.4, `id3/v2/frame/header/parse.rs`): three bytes in ID3v2.2; four in
+/// ID3v2.3 and 2.4, except that an ID3v2.3 frame whose fourth byte is zero
+/// holds an ID3v2.2 name in the first three; then (not in ID3v2.2) any zero
+/// bytes at the end are dropped. A name must then be three or four capital
+/// letters or digits. lofty converts a three-letter name to its four-letter
+/// one in ID3v2.2 and 2.3 tags only, which is why `TLA` is the language
+/// frame there and not in ID3v2.4.
+fn frame_name(major: u8, header: &[u8]) -> FrameName {
+    if major >= 4 && &header[..4] == OLD_NAME_IN_V2_4 {
+        return FrameName::OldLanguageNameInV2_4;
+    }
+    let raw = match major {
+        2 => &header[..3],
+        3 if header[3] == 0 => &header[..3],
+        _ => &header[..4],
+    };
+    let name = if major == 2 {
+        raw
     } else {
-        b"TLAN"
+        let kept = raw.iter().rposition(|b| *b != 0).map_or(0, |last| last + 1);
+        &raw[..kept]
+    };
+    let valid = matches!(name.len(), 3 | 4)
+        && name
+            .iter()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+    match name {
+        _ if !valid => FrameName::Invalid,
+        b"TLAN" => FrameName::Language,
+        b"TLA" if major <= 3 => FrameName::Language,
+        _ => FrameName::Other,
     }
 }
 
@@ -240,43 +338,87 @@ fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
         .count()
 }
 
+/// How many times the name of a language frame — in any form lofty reads
+/// as one in a tag of this version (see [`language_frame_names`]) — occurs
+/// in one ID3v2 `tag`'s body: the cheap look at the top of this file.
+fn language_names_in(tag: &[u8]) -> usize {
+    language_frame_names(tag[3])
+        .iter()
+        .map(|name| occurrences(&tag[10..], name))
+        .sum()
+}
+
+/// Whether one ID3v2 `tag` is an ID3v2.4 tag whose body holds the bytes of
+/// [`OLD_NAME_IN_V2_4`] — a frame that may refuse the save on its own.
+fn may_hold_old_name_in_v2_4(tag: &[u8]) -> bool {
+    tag[3] >= 4 && occurrences(&tag[10..], OLD_NAME_IN_V2_4) > 0
+}
+
 /// The merged result for `tags` (each an ID3v2 tag from its header on);
 /// see [`read_tlan_frames`].
 fn tlan_frames_in_tags(tags: &[Vec<u8>]) -> Result<TlanFrames, MetadataError> {
-    // The cheap look (top of this file): the name's bytes, counted in each
-    // tag's body.
-    let named = |tag: &Vec<u8>| occurrences(&tag[10..], language_frame_name(tag[3]));
-    let named_total: usize = tags.iter().map(named).sum();
-    if named_total < 2 {
+    // The cheap look (top of this file): every form of the name, counted
+    // in each tag's body. One old-named frame in an ID3v2.4 tag is enough
+    // on its own to need a look, since it refuses the save by itself.
+    let named_total: usize = tags.iter().map(|tag| language_names_in(tag)).sum();
+    let old_name = tags.iter().any(|tag| may_hold_old_name_in_v2_4(tag));
+    if named_total < 2 && !old_name {
         return Ok(TlanFrames::AtMostOne);
     }
 
     let mut frames = Vec::new();
-    for tag in tags.iter().filter(|tag| named(tag) > 0) {
+    for tag in tags
+        .iter()
+        .filter(|tag| language_names_in(tag) > 0 || may_hold_old_name_in_v2_4(tag))
+    {
         let found = tlan_frames_in_tag(tag).map_err(|problem| {
             MetadataError::WriteError(format!(
-                "this file may list its languages in several separate ID3v2 language (TLAN) \
-                 frames, which lofty - the library this crate saves files with - reads as only \
-                 the last one, so saving would delete the others. They are normally merged into \
-                 one frame first, but {problem}, so they cannot be read here. Nothing was \
-                 written. (For most such files, saving once with mutagen, which reads every TLAN \
-                 frame and saves them as one, lets this library write to them.)"
+                "this file's ID3v2 tag may hold its languages in more than one language frame \
+                 (named TLAN, or TLA in older tags), which lofty - the library this crate saves \
+                 files with - does not read whole, so saving would lose languages. They are \
+                 normally merged into one frame first, but {problem}, so they cannot be read \
+                 here. Nothing was written. (For most such files, saving once with mutagen, \
+                 which reads every language frame and saves them as one, lets this library \
+                 write to them.)"
             ))
         })?;
         frames.extend(found);
     }
     if frames.len() < 2 {
-        // The four letters were somewhere else (inside a text value, say).
+        // The letters were somewhere else (inside a text value, say).
         return Ok(TlanFrames::AtMostOne);
     }
 
-    let mut values: Vec<String> = Vec::new();
-    for value in frames.into_iter().flatten() {
-        if !value.is_empty() && !values.contains(&value) {
-            values.push(value);
+    let values: Vec<String> = first_of_each(
+        frames
+            .into_iter()
+            .flatten()
+            .filter(|value| !value.is_empty()),
+    );
+    Ok(TlanFrames::Several(values))
+}
+
+/// Each of `values` once — the first time it appears — in the order given.
+///
+/// A set of the values already kept sits beside the list, so each value is
+/// checked in one step however many came before it. (Until Codex's review
+/// of revisions 5–7 the list itself was searched for every value, which on
+/// a crafted file — one frame holding 100,000 different values, then a
+/// second frame — took some five billion comparisons, stalling both
+/// reading the file and any save to it. Now the work grows in step with the
+/// number of values: see `merging_takes_work_in_step_with_the_values`.)
+///
+/// Generic only so that test can count the comparisons; the file's
+/// languages are `String`s.
+fn first_of_each<T: Eq + Hash + Clone>(values: impl IntoIterator<Item = T>) -> Vec<T> {
+    let mut seen: HashSet<T> = HashSet::new();
+    let mut kept = Vec::new();
+    for value in values {
+        if seen.insert(value.clone()) {
+            kept.push(value);
         }
     }
-    Ok(TlanFrames::Several(values))
+    kept
 }
 
 /// The values of every language frame in one ID3v2 `tag` (from its header
@@ -301,9 +443,8 @@ fn tlan_frames_in_tag(tag: &[u8]) -> Result<Vec<Vec<String>>, String> {
     }
 
     // ID3v2.2: three-letter name, three-byte size, no flags. ID3v2.3 and
-    // 2.4: four-letter name, four-byte size, two flag bytes.
+    // 2.4: four-byte name, four-byte size, two flag bytes.
     let (name_len, header_len) = if major == 2 { (3, 6) } else { (4, 10) };
-    let wanted = language_frame_name(major);
 
     let mut frames = Vec::new();
     let mut pos = 0usize;
@@ -314,15 +455,24 @@ fn tlan_frames_in_tag(tag: &[u8]) -> Result<Vec<Vec<String>>, String> {
             break;
         }
         let name = &header[..name_len];
-        if !name
-            .iter()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-        {
-            return Err(format!(
-                "a frame {pos} bytes into the tag has no valid name, so the frames after it \
-                 cannot be found"
-            ));
-        }
+        let is_language = match frame_name(major, header) {
+            FrameName::Language => true,
+            FrameName::Other => false,
+            FrameName::Invalid => {
+                return Err(format!(
+                    "a frame {pos} bytes into the tag has no valid name, so the frames after it \
+                     cannot be found"
+                ))
+            }
+            FrameName::OldLanguageNameInV2_4 => {
+                return Err(format!(
+                    "a frame {pos} bytes into the tag is named TLA followed by a zero byte - \
+                     the old ID3v2.2 name for the language frame - inside an ID3v2.4 tag, which \
+                     other programs (mutagen among them) read as a language but lofty does not: \
+                     saving would turn it into an ordinary text frame named TLA"
+                ))
+            }
+        };
         let size = match major {
             2 => u32::from_be_bytes([0, header[3], header[4], header[5]]),
             3 => u32::from_be_bytes([header[4], header[5], header[6], header[7]]),
@@ -338,7 +488,7 @@ fn tlan_frames_in_tag(tag: &[u8]) -> Result<Vec<Vec<String>>, String> {
                     String::from_utf8_lossy(name)
                 )
             })?;
-        if name == wanted {
+        if is_language {
             let content = frame_content(&body[start..end], major, header)?;
             frames.push(frame_values(content, major)?);
         }
@@ -672,6 +822,210 @@ mod tests {
             tlan_frames_in_tags(&[tag]).expect("read"),
             several(&["eng", "deu"])
         );
+    }
+
+    // ------------------------------------------------------------------
+    // ID3v2.2 names in ID3v2.3 tags (Codex's review of revisions 5–7):
+    // lofty reads a frame named `TLA` followed by a zero byte, inside an
+    // ID3v2.3 tag, as `TLAN`. Only `TLAN` used to be looked for, so two
+    // such frames were let through and a save kept the last language only.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn two_tla_frames_in_an_id3v2_3_tag_are_merged() {
+        // The review's file: an ID3v2.3 tag, two frames named `TLA\0`,
+        // Latin-1 `eng` and `fra`.
+        let tag = tag(
+            3,
+            0,
+            &[
+                text_frame(3, b"TLA\0", 0, b"eng"),
+                text_frame(3, b"TLA\0", 0, b"fra"),
+            ],
+            16,
+        );
+        assert_eq!(
+            tlan_frames_in_tags(&[tag]).expect("read"),
+            several(&["eng", "fra"])
+        );
+    }
+
+    #[test]
+    fn tla_and_tlan_frames_in_an_id3v2_3_tag_are_merged_in_file_order() {
+        // Both names in one tag, in either order, with an unrelated
+        // ID3v2.2-named frame (`TT2\0`, a title) before them: every one
+        // is read, and the languages come out in file order.
+        for (first, second, expected) in [
+            (b"TLA\0", b"TLAN", ["deu", "eng", "fra"]),
+            (b"TLAN", b"TLA\0", ["deu", "eng", "fra"]),
+        ] {
+            let tag = tag(
+                3,
+                0,
+                &[
+                    text_frame(3, b"TT2\0", 0, b"Title"),
+                    text_frame(3, first, 0, b"deu"),
+                    text_frame(3, second, 0, b"eng\0fra"),
+                ],
+                0,
+            );
+            assert_eq!(
+                tlan_frames_in_tags(&[tag]).expect("read"),
+                several(&expected),
+                "{} then {}",
+                String::from_utf8_lossy(first),
+                String::from_utf8_lossy(second)
+            );
+        }
+    }
+
+    #[test]
+    fn a_tla_frame_in_an_id3v2_4_tag_refuses_the_save_even_alone() {
+        // mutagen reads it as a language, lofty does not, and lofty's save
+        // would turn it into an ordinary text frame (`TXXX:TLA`): refused,
+        // whether it is the only language-like frame or sits beside a
+        // `TLAN` frame, before or after it.
+        let old = text_frame(4, b"TLA\0", 0, b"eng");
+        let tlan = text_frame(4, b"TLAN", 0, b"fra");
+        for frames in [
+            vec![old.clone()],
+            vec![old.clone(), tlan.clone()],
+            vec![tlan.clone(), old.clone()],
+        ] {
+            let message = refusal(&[tag(4, 0, &frames, 0)]);
+            assert!(message.contains("inside an ID3v2.4 tag"), "{message}");
+            assert!(message.contains("Nothing was written"), "{message}");
+        }
+        // The same bytes inside a text value are not a frame: no refusal.
+        let inside = tag(4, 0, &[text_frame(4, b"TIT2", 0, b"TLA\0x"), tlan], 0);
+        assert_eq!(
+            tlan_frames_in_tags(&[inside]).expect("read"),
+            TlanFrames::AtMostOne
+        );
+    }
+
+    #[test]
+    fn frame_names_are_read_as_lofty_reads_them() {
+        use FrameName::{Invalid, Language, OldLanguageNameInV2_4, Other};
+        // (version, the header's name bytes, what lofty makes of it).
+        let cases: [(u8, &[u8], FrameName); 14] = [
+            (2, b"TLA", Language),
+            (2, b"TT2", Other),
+            (2, b"TL\0", Invalid),
+            (3, b"TLAN", Language),
+            (3, b"TLA\0", Language),
+            (3, b"TT2\0", Other),
+            (3, b"TIT2", Other),
+            (3, b"TL\0\0", Invalid),
+            (3, b"tlan", Invalid),
+            (4, b"TLAN", Language),
+            (4, b"TLA\0", OldLanguageNameInV2_4),
+            (4, b"TIT2", Other),
+            (4, b"TL\0N", Invalid),
+            (4, b"t!@#", Invalid),
+        ];
+        for (major, name, expected) in cases {
+            let mut header = name.to_vec();
+            header.resize(10, 0);
+            assert_eq!(
+                frame_name(major, &header),
+                expected,
+                "ID3v2.{major} {:?}",
+                String::from_utf8_lossy(name)
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // The merge's work (Codex's review of revisions 5–7): searching the
+    // list for each value made a crafted file cost billions of steps.
+    // ------------------------------------------------------------------
+
+    thread_local! {
+        /// Comparisons and hash calculations made on `Counted` values.
+        static WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A text value that counts every comparison and hash calculation
+    /// made with it — the merge's work, measured without a clock.
+    #[derive(Clone, Debug)]
+    struct Counted(String);
+
+    impl PartialEq for Counted {
+        fn eq(&self, other: &Self) -> bool {
+            WORK.with(|work| work.set(work.get() + 1));
+            self.0 == other.0
+        }
+    }
+
+    impl Eq for Counted {}
+
+    impl Hash for Counted {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            WORK.with(|work| work.set(work.get() + 1));
+            self.0.hash(state);
+        }
+    }
+
+    /// The review's crafted tag, with `count` values in the first frame:
+    /// an ID3v2.4 tag whose first `TLAN` frame holds `x-000000`,
+    /// `x-000001`, … separated by null characters, and whose second holds
+    /// `eng`.
+    fn crafted_tag(count: usize) -> Vec<u8> {
+        let many: Vec<String> = (0..count).map(|n| format!("x-{n:06}")).collect();
+        tag(
+            4,
+            0,
+            &[
+                text_frame(4, b"TLAN", 3, many.join("\0").as_bytes()),
+                text_frame(4, b"TLAN", 3, b"eng"),
+            ],
+            0,
+        )
+    }
+
+    /// The work `first_of_each` does on the crafted tag's values.
+    fn merge_work(count: usize) -> u64 {
+        let frames = tlan_frames_in_tag(&crafted_tag(count)).expect("read");
+        let values: Vec<Counted> = frames.into_iter().flatten().map(Counted).collect();
+        assert_eq!(values.len(), count + 1);
+        WORK.with(|work| work.set(0));
+        let kept = first_of_each(values);
+        assert_eq!(kept.len(), count + 1, "every value is distinct");
+        WORK.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn merging_takes_work_in_step_with_the_values() {
+        // The review's shape: 100,000 distinct values, then `eng`. Searching
+        // the list for each value took 5,000,050,000 comparisons; a set
+        // takes a few steps per value.
+        let full = merge_work(100_000);
+        assert!(
+            full <= 5 * 100_001,
+            "{full} steps for 100,001 values: more than five per value"
+        );
+        // Doubling the values roughly doubles the work (searching the list
+        // would have quadrupled it).
+        let half = merge_work(50_000);
+        let ratio = full as f64 / half as f64;
+        assert!(
+            (1.5..3.0).contains(&ratio),
+            "{half} steps for 50,001 values, {full} for 100,001: ratio {ratio}"
+        );
+    }
+
+    #[test]
+    fn the_crafted_tag_is_read_whole_and_in_order() {
+        let TlanFrames::Several(values) =
+            tlan_frames_in_tags(&[crafted_tag(100_000)]).expect("read")
+        else {
+            panic!("two frames");
+        };
+        assert_eq!(values.len(), 100_001);
+        assert_eq!(values[0], "x-000000");
+        assert_eq!(values[99_999], "x-099999");
+        assert_eq!(values[100_000], "eng");
     }
 
     #[test]
