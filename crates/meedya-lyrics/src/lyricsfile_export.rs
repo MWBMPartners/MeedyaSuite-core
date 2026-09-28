@@ -297,6 +297,7 @@ mod tests {
                 duration_ms: None,
                 offset_ms: None,
                 language: None,
+                language_original: None,
                 instrumental: false,
             },
             lines: vec![

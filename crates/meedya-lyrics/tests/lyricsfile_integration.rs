@@ -117,6 +117,7 @@ fn yaml_output_is_self_documenting_and_human_readable() {
             duration_ms: Some(295_000),
             offset_ms: None,
             language: Some("en".into()),
+            language_original: None,
             instrumental: false,
         },
         lines: vec![],

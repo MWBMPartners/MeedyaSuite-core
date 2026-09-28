@@ -681,6 +681,19 @@ pub fn classify_ttml_granularity(..) -> TtmlGranularity;
 known granularity," i.e. it still needs upgrading if a syllable-capable source is reachable.
 Consumers matching on `TtmlGranularity` must handle all four variants.
 
+**Language (policy MWBM-MEDIA-LANG).** `LyricsfileMetadata::language` is always a canonical
+BCP 47 tag or `None`, never free text. `Lyricsfile::from_ttml` reads `xml:lang` through the
+LANG-002 reader: a recognised value is stored canonicalised (`EN-gb` → `en-GB`, `eng` → `en`);
+an unrecognised one (`zzz`, `English`, `en_GB`, empty) is stored as `und`, with the attribute's
+text kept, exactly as found, in the new field **`LyricsfileMetadata::language_original:
+Option<String>`** (LANG-002: "the original text SHOULD be kept alongside"); an absent `xml:lang`
+leaves both `None`. `language_original` is a MeedyaSuite addition to LRCGET's schema, written
+to YAML only when present, so the usual file is unchanged; readers that ignore unknown keys (this
+module's stated forward-compatibility policy) still read it. Adding the field is a breaking
+change for code that builds `LyricsfileMetadata` with a struct literal: add
+`language_original: None`. (Changed after Codex's review r7: the unrecognised text used to be
+stored as the language itself.)
+
 Modules: `lyricsfile` (model + YAML I/O), `lyricsfile_ttml` (Apple Music TTML import,
 including `lyricOffset` extraction — see #61), `lyricsfile_lrc` (LRC bridge),
 `lyricsfile_export` (multi-format export), `lyricsfile_ttml_classify` (granularity

@@ -113,11 +113,37 @@ pub struct LyricsfileMetadata {
     /// (`docs/standards/media-language-bcp47-policy.md`). `zh-Hans` is a
     /// BCP 47 tag (a language plus a script subtag), not an ISO 639 code
     /// on its own — ISO 639 only ever supplies the first part of a tag.
-    /// A value read from `xml:lang` that this reader could not turn into
-    /// a canonical tag is kept exactly as found (LANG-026, COMPAT-040)
-    /// rather than replaced with `und` or a guess.
+    ///
+    /// Always a real tag, never free text. When the source gave a language
+    /// this crate does not recognise (`xml:lang="zzz"`), this is `und` —
+    /// LANG-002: "The structured value is `und`, and the original text
+    /// SHOULD be kept alongside" — and the text the source gave is kept in
+    /// [`language_original`](Self::language_original), never guessed at
+    /// (COMPAT-040). (Until Codex's review r7 the unrecognised text itself
+    /// was stored here, so a reader of this field could not trust it to be
+    /// a language.) `None` when the source gave no language at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+
+    /// The language text exactly as the source gave it, kept ONLY when it
+    /// was not recognised — in which case [`language`](Self::language) is
+    /// `und` (LANG-002: the original text is kept alongside, so nothing is
+    /// lost and a person can fix it). `None` whenever `language` is a
+    /// recognised tag or absent.
+    ///
+    /// **Not part of LRCGET's Lyricsfile 1.0 schema** — a MeedyaSuite
+    /// addition, written to YAML only when present
+    /// (`skip_serializing_if`), so a file with a recognised language (the
+    /// usual case) is byte-for-byte what it was before this field existed.
+    /// Extra keys are allowed: this module's forward-compatibility policy
+    /// (top of this file) is that a reader ignores fields it does not
+    /// know, the same reasoning `LyricsfileWord::syllables` already relies
+    /// on, so a reader without this field still reads the file (it simply
+    /// sees `language: und`). Proven for this crate's own reader by
+    /// `forward_compat_unknown_field_does_not_fail`; LRCGET's reader is
+    /// taken on that same stated policy, not re-tested here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_original: Option<String>,
 
     /// Set `true` when the track has no vocals. When `true`, `lines` is
     /// expected to be empty and the file is the lyric-format equivalent
@@ -222,6 +248,7 @@ impl Lyricsfile {
                 duration_ms: None,
                 offset_ms: None,
                 language: None,
+                language_original: None,
                 instrumental: false,
             },
             lines: Vec::new(),
@@ -286,6 +313,7 @@ mod tests {
                 duration_ms: Some(295_000),
                 offset_ms: None,
                 language: Some("en".into()),
+                language_original: None,
                 instrumental: false,
             },
             lines: vec![
@@ -444,6 +472,7 @@ lines:
                 duration_ms: None,
                 offset_ms: None,
                 language: Some("en".into()),
+                language_original: None,
                 instrumental: false,
             },
             lines: vec![LyricsfileLine {

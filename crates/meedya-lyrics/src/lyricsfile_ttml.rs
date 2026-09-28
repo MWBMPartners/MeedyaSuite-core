@@ -78,6 +78,7 @@ impl Lyricsfile {
                 duration_ms: None,
                 offset_ms: None,
                 language: None,
+                language_original: None,
                 instrumental: false,
             },
             lines: Vec::new(),
@@ -370,15 +371,27 @@ impl Lyricsfile {
             // full BCP 47 tag already, or an old three-letter code some
             // TTML producers still write. Read it through the shared
             // reader rather than storing whatever text was found as-is.
-            // A value the reader recognises is stored in canonical form
-            // (`EN-gb` -> `en-GB`, `eng` -> `en`); a value it does not
-            // recognise is kept exactly as found — never replaced with
-            // `und` or a guess (LANG-026, COMPAT-040) — so nothing the
-            // document said is lost.
-            lf.metadata.language = Some(match meedya_lang::from_legacy_three_letter(&raw) {
-                Some(tag) => tag.tag,
-                None => raw,
-            });
+            // - Recognised: stored in canonical form (`EN-gb` -> `en-GB`,
+            //   `eng` -> `en`), and nothing else is kept.
+            // - Not recognised (`zzz`, `English`, `en_GB`, an empty
+            //   attribute): the structured language is `und` — LANG-002:
+            //   "The structured value is `und`, and the original text
+            //   SHOULD be kept alongside" — and the attribute's text is
+            //   kept, exactly as found, in `language_original`, so nothing
+            //   the document said is lost and a person can fix it. Never a
+            //   guess at what was meant (COMPAT-040).
+            // (Until Codex's review r7 the unrecognised text itself was
+            // stored as the language, and this comment said it was
+            // "never replaced with `und`" — the opposite of LANG-002.)
+            // An absent attribute never reaches here: the language stays
+            // `None`.
+            match meedya_lang::from_legacy_three_letter(&raw) {
+                Some(tag) => lf.metadata.language = Some(tag.tag),
+                None => {
+                    lf.metadata.language = Some("und".to_string());
+                    lf.metadata.language_original = Some(raw);
+                }
+            }
         }
         if lyric_offset_ms.is_some() {
             lf.metadata.offset_ms = lyric_offset_ms;
@@ -763,8 +776,9 @@ mod tests {
 
     // ------------------------------------------------------------
     // `xml:lang` read through the LANG-002 reader (policy
-    // MWBM-MEDIA-LANG). Three cases: recognised (canonicalised),
-    // unrecognised/malformed (kept exactly as found), and absent (stays
+    // MWBM-MEDIA-LANG). Three cases: recognised (canonicalised, nothing
+    // else kept), unrecognised (`und`, with the original text kept in
+    // `language_original` — LANG-002; Codex review r7), and absent (stays
     // absent).
     // ------------------------------------------------------------
 
@@ -777,6 +791,8 @@ mod tests {
         </div></body></tt>"#;
         let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
         assert_eq!(lf.metadata.language, Some("en-GB".into()));
+        // A recognised value keeps no second copy of the text.
+        assert_eq!(lf.metadata.language_original, None);
     }
 
     #[test]
@@ -788,18 +804,57 @@ mod tests {
         </div></body></tt>"#;
         let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
         assert_eq!(lf.metadata.language, Some("en".into()));
+        assert_eq!(lf.metadata.language_original, None);
     }
 
     #[test]
-    fn xml_lang_unrecognised_value_is_kept_exactly_as_found() {
-        // Not a BCP 47 tag, not an old three-letter code, not a locale
-        // name — LANG-026 / COMPAT-040 say to keep the original text
-        // rather than replace it with `und` or a guess.
-        let ttml = r#"<tt xml:lang="not a real language"><body><div>
+    fn xml_lang_unrecognised_value_is_und_with_the_original_kept() {
+        // Codex's input (`zzz`: not a code, not a registered subtag, not
+        // local use), a language NAME, a locale name and an empty
+        // attribute. LANG-002: the structured value is `und`, and the
+        // original text is kept alongside — never stored as the language,
+        // never guessed at (COMPAT-040).
+        for raw in ["zzz", "not a real language", "English", "en_GB", ""] {
+            let ttml = format!(
+                r#"<tt xml:lang="{raw}"><body><div>
             <p begin="00:00:01.000">hi</p>
-        </div></body></tt>"#;
-        let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
-        assert_eq!(lf.metadata.language, Some("not a real language".into()));
+        </div></body></tt>"#
+            );
+            let lf = Lyricsfile::from_ttml(&ttml, "t", "a").unwrap();
+            assert_eq!(lf.metadata.language.as_deref(), Some("und"), "{raw:?}");
+            assert_eq!(
+                lf.metadata.language_original.as_deref(),
+                Some(raw),
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn xml_lang_unrecognised_value_survives_yaml_and_a_recognised_one_adds_no_key() {
+        let unrecognised = Lyricsfile::from_ttml(
+            r#"<tt xml:lang="zzz"><body><div><p begin="00:00:01.000">hi</p></div></body></tt>"#,
+            "t",
+            "a",
+        )
+        .unwrap();
+        let yaml = unrecognised.to_yaml().unwrap();
+        assert!(yaml.contains("language: und"), "got: {yaml}");
+        assert!(yaml.contains("language_original: zzz"), "got: {yaml}");
+        let back = Lyricsfile::parse(&yaml).unwrap();
+        assert_eq!(back, unrecognised);
+
+        // The usual case writes no extra key, so its YAML is exactly what
+        // it was before `language_original` existed.
+        let recognised = Lyricsfile::from_ttml(
+            r#"<tt xml:lang="en"><body><div><p begin="00:00:01.000">hi</p></div></body></tt>"#,
+            "t",
+            "a",
+        )
+        .unwrap();
+        let yaml = recognised.to_yaml().unwrap();
+        assert!(yaml.contains("language: en"), "got: {yaml}");
+        assert!(!yaml.contains("language_original"), "got: {yaml}");
     }
 
     #[test]
@@ -809,6 +864,7 @@ mod tests {
         </div></body></tt>"#;
         let lf = Lyricsfile::from_ttml(ttml, "t", "a").unwrap();
         assert_eq!(lf.metadata.language, None);
+        assert_eq!(lf.metadata.language_original, None);
     }
 
     // ------------------------------------------------------------
