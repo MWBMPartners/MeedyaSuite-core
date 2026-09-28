@@ -776,7 +776,8 @@ shape:
   them.
 - **A number** (`.2`, `.3` …) is added only when two sidecars would
   otherwise get the same name, numbering from the second. A builder refuses
-  any other number (0, 1, a negative number).
+  any other number (0, 1, a negative number, or more than nine digits —
+  above 999999999 — which a reader could not read back).
 - **Reading one back:** take the stem from the media file the sidecar
   belongs to — never guess where the stem ends — so `Mr. Robot.en.sdh.srt`
   beside `Mr. Robot.mkv` reads as tag `en`, role `sdh`. Because the tag is

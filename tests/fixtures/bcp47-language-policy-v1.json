@@ -1391,6 +1391,35 @@
         "number": null,
         "extension": "srt"
       }
+    },
+    {
+      "id": "sidecar-21",
+      "rules": [
+        "TEXT-030"
+      ],
+      "mode": "build",
+      "stem": "Film",
+      "tag": "en",
+      "roles": [],
+      "extension": "srt",
+      "number": 999999999,
+      "expected": "Film.en.999999999.srt"
+    },
+    {
+      "id": "sidecar-22",
+      "rules": [
+        "TEXT-030"
+      ],
+      "mode": "parse",
+      "stem": "Film",
+      "filename": "Film.en.999999999.srt",
+      "expected": {
+        "tag": "en",
+        "unrecognised": null,
+        "roles": [],
+        "number": 999999999,
+        "extension": "srt"
+      }
     }
   ],
   "canonical_order": [

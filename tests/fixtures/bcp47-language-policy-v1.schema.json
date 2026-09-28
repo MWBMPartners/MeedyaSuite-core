@@ -266,7 +266,8 @@
                   "null"
                 ],
                 "minimum": 2,
-                "description": "The clash-avoiding number, or null."
+                "description": "The clash-avoiding number (2 to 999999999), or null. A builder refuses anything else.",
+                "maximum": 999999999
               },
               "expected": {
                 "type": "string",
@@ -351,7 +352,8 @@
                           "null"
                         ],
                         "minimum": 0,
-                        "description": "The number part, or null. Readers accept any ASCII digits (other tools may write .1); if there are several, the last counts."
+                        "description": "The number part, or null. Readers accept a part of one to nine ASCII digits (other tools may write .1); a longer run of digits is not a number. If there are several number parts, the last counts.",
+                        "maximum": 999999999
                       },
                       "extension": {
                         "type": "string",
