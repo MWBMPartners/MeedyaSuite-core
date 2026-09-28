@@ -3336,6 +3336,18 @@ mod tests {
                but after saving would hold one value, the text \"en\"",
             ],
         );
+        // On a file with no language at all, the value is not even put
+        // back over: it is taken out again, so the file would gain nothing
+        // while the call reported one tag written. Refused; the copy
+        // holding no such atom where one was asked is the whole difference.
+        refused_on_real_file(
+            "two-artists.m4a",
+            |path| registry_write(path, "LANGUAGE", "fr"),
+            &[
+                "----:com.apple.iTunes:LANGUAGE was asked to hold one value, the text \"fr\", \
+               but after saving would hold nothing",
+            ],
+        );
         // A key the file does not hold yet is stored, and reported so.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = real_m4a(dir.path(), "language-en.m4a");
@@ -3642,6 +3654,35 @@ mod tests {
             occurrences(&std::fs::read(&path).expect("read"), b"TLAN"),
             1
         );
+    }
+
+    #[test]
+    fn write_tags_recovers_split_languages_before_the_edit_not_after() {
+        // Pins the order inside `edit_and_save`: step 1 (recovering the
+        // file's languages) must come straight after reading, before the
+        // edit. Moved after the edit, it puts `eng` and `fra` back over the
+        // `deu` asked for — and before this test (the stand-in review of
+        // revision 8, M10) nothing noticed. Each of the three formats.
+        let fixtures: [(&str, Fixture); 3] = [
+            ("mp3", minimal_untagged_mp3),
+            ("wav", minimal_untagged_wav),
+            ("aiff", minimal_untagged_aiff),
+        ];
+        for (extension, fixture) in fixtures {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = file_with_split_tlan_frames(dir.path(), extension, fixture, "eng\0fra");
+            write_tags(&path, &[(CommonTag::Language, "deu".into())]).expect("write");
+            assert_eq!(
+                read_tags(&path).expect("read")[&CommonTag::Language],
+                ["deu"],
+                "{extension}: the language asked for, and only it"
+            );
+            assert_eq!(
+                occurrences(&std::fs::read(&path).expect("read"), b"TLAN"),
+                1,
+                "{extension}"
+            );
+        }
     }
 
     #[test]

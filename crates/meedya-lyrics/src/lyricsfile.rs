@@ -1260,7 +1260,13 @@ lines:
         // or failed on. Each character is tested alone and after an
         // ordinary line break, in every text field at once, through the
         // real `to_yaml` and `parse`, and must be written as an escape.
-        for c in OTHER_LINE_BREAKS {
+        //
+        // The four characters are listed HERE, not taken from
+        // `OTHER_LINE_BREAKS`: looping over the constant let a character
+        // dropped from it drop out of this test too, so the test stayed
+        // green (the stand-in review of revision 8 dropped U+2029 from the
+        // constant, M22, and nothing failed).
+        for c in ['\r', '\u{85}', '\u{2028}', '\u{2029}'] {
             for value in [
                 format!("{c}"),
                 format!("a{c}b"),

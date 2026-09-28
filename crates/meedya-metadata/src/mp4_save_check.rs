@@ -919,9 +919,14 @@ mod tests {
         let original = read(&[isrc(b"OLD"), isrc(b"NEW")].concat());
         // Exactly as asked: allowed, whatever the original held.
         assert!(differences(&original, &read(&isrc(b"X")), &expected).is_empty());
-        // Left beside the old ones, or not stored: refused.
+        // Left beside the old ones (before or after them), not stored, or
+        // gone altogether: refused. The two middle cases differ from what
+        // was asked ONLY in how many atoms there are — checking the atoms
+        // pair by pair alone would pass them.
         for saved in [
             [isrc(b"OLD"), isrc(b"NEW"), isrc(b"X")].concat(),
+            [isrc(b"X"), isrc(b"OLD")].concat(),
+            Vec::new(),
             isrc(b"OLD"),
         ] {
             let found = differences(&original, &read(&saved), &expected);

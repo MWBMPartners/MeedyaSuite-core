@@ -961,7 +961,7 @@ mod tests {
     fn frame_names_are_read_as_lofty_reads_them() {
         use FrameName::{Invalid, Language, OldLanguageNameInV2_4, Other};
         // (version, the header's name bytes, what lofty makes of it).
-        let cases: [(u8, &[u8], FrameName); 14] = [
+        let cases: [(u8, &[u8], FrameName); 16] = [
             (2, b"TLA", Language),
             (2, b"TT2", Other),
             (2, b"TL\0", Invalid),
@@ -976,6 +976,12 @@ mod tests {
             (4, b"TIT2", Other),
             (4, b"TL\0N", Invalid),
             (4, b"t!@#", Invalid),
+            // Zero bytes at the END of a four-byte name are dropped first
+            // (not in the middle, above): `TT2` and a zero is a valid
+            // three-letter name to lofty, an ordinary frame; `TL` and two
+            // zeros is too short.
+            (4, b"TT2\0", Other),
+            (4, b"TL\0\0", Invalid),
         ];
         for (major, name, expected) in cases {
             let mut header = name.to_vec();
@@ -987,6 +993,29 @@ mod tests {
                 String::from_utf8_lossy(name)
             );
         }
+    }
+
+    #[test]
+    fn a_frame_whose_name_ends_in_a_zero_byte_is_stepped_over() {
+        // An ID3v2.4 tag with a frame named `TT2` and a zero between two
+        // language frames. lofty drops the zero and keeps the frame as an
+        // ordinary one; read as a name with a zero in it, it would count as
+        // no valid name, and the save would be refused for nothing (the
+        // stand-in review of revision 8 found no test for this, M8b).
+        let tag = tag(
+            4,
+            0,
+            &[
+                text_frame(4, b"TLAN", 0, b"eng"),
+                text_frame(4, b"TT2\0", 0, b"Title"),
+                text_frame(4, b"TLAN", 0, b"fra"),
+            ],
+            0,
+        );
+        assert_eq!(
+            tlan_frames_in_tags(&[tag]).expect("read"),
+            several(&["eng", "fra"])
+        );
     }
 
     // ------------------------------------------------------------------
