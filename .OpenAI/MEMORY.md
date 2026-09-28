@@ -27,8 +27,12 @@
 - Two tag libraries (`mp4ameta` and `lofty`) coexist on purpose. Do not unify them.
 - On `feature/bcp47-language-policy`, several `tag_io` writes are **refused on purpose** rather
   than allowed to lose data: ID3v2 language frames that cannot be merged safely (including an
-  old `TLA` frame inside an ID3v2.4 tag), and M4A writes that would drop a value or a registry
-  key M4A cannot store (#102, #103). The two public language steps must be taken in order —
+  old `TLA` frame inside an ID3v2.4 tag, and language frames spread over more than one ID3v2
+  tag or ID3 chunk), and — since revision 9 — any M4A save whose checked copy (made on a
+  temporary file and compared atom by atom with the original, `mp4_save_check`) would change
+  an atom not asked for or not store what was asked (#102, #103). That refuses most iTunes /
+  Apple Music files today; it is the interim guard, not a bug. The two public language steps
+  must be taken in order —
   `recover_languages_after_reading` right after reading, `gather_languages_before_saving` right
   before saving. Details: `.claude/MEMORY.md`, "lofty: several languages".
 

@@ -178,13 +178,25 @@ These refusals are deliberate. Do not "fix" them by letting the save go ahead.
   `recover_languages_after_reading` straight after reading (it reads the disk), then
   `gather_languages_before_saving` just before saving (it never reads the disk). A single
   helper doing both before the save undid the caller's own language edits; it was removed.
-- **M4A (#102, #103, interim guards).** Every M4A write except the language atom goes through
-  lofty's format-neutral `Tag`, which keeps only the first value of each text/picture/flag/
-  track atom and rebuilds a freeform name by splitting at colons. A write that would lose a
-  value (several cover images, several values in one text atom, several rtng values, a colon
-  inside a freeform name) is refused before anything is saved. `write_registry_tags` builds
-  `namespace:name` keys, which an M4A file cannot store (it needs `----:mean:name`), so on an
-  M4A file it refuses rather than report tags "written". The real fixes are still open.
+- **Language frames in more than one ID3v2 tag** (an MP3's tags one after another, a WAV or
+  AIFF file's several ID3 chunks) refuse the save: lofty rewrites only one of them, so merging
+  left the languages in two places, swapping order save after save (revision 9).
+- **M4A (#102, #103): every save is CHECKED, not predicted (revision 9).** Every M4A write
+  except the language atom goes through lofty's format-neutral `Tag`, and that route changes
+  atoms nobody asked for — the first value only, flags rewritten as text, freeform names
+  respelled, unusual cover-art types dropped, 1- and 2-byte numbers rewritten as 4, a 6-byte
+  `disk` as 8. Revision 8 LISTED such cases and the stand-in review found more, so the list is
+  gone: `tag_io` saves to a temporary copy, `mp4_save_check` reads the `ilst` atoms of both
+  files from their bytes, and the copy replaces the original (one rename) only when every atom
+  not asked for is byte for byte unchanged and every atom asked for holds exactly what was asked,
+  nothing beside it. "Asked for" is RECORDED as each write is made (`keys_written`, the registry
+  keys), not guessed from which values changed — writing the artist replaces the whole `©ART`
+  atom on purpose, even when the value was already first. One deliberate exception: several
+  language atoms are mended into one, checked value by value. **Consequence:** a typical
+  iTunes / Apple Music file is refused even for a title-only write, until the real fix (a route
+  that keeps those atoms) — still open in #102. `write_registry_tags` also refuses
+  `namespace:name` keys an M4A file cannot store (#103). Real test files for all of this are in
+  `crates/meedya-metadata/testdata/m4a/` (made by ffmpeg + mutagen; the script is beside them).
 
 ## tokio: `timeout` alone does not kill a child process
 

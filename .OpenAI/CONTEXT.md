@@ -16,8 +16,9 @@ use it as a code dependency. Its contract with those apps is [`docs/API.md`](../
 - Latest work: new crate `meedya-audio-analysis` (tempo and musical key detection, issue #16),
   built and reviewed by Claude on 2026-09-09. **A Codex review of that work is the next step.**
 - Separate branch in flight (from 2026-09-28): `feature/bcp47-language-policy`, the shared
-  language policy MWBM-MEDIA-LANG (issue #99). Its latest round is revision 8, acting on Codex's
-  review of revisions 5–7 — not yet reviewed itself. See `.claude/HANDOFF.md` §0.0.
+  language policy MWBM-MEDIA-LANG (issue #99). Its latest round is revision 9, acting on the
+  stand-in review of revision 8 (a fresh Opus agent standing in for Codex, which was out of
+  allowance) — not yet reviewed itself. See `.claude/HANDOFF.md` §0.0.
 - Full status board and open questions: `.claude/HANDOFF.md` §0.
 
 ## Languages, tracks, subtitles and lyrics (mandatory)

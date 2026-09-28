@@ -701,3 +701,45 @@ that eight other repositories pin at `aaaa585` were not touched):
 Decision recorded: the doc-build check with `-D warnings` fails before and after this round on
 warnings in three crates this round may not touch; the two touched crates now pass it.
 853 / 1000 tests. Not yet reviewed; not pushed.
+
+## 2026-09-28 — Language policy, revision 9: the stand-in review of revision 8
+
+On `feature/bcp47-language-policy` (issue #99). Codex was out of allowance, so a fresh Opus agent
+reviewed revision 8 in its place, with real files before and after each write and planted faults.
+Acted on in `crates/meedya-metadata` and `crates/meedya-lyrics` only; the five protected paths
+were not touched.
+
+- **M4A saves are checked, not predicted (#102, #103).** Revision 8 refused a LIST of the ways
+  lofty's M4A route loses data. The review found more on real files tagged by mutagen: a
+  title-only write turned the `pgap`/`hdvd`/`shwm` flags into the text "0" (mutagen then read
+  `pgap` as true), respelled freeform atoms (`Mood` → `MOOD`, `isrc` → `ISRC`), and dropped a
+  `covr` atom whose second value had an odd data type — all the cover art. The lead decided: stop
+  predicting, check. New private module `mp4_save_check`: the save is made on a temporary copy in
+  the same folder, both files' `ilst` atoms are read from their bytes, and the copy replaces the
+  original (one rename) only when every atom not asked for is byte for byte unchanged and every
+  atom asked for holds exactly what was asked, with nothing of that name beside it. What was
+  "asked for" is recorded as each write is made (a scratch write into an empty tag finds the
+  keys), so writing the artist on a two-artist atom is a deliberate replacement and allowed —
+  revision 8's list refused it, and is gone. One exception kept on purpose: several language
+  atoms are mended into one, checked value by value.
+- **The price, measured:** lofty also rewrites 1- and 2-byte whole numbers (`stik`, `rtng`,
+  `tmpo`, `akID`) as 4 bytes, and a 6-byte `disk` as 8. A file tagged the way iTunes and Apple
+  Music tag files is therefore refused even for a title-only write, until #102's real fix (a
+  route that keeps those atoms). That is the decision working as specified, and it is written
+  into #102, the docs and a test.
+- **Language frames in more than one ID3v2 tag or ID3 chunk** refuse the save: lofty rewrites
+  only one of them, so merging left the languages in two places, their order flipping from one
+  save to the next (the reviewer's WAV). The module comment that said "Nothing is deleted" was
+  corrected.
+- **Test gaps closed**, each proved by re-planting the reviewer's fault: the order inside
+  `edit_and_save` (M10), the four line breaks listed in the test itself (M22), two track
+  numbers in one atom (M17's case, now checked by the comparison), a frame name ending in a zero
+  byte (M8b). Planting faults in this round's own check found one more gap (the asked-for
+  comparison's atom count could be removed with every test still green); closed the same way.
+  Every other planted fault — the reviewer's that still apply, and thirteen new ones against
+  the check (skip the type, skip the locale, first value only, save in place, never replace,
+  keep the temporary copy, …) — turns a test red.
+
+Real test files — made by ffmpeg, tagged by mutagen, a few shapes edited byte by byte — are in
+`crates/meedya-metadata/testdata/m4a/`, with the script that makes them. 877 / 1024 tests. Not
+yet reviewed; not pushed.

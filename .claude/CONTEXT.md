@@ -34,7 +34,7 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | Crate | Purpose | Status | Tests |
 |---|---|---|---|
 | [meedya-codecs](../crates/meedya-codecs/) | Audio/video/subtitle codecs, container formats, HDR, spatial audio, classification, FFprobe + MediaInfo integration | **Implemented** | 47 |
-| [meedya-metadata](../crates/meedya-metadata/) | Two coexisting tag I/O surfaces: `lofty`-backed (multi-format) and `mp4ameta`-backed (sandbox-safe). Tag registry, JSON path extraction, codec ID tags, playback bounds, cross-repo `identifier_types` registry (#65). | **Implemented** | 177 |
+| [meedya-metadata](../crates/meedya-metadata/) | Two coexisting tag I/O surfaces: `lofty`-backed (multi-format) and `mp4ameta`-backed (sandbox-safe). Tag registry, JSON path extraction, codec ID tags, playback bounds, cross-repo `identifier_types` registry (#65). | **Implemented** | 201 |
 | [meedya-tags-extended](../crates/meedya-tags-extended/) | Multi-format DJ metadata (lofty). `ExtendedTags`/`MusicalKey`/`CuePoint`/`LoopPoint`/`BeatGrid`. Standard BPM+key+comment + Mixed In Key reader (`mik`). Other proprietary readers pending. | **Implemented (foundation + MIK)** | 180 |
 | [meedya-library-import](../crates/meedya-library-import/) | External library ingestion: iTunes XML, CUE sheets. Emits normalized `LibraryEntry` records. | **Implemented** | 30 |
 | [meedya-lyrics](../crates/meedya-lyrics/) | LRCLIB client, LRC parser/writer, sidecar I/O, plain-text and SYLT tag-embed. | **Implemented** | 157 |
@@ -45,11 +45,11 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 4 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 853 tests with default features, 1000 with `--all-features`** (the CI configuration) on `feature/bcp47-language-policy`. All passing, 0 failing.
+**Total: 877 tests with default features, 1024 with `--all-features`** (the CI configuration) on `feature/bcp47-language-policy`. All passing, 0 failing.
 
-> **Measured, not carried forward.** From `cargo test --workspace [--all-features] --locked` run on 2026-09-28, after the fixes for Codex's review of revisions 5–7 of policy MWBM-MEDIA-LANG (revision 8: `meedya-metadata` +15 tests, `meedya-lyrics` +1). Earlier measurements the same day: 837 / 984 (after the stand-in review of revision 6), 812 / 959 (after the stand-in review of revision 5), 796 / 943 (after Codex's review r7), 780 / 927 (after policy revision 4), 736 / 883 (after bringing `meedya-lyrics` and `meedya-metadata` into line with the policy), 716 / 863 (after adding `meedya-lang`); before `meedya-lang`, 644 / 791. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
+> **Measured, not carried forward.** From `cargo test --workspace [--all-features] --locked` run on 2026-09-28, after the fixes for the stand-in review of revision 8 of policy MWBM-MEDIA-LANG (revision 9: `meedya-metadata` +24 tests; `meedya-lyrics` unchanged in number, one test corrected). Earlier measurements the same day: 853 / 1000 (after Codex's review of revisions 5–7), 837 / 984 (after the stand-in review of revision 6), 812 / 959 (after the stand-in review of revision 5), 796 / 943 (after Codex's review r7), 780 / 927 (after policy revision 4), 736 / 883 (after bringing `meedya-lyrics` and `meedya-metadata` into line with the policy), 716 / 863 (after adding `meedya-lang`); before `meedya-lang`, 644 / 791. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
 
-Per-crate, `--all-features`: `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 17 · `meedya-lang` 120 · `meedya-library-import` 30 · `meedya-lyrics` 157 · `meedya-metadata` 177 · `meedya-providers` 201 · `meedya-tags-extended` 180 (sum 1000). `meedya-providers` measures 59 with default features (provider impls are feature-gated), `meedya-fingerprint` 12; with default features the per-crate figures sum to 853.
+Per-crate, `--all-features`: `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 17 · `meedya-lang` 120 · `meedya-library-import` 30 · `meedya-lyrics` 157 · `meedya-metadata` 201 · `meedya-providers` 201 · `meedya-tags-extended` 180 (sum 1024). `meedya-providers` measures 59 with default features (provider impls are feature-gated), `meedya-fingerprint` 12; with default features the per-crate figures sum to 877.
 
 > **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 
@@ -165,8 +165,8 @@ Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `p
 
 ```bash
 cargo build --workspace          # all 11 crates
-cargo test  --workspace          # 853 tests
-cargo test  --workspace --all-features   # 1000 tests (the CI configuration)
+cargo test  --workspace          # 877 tests
+cargo test  --workspace --all-features   # 1024 tests (the CI configuration)
 cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```
