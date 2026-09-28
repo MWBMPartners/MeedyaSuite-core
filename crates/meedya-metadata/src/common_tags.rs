@@ -104,7 +104,23 @@ pub enum CommonTag {
     // --- Core info (#65) ---
     /// Track subtitle / version qualifier (ID3v2 `TIT3`).
     Subtitle,
-    /// Primary content language (ID3v2 `TLAN`; ISO 639-2 recommended).
+    /// Primary content language (ID3v2 `TLAN`; Vorbis/MP4 `LANGUAGE`).
+    ///
+    /// Governed by policy MWBM-MEDIA-LANG
+    /// (`docs/standards/media-language-bcp47-policy.md`), TRACK-070.
+    /// **Writing**: `tag_io::write_tags` reads the caller's value with the
+    /// LANG-002 reader (`meedya_lang::from_legacy_three_letter`) before
+    /// writing it — see `write_common_tag_to_lofty`'s `Language` arm for
+    /// the exact per-format rule (an ID3v2 tag gets the ISO 639-2
+    /// terminology three-letter code, `und` when the value is not
+    /// recognised; every other format gets the canonical BCP 47 tag, or
+    /// the caller's original text unchanged when it is not recognised).
+    /// **Reading**: `tag_io::read_tags` returns this field's raw text
+    /// exactly as the file holds it — a three-letter code, a BCP 47 tag,
+    /// or whatever another tool happened to write. It is NOT normalised
+    /// on the way out, so **callers MUST read the value with
+    /// `meedya_lang::from_legacy_three_letter` before treating it as a
+    /// language** — never assume it is already a BCP 47 tag.
     Language,
 
     // --- Contributor roles beyond Composer (#65) ---

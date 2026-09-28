@@ -20,7 +20,7 @@ use std::path::Path;
 use lofty::config::WriteOptions;
 use lofty::prelude::*;
 use lofty::probe::Probe;
-use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem};
+use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem, TagType};
 
 use crate::common_tags::CommonTag;
 use crate::error::MetadataError;
@@ -552,9 +552,44 @@ fn write_common_tag_to_lofty(tag: &mut Tag, common_tag: CommonTag, value: &str) 
             ));
         }
         CommonTag::Language => {
+            // Policy MWBM-MEDIA-LANG, TRACK-070: read the caller's value
+            // with the LANG-002 reader first, then decide what to write
+            // by which kind of tag this container actually gets (an
+            // ID3v2 tag has no full-tag language field at all — TRACK-070's
+            // table shows a dash — so it gets the three-letter code;
+            // every other format in the table has a full-tag field that
+            // takes the language as free text, so it gets the canonical
+            // BCP 47 tag).
+            let parsed = meedya_lang::from_legacy_three_letter(value);
+            let write_value = if tag.tag_type() == TagType::Id3v2 {
+                match &parsed {
+                    // `und` covers both "no ISO 639-2 code exists for this
+                    // language" and "this is a grandfathered/private-use/
+                    // malformed value with no primary language at all" —
+                    // `iso639_2_code` already makes that distinction moot
+                    // by returning `und` for both (see its doc comment).
+                    Some(lang_tag) => {
+                        meedya_lang::iso639_2_code(lang_tag, meedya_lang::Iso639Form::Terminology)
+                    }
+                    // The reader could not make sense of `value` at all —
+                    // there is no primary language to look an ISO 639-2
+                    // code up under, so `und` (TRACK-070's "for any other
+                    // language with no ISO 639-2 code... write `und`").
+                    None => "und".to_string(),
+                }
+            } else {
+                match &parsed {
+                    // Recognised: store the canonical tag, per LANG-001.
+                    Some(lang_tag) => lang_tag.tag.clone(),
+                    // Not recognised: a free-text field keeps what it was
+                    // given rather than losing it (LANG-026, COMPAT-040) —
+                    // never replaced with `und` or a guess.
+                    None => value.to_string(),
+                }
+            };
             tag.insert(TagItem::new(
                 ItemKey::Language,
-                ItemValue::Text(value.into()),
+                ItemValue::Text(write_value),
             ));
         }
 
@@ -619,9 +654,12 @@ fn write_common_tag_to_lofty(tag: &mut Tag, common_tag: CommonTag, value: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Only used by tests below — kept out of the module-level import so a
-    // non-test build doesn't warn about it being unused.
-    use lofty::tag::TagType;
+    // `TagType` used to be imported here only, kept out of the
+    // module-level import so a non-test build didn't warn about it being
+    // unused — now that `write_common_tag_to_lofty`'s `Language` arm
+    // reads `tag.tag_type()` in real (non-test) code too, the
+    // module-level `use` above already brings it in via `use super::*;`,
+    // so a second import here would be a redundant/unused-import warning.
 
     // ------------------------------------------------------------------
     // #79 — untagged-container fixtures
@@ -1119,6 +1157,78 @@ mod tests {
         assert_eq!(
             vorbis_roundtrip(CommonTag::Mixer, "Max", &ItemKey::MixEngineer).as_deref(),
             Some("Max")
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // CommonTag::Language (policy MWBM-MEDIA-LANG, TRACK-070)
+    //
+    // ID3v2 has no full-tag language field at all (TRACK-070's table
+    // shows a dash for it) — only the three-letter `TLAN` frame, which
+    // `id3v2_roundtrip` exercises via `ItemKey::Language`. FLAC's
+    // container tag type is Vorbis Comments, whose `LANGUAGE` field is
+    // free text and takes the canonical BCP 47 tag — `vorbis_roundtrip`
+    // stands in for "write to a FLAC file" without needing a real FLAC
+    // fixture, the same way the roundtrip helpers above stand in for a
+    // real MP3 file.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn language_pt_br_writes_iso639_2_terminology_code_on_id3v2() {
+        // `por` is Portuguese's ISO 639-2 terminology code (there is no
+        // separate bibliographic form for Portuguese, but TRACK-070 always
+        // asks for the terminology form on ID3v2 regardless).
+        assert_eq!(
+            id3v2_roundtrip(CommonTag::Language, "pt-BR", &ItemKey::Language).as_deref(),
+            Some("por")
+        );
+    }
+
+    #[test]
+    fn language_pt_br_writes_canonical_tag_on_flac_vorbis() {
+        // Already canonical, so it round-trips unchanged — region and
+        // script would be lost if this were forced through the
+        // three-letter form instead (TRACK-070's reason the full-tag
+        // field must always be written where one exists).
+        assert_eq!(
+            vorbis_roundtrip(CommonTag::Language, "pt-BR", &ItemKey::Language).as_deref(),
+            Some("pt-BR")
+        );
+    }
+
+    #[test]
+    fn language_old_three_letter_code_is_canonicalised_on_flac_vorbis() {
+        // `eng` is what MusicBrainz Picard and others write into Vorbis
+        // `LANGUAGE` (LANG-002's own example); this format gets the
+        // canonical two-letter form back, not the three-letter input
+        // echoed unchanged.
+        assert_eq!(
+            vorbis_roundtrip(CommonTag::Language, "eng", &ItemKey::Language).as_deref(),
+            Some("en")
+        );
+    }
+
+    #[test]
+    fn language_unrecognised_value_is_kept_as_is_on_flac_vorbis() {
+        // `zzz` is not a legacy ISO 639-2 code, not a registered language
+        // subtag, and not in the qaa-qtz local-use range — LANG-026 /
+        // COMPAT-040 say a free-text field keeps what it was given rather
+        // than losing it, so it is NOT replaced with `und` here.
+        assert_eq!(
+            vorbis_roundtrip(CommonTag::Language, "zzz", &ItemKey::Language).as_deref(),
+            Some("zzz")
+        );
+    }
+
+    #[test]
+    fn language_unrecognised_value_becomes_und_on_id3v2() {
+        // ID3v2 has no full-tag field to fall back to, so an unrecognised
+        // value becomes `und` here (TRACK-070) rather than being echoed —
+        // the opposite of the Vorbis case above, and the point of the
+        // test: the two formats deliberately behave differently.
+        assert_eq!(
+            id3v2_roundtrip(CommonTag::Language, "zzz", &ItemKey::Language).as_deref(),
+            Some("und")
         );
     }
 }
