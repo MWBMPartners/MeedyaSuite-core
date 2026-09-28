@@ -359,6 +359,36 @@ class CheckCopiesTest(unittest.TestCase):
         self.assertIn("app3/tests/run-conformance.php is laid out like a copy of the PHP "
                       "conformance runner", self.err)
 
+    # --- the stand-in review of revision 5 -------------------------------------
+    # A runner was found only in the copy layout (<folder>/tests/), so one
+    # moved next to a copy - the reviewer's <copy>/ci/run-conformance.php,
+    # where a CI step could still run it - was not reported.
+
+    def test_an_unlisted_runner_anywhere_fails_while_a_php_copy_is_locked(self):
+        self.init_with_php_files()
+        for folder in ("php/bindings/php/media-language/ci", "tools", "."):
+            path = os.path.normpath(f"{folder}/run-conformance.php")
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w") as f:
+                f.write("<?php exit(0);\n")
+            self.assertEqual(self.run_checker(), 1, path)
+            self.assertIn(f"{path} has the PHP conformance runner's name but is not in the lock",
+                          self.err)
+            os.unlink(path)
+        self.assertEqual(self.run_checker(), 0, self.err)
+
+    def test_an_unlisted_runner_anywhere_is_found_in_a_git_checkout_too(self):
+        import subprocess
+        self.init_with_php_files()
+        subprocess.run(["git", "init", "-q"], check=True)
+        os.makedirs("php/bindings/php/media-language/ci")
+        with open("php/bindings/php/media-language/ci/run-conformance.php", "w") as f:
+            f.write("<?php exit(0);\n")
+        subprocess.run(["git", "add", "-A"], check=True)
+        self.assertEqual(self.run_checker(), 1)
+        self.assertIn("php/bindings/php/media-language/ci/run-conformance.php has the PHP "
+                      "conformance runner's name", self.err)
+
     def test_an_unlisted_readme_beside_a_php_library_file_is_reported(self):
         self.init_with_php_files()
         os.makedirs("app3")

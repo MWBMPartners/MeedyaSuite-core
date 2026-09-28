@@ -351,12 +351,17 @@ def unlisted_copies(root, files):
     not in the lock: a list of (path, why) pairs.
 
     - A file with a DISTINCTIVE_NAMES name, anywhere.
-    - When the lock names a copy of the PHP implementation: any
-      .../tests/run-conformance.php (the runner's place in that layout), and
-      any README.md beside a MediaLanguagePolicy.php or in a locked copy's
-      folder. (README.md and run-conformance.php are too common to search for
-      by name alone. Before Codex's review r7 they were not searched for at
-      all; a runner that no lock line names could be run by CI unchecked.)
+    - When the lock names a copy of the PHP implementation: EVERY tracked
+      file named run-conformance.php, wherever it sits, and any README.md
+      beside a MediaLanguagePolicy.php or in a locked copy's folder.
+      (README.md is too common a name to search for by name alone, so it is
+      found by where it sits. Before Codex's review r7 neither name was
+      searched for at all; a runner that no lock line names could be run by
+      CI unchecked. Until the stand-in review of revision 5 a runner was
+      found only in the copy layout, <folder>/tests/run-conformance.php, so
+      one moved to <copy>/ci/run-conformance.php - where a CI step could
+      still run it - was not reported. A consumer that keeps a runner of its
+      own under that name, not a copy of the master's, must now rename it.)
 
     Uses git's list of tracked files when this is a git checkout; otherwise
     walks the folders and fails if any folder cannot be read."""
@@ -411,6 +416,11 @@ def unlisted_copies(root, files):
             if name == PHP_RUNNER_NAME and os.path.basename(parent) == "tests":
                 unlisted.append((path, "is laid out like a copy of the PHP conformance runner "
                                        "(<folder>/tests/run-conformance.php) but is not in the lock"))
+            elif name == PHP_RUNNER_NAME:
+                unlisted.append((path, "has the PHP conformance runner's name but is not in the "
+                                       "lock; while the lock names a copy of the PHP "
+                                       "implementation, every tracked run-conformance.php must "
+                                       "be in it, wherever it sits"))
             elif name == PHP_README_NAME and parent in folders:
                 unlisted.append((path, "sits where a copy of the PHP implementation keeps its "
                                        "README.md but is not in the lock"))
