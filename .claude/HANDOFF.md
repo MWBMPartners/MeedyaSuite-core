@@ -40,6 +40,7 @@ were active). So this is a deliberate, owner-approved exception to "one branch o
   `und`, on ID3v2; the canonical tag, or the original text unchanged, everywhere else) instead
   of being passed straight through. +20 tests (736 / 883 measured, doc-count guard passes). Not
   yet independently reviewed. Does not reach MeedyaDL, which pins `meedya-lyrics` from `main`.
+- **Policy revision 4** (28 Sept 2026, `813f4e4`…docs): six rules settled + 20 cases (288, no old answer changed); Rust review findings fixed (+`RoleItem`, serde — API break for implementers), PHP updated, both runners refuse damaged case files, copy checker needs all three PHP files; Rust and PHP give the same policy answer in all 210,736 random comparisons (they differ only on which text a whitespace-only malformed value keeps, which the policy does not say); 780 / 927 tests. Not reviewed, not pushed.
 
 
 ### 0.1 In one paragraph

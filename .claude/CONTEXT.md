@@ -41,15 +41,15 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | [meedya-providers](../crates/meedya-providers/) | Provider framework: traits, capabilities, rate limiting, credentials, cover art, fuzzy match scoring, Lucene/Solr query escaping (`lucene`). In-repo `MetadataProvider` impls (feature-gated): MusicBrainz, Spotify, Apple Music, Deezer, TMDB, TheTVDB, OMDb, Apple TV, iTunes Store, Apple Podcasts, ISRC, EIDR, ISWC. | **Implemented** | 59 (199 all-features) |
 | [meedya-audio-analysis](../crates/meedya-audio-analysis/) | Tempo (BPM) and musical key detection from the audio itself. Refuses to answer rather than guess when it is not sure. Shares one decode pass between the two, then takes two different frequency analyses because tempo needs fine timing and key needs fine pitch. | **Implemented** | 67 |
 | [meedya-fingerprint](../crates/meedya-fingerprint/) | AcoustID client + ReplayGain EBU R128 analyser (bounded FFmpeg subprocess). Pure-Rust Chromaprint fingerprint generation (no fpcalc) behind the non-default `chromaprint` feature. | **Implemented** | 10 (15 all-features) |
-| [meedya-lang](../crates/meedya-lang/) | Shared implementation of the Media Language & BCP 47 Policy (`MWBM-MEDIA-LANG`): canonical tag parsing, stored order, presentation order, role ordering, preference matching (never guessing which of two same-ID tracks was meant — refuses with an error instead), sidecar naming. Conformance-tested against a 268-case fixture shared with the PHP implementation. No feature flags — same test count either way. | **Implemented** | 72 |
+| [meedya-lang](../crates/meedya-lang/) | Shared implementation of the Media Language & BCP 47 Policy (`MWBM-MEDIA-LANG`): canonical tag parsing, stored order, presentation order, role ordering, preference matching (never guessing which of two same-ID tracks was meant — refuses with an error instead), sidecar naming. Conformance-tested against a 288-case fixture shared with the PHP implementation; the test runner also refuses a damaged case file (18 tests prove it). No feature flags — same test count either way. | **Implemented** | 116 |
 | [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 4 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 736 tests with default features, 883 with `--all-features`** (the CI configuration) on `feature/bcp47-language-policy`. All passing, 0 failing.
+**Total: 780 tests with default features, 927 with `--all-features`** (the CI configuration) on `feature/bcp47-language-policy`. All passing, 0 failing.
 
 > **Measured, not carried forward.** From `cargo test --workspace [--all-features]` run on 2026-09-28, after bringing `meedya-lyrics` and `meedya-metadata` into line with policy MWBM-MEDIA-LANG (`meedya-lyrics` +15 tests, `meedya-metadata` +5). The previous measurement (after adding `meedya-lang`, before this fix) was 716 / 863; before `meedya-lang`, 644 / 791. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
 
-Per-crate, `--all-features`: `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-lang` 72 · `meedya-library-import` 30 · `meedya-lyrics` 145 · `meedya-metadata` 120 · `meedya-providers` 199 · `meedya-tags-extended` 180. `meedya-providers` measures 59 with default features (provider impls are feature-gated).
+Per-crate, `--all-features`: `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-lang` 116 · `meedya-library-import` 30 · `meedya-lyrics` 145 · `meedya-metadata` 120 · `meedya-providers` 199 · `meedya-tags-extended` 180. `meedya-providers` measures 59 with default features (provider impls are feature-gated).
 
 > **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 
@@ -165,8 +165,8 @@ Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `p
 
 ```bash
 cargo build --workspace          # all 11 crates
-cargo test  --workspace          # 736 tests
-cargo test  --workspace --all-features   # 883 tests (the CI configuration)
+cargo test  --workspace          # 780 tests
+cargo test  --workspace --all-features   # 927 tests (the CI configuration)
 cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```

@@ -43,20 +43,20 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-db` | `client`, `export`, `models` | 4 | Foundation stable; specific endpoints may evolve |
 | `meedya-audio-analysis` | `tempo`, `key`, `decode` (feature-gated, default-on) | 67 | Experimental |
 | `meedya-fingerprint` | `acoustid`, `chromaprint` (feature-gated, non-default), `replaygain` | 10 | Stable |
-| `meedya-lang` | `tag`, `canonical`, `roles`, `tracks`, `presentation`, `matching`, `select`, `sidecar` | 72 | Stable — fixture-conformance tested against `tests/fixtures/bcp47-language-policy-v1.json` (268 cases) |
+| `meedya-lang` | `tag`, `canonical`, `roles`, `tracks`, `presentation`, `matching`, `select`, `sidecar` | 116 | Stable — fixture-conformance tested against `tests/fixtures/bcp47-language-policy-v1.json` (288 cases) |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
 | `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 145 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
 | `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `template`, `writer` | 120 | Stable (two co-existing surfaces + identifier-types registry + filename template engine) |
 | `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 59 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `ai_content`, `conflict_policy`, `genre_hierarchy`, `io`, `mik`, `model`, `play_history`, `quick_tag`, `sidecar_json`, `standard`, `stems` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 736 tests** with default features, **883** with `--all-features` (the CI configuration). All passing, 0 failing.
+**Total: 780 tests** with default features, **927** with `--all-features` (the CI configuration). All passing, 0 failing.
 
-> These are **measured** figures — `cargo test --workspace [--all-features]` run against `feature/bcp47-language-policy` on 2026-09-28, after bringing `meedya-lyrics` and `meedya-metadata` into line with policy MWBM-MEDIA-LANG (LANG-002/LANG-003/TRACK-070 — `meedya-lyrics` +15 tests, `meedya-metadata` +5) — not carried forward from a previous edit. For reference, the previous measurement (after `meedya-lang` was added, before this fix) was 716 / 863; before `meedya-lang`, 644 / 791.
+> These are **measured** figures — `cargo test --workspace [--all-features] --locked` run against `feature/bcp47-language-policy` on 2026-09-28, after policy revision 4 (`meedya-lang` +44 tests: 26 unit tests for the review's findings and the new API, 18 tests proving the conformance runner refuses a damaged case file) — not carried forward from a previous edit. Every per-crate figure was also measured on its own (`cargo test -p <crate> [--all-features] --locked`), and the per-crate figures add up to the totals. For reference, the previous measurements were 736 / 883 (after bringing `meedya-lyrics` and `meedya-metadata` into line with the policy), 716 / 863 (after `meedya-lang` was added), and 644 / 791 (before `meedya-lang`).
 >
 > Earlier revisions of this file accumulated a long narrative of incremental count deltas (466 → 511 → 533 → 546 → 664 …) which had drifted from reality. That narration has been removed: the only trustworthy number is one you just measured. Guarding these counts automatically in CI is tracked in issue #71.
 
-Per-crate, `--all-features` (measured): `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-lang` 72 · `meedya-library-import` 30 · `meedya-lyrics` 145 · `meedya-metadata` 120 · `meedya-providers` 199 · `meedya-tags-extended` 180.
+Per-crate, `--all-features` (measured): `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-lang` 116 · `meedya-library-import` 30 · `meedya-lyrics` 145 · `meedya-metadata` 120 · `meedya-providers` 199 · `meedya-tags-extended` 180.
 
 ---
 
@@ -518,15 +518,20 @@ assert_eq!(chosen, Ok(Some("a".to_string())));
 
 Every rule the policy defines has a fixture-driven test in
 `crates/meedya-lang/tests/conformance.rs`, which loads
-`tests/fixtures/bcp47-language-policy-v1.json` (268 cases) — the same file the PHP
+`tests/fixtures/bcp47-language-policy-v1.json` (288 cases) — the same file the PHP
 implementation runs against — and fails loudly (collecting every mismatch, not just the first)
 rather than stopping at the first one. Besides comparing each case's answer, it also checks: a
 canonical-form **stability** property (canonicalising a `canonicalise` case's non-null answer
 again must return it completely unchanged); that no section was silently skipped (the number of
 cases actually run must equal the number the file has); that the fixture file names no section
 this harness does not know how to run, and that none of the sections it needs is empty (policy
-8.1); and that a case missing a field the schema requires is treated as a fixture-shape failure,
-not quietly defaulted. A unit test separately asserts the crate's embedded copy of the reference
+8.1); and that every case matches the schema's shape — a missing required field (including inside
+a nested `expected` object and in every item and track), a field the schema does not allow (so an
+`error: true` flag in a section with no refusal cases), or an `error` flag that is not `true` or sits
+on a case that does not expect `null` fails the run, naming the case, rather than being quietly
+defaulted or ignored. Eighteen `harness_refuses::*` tests prove that by running the harness on
+damaged copies of the real case file. The harness's stand-in collation compares names only, so the
+crate's own tie-break by language code (UI-040) is what the tied-name case checks. A unit test separately asserts the crate's embedded copy of the reference
 data is byte-for-byte identical to the master copy under `docs/standards/`.
 
 ---
