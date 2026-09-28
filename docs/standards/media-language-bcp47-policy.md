@@ -938,9 +938,11 @@ copied verbatim) runs in that repository's existing CI and fails when:
 - a copy has been edited (its checksum no longer matches the lock);
 - the lock leaves out one of the files every copy must have (this
   document, the test cases and their schema, the data and its schema, the
-  checker), or names some of the PHP implementation's files but not all,
-  or a file in the repository has the name of a master file but is not in
-  the lock — so deleting a lock line cannot switch a check off;
+  checker); or, for any copy of the PHP implementation, names some of its
+  three files but not all, or keeps them in a different layout from the
+  master (its test runner loads the implementation from the folder above
+  it); or a file in the repository has the name of a master file but is
+  not in the lock — so deleting a lock line cannot switch a check off;
 - a master path is not one of the master files, or a local path points
   outside the repository;
 - the recorded commit is not part of MeedyaSuite-core's own history on an
