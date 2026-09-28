@@ -1011,9 +1011,26 @@ mod tests {
 
     #[test]
     fn malformed_keeps_trimmed_text() {
+        // LANG-026 (settled in policy revision 4): a malformed value keeps
+        // its text AFTER LANG-001 step 1's trim — so a value of nothing but
+        // space, tab, line feed and carriage return keeps the empty text.
+        // The case file cannot check this: a canonicalise case records only
+        // `expected: null` and `kind: malformed` for a malformed value.
         let t = canonicalise("  en_US  ");
         assert!(t.is_malformed());
         assert_eq!(t.tag, "en_US");
+        for (input, kept) in [
+            (" ", ""),
+            ("\t\n", ""),
+            (" \t\r\n ", ""),
+            ("  English\t", "English"),
+            ("\u{a0}", "\u{a0}"), // a no-break space is not trimmed
+            (" en_US\u{a0} ", "en_US\u{a0}"),
+        ] {
+            let t = canonicalise(input);
+            assert!(t.is_malformed(), "{input:?}");
+            assert_eq!(t.tag, kept, "{input:?}");
+        }
     }
 
     #[test]

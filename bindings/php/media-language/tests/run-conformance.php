@@ -742,6 +742,29 @@ foreach (['', " ger \0 fre", "\0eng", "fre-ca\0", "English\0en"] as $legacyInput
     $phpSpecificChecksRun++;
 }
 
+// The text a malformed value keeps (LANG-026): the value after LANG-001
+// step 1's trim of space, tab, line feed and carriage return - so a value of
+// nothing but those keeps the empty text. The case file cannot check this:
+// a canonicalise case records only `expected: null` and `kind: malformed`
+// for a malformed value, not the text it keeps.
+foreach ([
+    ' ' => '',
+    "\t\n" => '',
+    " \t\r\n " => '',
+    "  English\t" => 'English',
+    "\u{a0}" => "\u{a0}",              // a no-break space is not trimmed
+    " en_US\u{a0} " => "en_US\u{a0}",
+] as $malformedInput => $keptText) {
+    $malformedTag = Policy::canonicalise($malformedInput);
+    check(
+        'php-malformed-keeps-trimmed-text',
+        [$malformedTag->kind->value, $malformedTag->tag],
+        ['malformed', $keptText],
+        json_encode($malformedInput)
+    );
+    $phpSpecificChecksRun++;
+}
+
 // parseSidecarName()'s 'ignored': the parts that were neither a role word
 // nor a number, as written, in order - a run of ten digits included, an
 // overridden earlier number not.

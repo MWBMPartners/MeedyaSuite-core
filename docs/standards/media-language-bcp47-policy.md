@@ -396,7 +396,10 @@ its text, is reported, and goes after everything else, in the order it was
 found — in stored order and in a menu alike: roles, original flags and
 preferences do not reorder malformed entries among themselves (UI-045 does
 not apply to them). Automatic selection breaks their ties by identifier
-instead (AUTO-010).
+instead (AUTO-010). The text it keeps is the value after LANG-001 step 1's
+trim: `" en_US "` keeps `en_US`, and a value of nothing but those four
+whitespace characters (`" "`, a tab and a line feed) is malformed and keeps
+the empty text.
 
 ### LANG-027 — Ties keep their order
 
@@ -1045,7 +1048,7 @@ Also settled before release (28 Sept 2026), after independent reviews of
 the Rust and Swift implementations, each with a test case and no change to
 any existing case's answer:
 
-- six points the text had left open — a malformed preference matches
+- seven points the text had left open — a malformed preference matches
   nothing, not even an identical malformed value, and a user whose
   preferences are all malformed counts as having none (MATCH-010,
   AUTO-010); "canonical order" in automatic selection means stored order
@@ -1054,7 +1057,9 @@ any existing case's answer:
   commentary ranks before other (AUTO-020); a private-use or grandfathered
   audio tag can match a forced track with exactly that tag (AUTO-030); a
   sidecar builder reads the language it is given with LANG-002's reader
-  (TEXT-030); and a label lists each role once (UI-070).
+  (TEXT-030); a label lists each role once (UI-070); and a malformed value
+  keeps its text after LANG-001 step 1's trim, so a value of only
+  whitespace keeps the empty text (LANG-026).
 
 ---
 

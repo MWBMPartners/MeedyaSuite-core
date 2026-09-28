@@ -135,9 +135,11 @@ enum Role: string
  * safe to share, cache and compare freely.
  *
  * $tag is the canonical string form (`en-GB`, `zh-Hant-TW`, ...) for every
- * kind except Malformed, where it is the original text instead — LANG-026
+ * kind except Malformed, where it is the value's own text instead — LANG-026
  * says a malformed value "keeps its text", because it must never be
- * silently dropped or guessed at.
+ * silently dropped or guessed at. The text kept is the value after
+ * LANG-001 step 1's trim (LANG-026): `" en_US "` keeps `en_US`, and a value
+ * of nothing but whitespace keeps the empty text.
  *
  * $language/$extlang/$script/$region/$variants/$extensions/$privateUse are
  * only meaningful when $kind is Ordinary (a PrivateUse tag has no language
@@ -399,10 +401,13 @@ final class Policy
         // wider default set if that default ever changes.
         $stripped = trim($raw, " \t\r\n");
         if ($stripped === '') {
-            // An empty string (after trimming) is not a tag at all. Keep
-            // the ORIGINAL, untrimmed text, for the same reason LANG-026
-            // keeps a malformed value's text generally.
-            return new LanguageTag($raw, TagKind::Malformed, null, null, null, null, [], [], []);
+            // An empty string (after trimming) is not a tag at all. It keeps
+            // its text AFTER the trim, like every other malformed value
+            // (LANG-026, settled in policy revision 4): so " " and "\t\n"
+            // keep ''. Before that decision this returned the untrimmed
+            // $raw here - the only place PHP kept untrimmed text, and the
+            // one place it disagreed with the Rust crate.
+            return new LanguageTag($stripped, TagKind::Malformed, null, null, null, null, [], [], []);
         }
 
         $data = self::data();

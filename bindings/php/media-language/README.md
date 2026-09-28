@@ -204,7 +204,7 @@ same answer whatever order the tracks are listed in"; and every
 `canonicalise` case whose expected answer is a real tag (not malformed)
 has that answer run back through `canonicalise()` a second time, to check
 that canonical form is stable — canonicalising an already-canonical tag
-must return it unchanged. Nine further checks are PHP-specific
+must return it unchanged. Fifteen further checks are PHP-specific
 implementation behaviour the shared, language-neutral fixture cases have
 no way to express: that canonicalising a tag with 20,000 variant subtags
 finishes in well under a second (duplicate-variant detection must be
@@ -214,8 +214,10 @@ before `"1abc"`) chosen specifically because plain byte-string order
 would get it wrong, unlike the ordinary fixture cases for the same rule;
 six for `fromLegacyThreeLetterAll()` (every value read, in order, and
 its first entry always what `fromLegacyThreeLetter()` returns); and one
-for the `'ignored'` parts `parseSidecarName()` reports. 377 checks in
-total. Plain PHP, no PHPUnit, so it runs the same
+for the `'ignored'` parts `parseSidecarName()` reports; and six for the
+text a malformed value keeps — the value after the whitespace trim, so a
+value of only whitespace keeps `''` (the case file records only that such a
+value is malformed, not its text). 383 checks in total. Plain PHP, no PHPUnit, so it runs the same
 way in every consumer:
 
 ```bash
