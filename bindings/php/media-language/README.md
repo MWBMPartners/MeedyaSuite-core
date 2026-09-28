@@ -56,11 +56,17 @@ python3 scripts/media-lang/check_copies.py --init <core-commit> \
 to take the files from; the left side of each `--file local=master` pair is
 wherever the consuming repository wants to keep its local paths, which do
 not have to match MeedyaSuite-core's own layout — adjust the local paths
-above to suit.) The three PHP files go together: once a lock names any of
-them it must name all three — `MediaLanguagePolicy.php`,
-`tests/run-conformance.php` and `README.md` — or the checker fails, so
-deleting the runner's lock line cannot quietly stop the runner being
-checked. After that, `python3 scripts/media-lang/check_copies.py` run in
+above to suit.) The one exception is the three PHP files, which keep their
+layout relative to each other wherever they go: `MediaLanguagePolicy.php`
+in a folder, `README.md` beside it, and `tests/run-conformance.php` under
+it (the runner loads `../MediaLanguagePolicy.php`, so it could not run
+otherwise). They also go together: every copy of them the lock names must
+list all three, or the checker fails — so deleting one copy's runner line
+cannot quietly stop that runner being checked, even when another copy in
+the same repository still lists all three. And when the lock names a copy,
+a file laid out like one (`…/tests/run-conformance.php`, or a `README.md`
+beside a `MediaLanguagePolicy.php`) that is not in the lock fails the check
+too. After that, `python3 scripts/media-lang/check_copies.py` run in
 ordinary CI checks the copies have not drifted from the master.
 **Never hand-edit a copy** — a hand edit is exactly what `check_copies.py`
 is there to catch, and it will be overwritten the next time the repository

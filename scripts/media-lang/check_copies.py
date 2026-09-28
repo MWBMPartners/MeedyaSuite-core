@@ -41,8 +41,10 @@
 #    as "../../../other/repo/README.md" to a file in an unrelated
 #    repository, and that deleting a lock line quietly stopped a file being
 #    checked. Both are closed here.) The three PHP implementation files
-#    travel together: once the lock names any of them it must name all
-#    three (PHP_BINDING_MASTER_FILES, below, says why).
+#    travel together, PER COPY: each copy of the PHP implementation keeps
+#    the master's layout (MediaLanguagePolicy.php, README.md beside it,
+#    tests/run-conformance.php under it), and every copy the lock names
+#    must have all three lines (PHP_BINDING_LAYOUT, below, says why).
 # 3. Every local path — and the lock file's own path — stays inside this
 #    repository, is not inside .git, and is not a shortcut (symbolic link).
 #    Files are written by creating a new file beside the old one and moving
@@ -51,7 +53,11 @@
 #    the lock path unchecked and hard links unhandled; both closed here.)
 # 4. No file git tracks in the repository carries the name of a master file
 #    without being listed in the lock (so removing a line cannot hide a
-#    copy). Asking git rather than walking the folders means build output
+#    copy). For the two PHP files whose names are too common to search for
+#    everywhere (README.md, run-conformance.php), the search is by layout
+#    instead: when the lock names a copy of the PHP implementation, any
+#    tracked .../tests/run-conformance.php, and any README.md beside a
+#    MediaLanguagePolicy.php, must be in the lock too. Asking git rather than walking the folders means build output
 #    (which git ignores — SwiftPM, for one, copies bundled data into .build)
 #    is never mistaken for a hand-made copy, and a folder that cannot be
 #    read cannot hide one. Outside a git checkout it falls back to walking
@@ -122,22 +128,36 @@ OPTIONAL_MASTER_FILES = (
 )
 MASTER_FILES = REQUIRED_MASTER_FILES + OPTIONAL_MASTER_FILES
 # The PHP implementation's files, which a repository copies all together or
-# not at all. A repository that copies them MUST list all three: once any
-# one is in the lock, a lock that leaves out another fails the check.
+# not at all - and each copy of them keeps the master's layout: this maps
+# each master file to where it sits inside the copy's own folder (the folder
+# holding MediaLanguagePolicy.php). The layout is not a matter of taste:
+# the runner loads ../MediaLanguagePolicy.php, so a copy laid out any other
+# way cannot run.
 #
-# Why: two of the three (run-conformance.php and README.md) are left out of
-# DISTINCTIVE_NAMES below, so step 4 cannot spot an unlisted copy of them.
-# Before this rule, deleting the lock line for tests/run-conformance.php -
-# the file that decides whether the conformance tests pass - quietly
-# stopped it being checked: a review in a consuming repository deleted that
-# line, made the runner `exit(0)`, and this checker still reported every
-# copy as matching. Policy section 8.3 says deleting a lock line must not
-# switch a check off.
-PHP_BINDING_MASTER_FILES = OPTIONAL_MASTER_FILES
+# Every COPY the lock names must list all three files. The copies are told
+# apart by that folder, worked out from each file's local path. Why per
+# copy: two of the three (run-conformance.php and README.md) are left out of
+# DISTINCTIVE_NAMES below, so step 4 cannot spot an unlisted copy of them by
+# name. Before the all-three rule, deleting the lock line for
+# tests/run-conformance.php - the file that decides whether the conformance
+# tests pass - quietly stopped it being checked: a review in a consuming
+# repository deleted that line, made the runner `exit(0)`, and this checker
+# still reported every copy as matching. The first version of the rule then
+# counted the three master paths across the WHOLE lock, so a repository
+# with two copies (app1/ and app2/) could still delete app2's runner line:
+# app1's three lines satisfied the count (found by Codex's review r7).
+# Policy section 8.3 says deleting a lock line must not switch a check off.
+PHP_BINDING_LAYOUT = {
+    "bindings/php/media-language/MediaLanguagePolicy.php": "MediaLanguagePolicy.php",
+    "bindings/php/media-language/README.md": "README.md",
+    "bindings/php/media-language/tests/run-conformance.php": "tests/run-conformance.php",
+}
+PHP_BINDING_MASTER_FILES = tuple(PHP_BINDING_LAYOUT)
+assert set(PHP_BINDING_MASTER_FILES) == set(OPTIONAL_MASTER_FILES)
 # Names distinctive enough that a file carrying one is certainly a copy.
 # README.md and run-conformance.php are left out: other files legitimately
-# share those names. (Their copies are still protected, by the all-or-none
-# rule for PHP_BINDING_MASTER_FILES above.)
+# share those names. (Their copies are still protected: by the all-three
+# rule for each PHP copy above, and by step 4's search by layout.)
 DISTINCTIVE_NAMES = tuple(sorted({os.path.basename(p) for p in MASTER_FILES}
                                  - {"README.md", "run-conformance.php"}))
 
@@ -233,19 +253,49 @@ def check_local_path(path, root):
             raise CheckFailed(f"local path {path!r} goes through a symbolic link, which is refused")
 
 
-def check_php_binding_complete(masters, where):
-    """The all-or-none rule for PHP_BINDING_MASTER_FILES: fail when `masters`
-    (the master paths a lock or an --init names) includes some of the PHP
-    implementation's files but not all of them."""
-    present = [m for m in PHP_BINDING_MASTER_FILES if m in masters]
-    missing = [m for m in PHP_BINDING_MASTER_FILES if m not in masters]
-    if present and missing:
-        raise CheckFailed(
-            f"{where} names some of the PHP implementation's files but not all: "
-            f"{', '.join(missing)} is missing. A repository that copies the PHP "
-            f"implementation must list all three files ({', '.join(PHP_BINDING_MASTER_FILES)}) "
-            "- otherwise deleting one line would quietly stop that file being checked "
-            "(policy section 8.3).")
+def php_copy_folder(entry, where):
+    """The folder of the PHP implementation copy that `entry` (a lock or
+    --init entry for one of the PHP files) belongs to: its local path with
+    the file's place in the layout (PHP_BINDING_LAYOUT) taken off the end.
+    "" means the repository root. Fails if the local path does not end in
+    that place - a copy laid out differently cannot run, and could not be
+    told apart from another copy."""
+    place = PHP_BINDING_LAYOUT[entry["master"]]
+    local = entry["local"]
+    if local == place:
+        return ""
+    if local.endswith("/" + place):
+        return local[: -len(place) - 1]
+    raise CheckFailed(
+        f"{where}: {local} is a copy of {entry['master']}, but a copy of the PHP "
+        f"implementation must keep the master's layout, so this file must be at "
+        f"<the copy's folder>/{place} (the runner loads ../MediaLanguagePolicy.php).")
+
+
+def php_copies(entries, where):
+    """The lock's (or --init's) PHP implementation copies: a dict from each
+    copy's folder to the set of master paths listed for it."""
+    copies = {}
+    for entry in entries:
+        if entry["master"] in PHP_BINDING_LAYOUT:
+            copies.setdefault(php_copy_folder(entry, where), set()).add(entry["master"])
+    return copies
+
+
+def check_php_binding_complete(entries, where):
+    """The all-three rule for PHP_BINDING_LAYOUT, per copy: fail when any copy
+    of the PHP implementation that `entries` (a lock's or an --init's) names
+    lists some of its three files but not all of them."""
+    for folder, masters in sorted(php_copies(entries, where).items()):
+        missing = [m for m in PHP_BINDING_MASTER_FILES if m not in masters]
+        if missing:
+            shown = folder or "the repository root"
+            raise CheckFailed(
+                f"{where} names some of the PHP implementation's files but not all, for the copy "
+                f"in {shown}: {', '.join(missing)} is missing. Every copy of the PHP "
+                f"implementation must list all three files ({', '.join(PHP_BINDING_MASTER_FILES)}) "
+                "- otherwise deleting one line would quietly stop that file being checked "
+                "(policy section 8.3).")
 
 
 def parse_lock(lock_path, root):
@@ -284,16 +334,34 @@ def parse_lock(lock_path, root):
     missing = [m for m in REQUIRED_MASTER_FILES if m not in {e["master"] for e in files}]
     if missing:
         raise CheckFailed(f"{lock_path} leaves out files every copy must have: {', '.join(missing)}")
-    check_php_binding_complete({e["master"] for e in files}, lock_path)
+    check_php_binding_complete(files, lock_path)
     return policy_version, commit, files
 
 
+# The names step 4 collects while searching the repository: the distinctive
+# ones, plus the two PHP names it checks by layout.
+PHP_RUNNER_NAME = "run-conformance.php"
+PHP_README_NAME = "README.md"
+PHP_POLICY_NAME = "MediaLanguagePolicy.php"
+SEARCHED_NAMES = frozenset(DISTINCTIVE_NAMES) | {PHP_RUNNER_NAME, PHP_README_NAME}
+
+
 def unlisted_copies(root, files):
-    """Files named like a master file but not in the lock. Uses git's list
-    of tracked files when this is a git checkout; otherwise walks the
-    folders and fails if any folder cannot be read."""
+    """Files that are, or are laid out like, a copy of a master file but are
+    not in the lock: a list of (path, why) pairs.
+
+    - A file with a DISTINCTIVE_NAMES name, anywhere.
+    - When the lock names a copy of the PHP implementation: any
+      .../tests/run-conformance.php (the runner's place in that layout), and
+      any README.md beside a MediaLanguagePolicy.php or in a locked copy's
+      folder. (README.md and run-conformance.php are too common to search for
+      by name alone. Before Codex's review r7 they were not searched for at
+      all; a runner that no lock line names could be run by CI unchecked.)
+
+    Uses git's list of tracked files when this is a git checkout; otherwise
+    walks the folders and fails if any folder cannot be read."""
     listed = {os.path.normpath(e["local"]) for e in files}
-    candidates = []
+    found = set()
     if os.path.exists(os.path.join(root, ".git")):
         try:
             out = subprocess.run(["git", "ls-files", "-z"], cwd=root, check=True,
@@ -304,8 +372,8 @@ def unlisted_copies(root, files):
         for raw in out.split(b"\0"):
             if raw:
                 rel = raw.decode("utf-8", errors="replace")
-                if os.path.basename(rel) in DISTINCTIVE_NAMES:
-                    candidates.append(os.path.normpath(rel))
+                if os.path.basename(rel) in SEARCHED_NAMES:
+                    found.add(os.path.normpath(rel))
     else:
         def refuse(exc):
             raise CheckFailed(f"could not read {exc.filename} while looking for unlisted copies "
@@ -322,9 +390,31 @@ def unlisted_copies(root, files):
                     raise CheckFailed(f"{rel} is a link to a folder; outside a git checkout the check "
                                       "cannot see behind it, so it fails. Run it in a git checkout.")
             for name in filenames:
-                if name in DISTINCTIVE_NAMES:
-                    candidates.append(os.path.normpath(os.path.relpath(os.path.join(dirpath, name), root)))
-    return sorted(c for c in candidates if c not in listed)
+                if name in SEARCHED_NAMES:
+                    found.add(os.path.normpath(os.path.relpath(os.path.join(dirpath, name), root)))
+
+    unlisted = []
+    for path in found - listed:
+        if os.path.basename(path) in DISTINCTIVE_NAMES:
+            unlisted.append((path, "has the name of a master file but is not in the lock"))
+
+    copies = php_copies(files, "the lock")
+    if copies:
+        # The folders a PHP copy sits in: every copy the lock names, and
+        # every folder holding a tracked MediaLanguagePolicy.php (listed or
+        # not - an unlisted one is reported above by its name).
+        folders = set(copies) | {os.path.dirname(p) for p in found
+                                 if os.path.basename(p) == PHP_POLICY_NAME}
+        for path in found - listed:
+            name = os.path.basename(path)
+            parent = os.path.dirname(path)
+            if name == PHP_RUNNER_NAME and os.path.basename(parent) == "tests":
+                unlisted.append((path, "is laid out like a copy of the PHP conformance runner "
+                                       "(<folder>/tests/run-conformance.php) but is not in the lock"))
+            elif name == PHP_README_NAME and parent in folders:
+                unlisted.append((path, "sits where a copy of the PHP implementation keeps its "
+                                       "README.md but is not in the lock"))
+    return sorted(unlisted)
 
 
 def mismatch_message(entry, data, actual):
@@ -402,8 +492,8 @@ def fetch_into_place(commit, files, root):
 def verify(lock_path, root, offline):
     policy_version, commit, files = parse_lock(lock_path, root)
     problems = []
-    for rel in unlisted_copies(root, files):
-        problems.append(f"{rel} has the name of a master file but is not in the lock")
+    for rel, why in unlisted_copies(root, files):
+        problems.append(f"{rel} {why}")
     for entry in files:
         full = os.path.join(root, entry["local"])
         if not os.path.isfile(full):
@@ -479,7 +569,7 @@ def main(argv=None):
                 missing = [m for m in REQUIRED_MASTER_FILES if m not in {e["master"] for e in files}]
                 if missing:
                     raise CheckFailed(f"--init must include every required file; missing: {', '.join(missing)}")
-                check_php_binding_complete({e["master"] for e in files}, "--init")
+                check_php_binding_complete(files, "--init")
             else:
                 _, _, files = parse_lock(args.lock, root)
             policy_version = fetch_into_place(commit, files, root)

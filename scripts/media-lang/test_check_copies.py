@@ -283,6 +283,119 @@ class CheckCopiesTest(unittest.TestCase):
         self.assertIn("names some of the PHP implementation's files but not all", self.err)
         self.assertFalse(os.path.exists("partial/MWBM-MEDIA-LANG.lock"))
 
+    # --- Codex's review r7: the all-three rule held across the whole lock ---
+    # With two copies of the PHP implementation (app1/ and app2/), app1's
+    # three lines satisfied a rule that only counted master paths, so
+    # app2's runner line could be deleted and the runner neutered. The rule
+    # now holds per copy, and runner- and README-shaped files laid out like
+    # a copy are searched for.
+
+    def init_with_two_php_copies(self):
+        """Re-initialise the consumer with two complete copies of the PHP
+        implementation, laid out as the master lays it out, under app1/ and
+        app2/."""
+        args = ["--init", COMMIT]
+        for master in cc.REQUIRED_MASTER_FILES:
+            args += ["--file", f"copies/{os.path.basename(master)}={master}"]
+        for app in ("app1", "app2"):
+            for master in cc.PHP_BINDING_MASTER_FILES:
+                # The master's own layout, below bindings/php/media-language/.
+                place = master.split("bindings/php/media-language/", 1)[1]
+                args += ["--file", f"{app}/php/{place}={master}"]
+        self.assertEqual(self.run_checker(args), 0, self.err)
+
+    def test_two_complete_php_copies_pass(self):
+        self.init_with_two_php_copies()
+        self.assertEqual(self.run_checker(), 0, self.err)
+        self.assertIn(f"{len(cc.REQUIRED_MASTER_FILES) + 6} copies match", self.out)
+
+    def test_deleting_one_copys_runner_line_fails_codex_app1_app2(self):
+        # Codex's exact case: delete only app2's runner line, then neuter
+        # app2's runner. app1 still lists all three master paths.
+        self.init_with_two_php_copies()
+        local = "app2/php/tests/run-conformance.php"
+        self.write_lock_text("".join(l for l in self.lock_text().splitlines(True)
+                                     if f" {local} " not in l))
+        with open(local, "w") as f:
+            f.write("<?php exit(0);\n")
+        self.assertEqual(self.run_checker(["--offline"]), 1)
+        self.assertEqual(self.run_checker(), 1)
+        self.assertIn("for the copy in app2/php", self.err)
+        self.assertIn("bindings/php/media-language/tests/run-conformance.php is missing", self.err)
+
+    def test_deleting_the_other_copys_readme_line_fails(self):
+        # The same for README.md, in the FIRST copy this time: app2 still
+        # lists the README master path, which used to satisfy the rule.
+        self.init_with_two_php_copies()
+        self.write_lock_text("".join(l for l in self.lock_text().splitlines(True)
+                                     if " app1/php/README.md " not in l))
+        self.assertEqual(self.run_checker(), 1)
+        self.assertIn("for the copy in app1/php", self.err)
+        self.assertIn("bindings/php/media-language/README.md is missing", self.err)
+
+    def test_a_php_copy_laid_out_differently_fails(self):
+        # The runner loads ../MediaLanguagePolicy.php, so a copy must keep
+        # the master's layout - and its files could not be grouped
+        # otherwise.
+        args = ["--init", COMMIT, "--lock", "odd/MWBM-MEDIA-LANG.lock"]
+        for master in cc.REQUIRED_MASTER_FILES:
+            args += ["--file", f"odd/{os.path.basename(master)}={master}"]
+        for master in cc.PHP_BINDING_MASTER_FILES:
+            args += ["--file", f"odd/php/{os.path.basename(master)}={master}"]
+        self.assertEqual(self.run_checker(args), 1)
+        self.assertIn("must keep the master's layout", self.err)
+        self.assertIn("tests/run-conformance.php", self.err)
+        self.assertFalse(os.path.exists("odd/MWBM-MEDIA-LANG.lock"))
+
+    def test_an_unlisted_runner_laid_out_like_a_copy_fails(self):
+        # A runner no lock line names, in the layout CI would run - such as
+        # one left behind after all of a copy's lines and its library file
+        # were removed - is refused by where it sits, not by its name.
+        self.init_with_php_files()
+        os.makedirs("app3/tests")
+        with open("app3/tests/run-conformance.php", "w") as f:
+            f.write("<?php exit(0);\n")
+        self.assertEqual(self.run_checker(), 1)
+        self.assertIn("app3/tests/run-conformance.php is laid out like a copy of the PHP "
+                      "conformance runner", self.err)
+
+    def test_an_unlisted_readme_beside_a_php_library_file_is_reported(self):
+        self.init_with_php_files()
+        os.makedirs("app3")
+        for name in ("MediaLanguagePolicy.php", "README.md"):
+            with open(f"app3/{name}", "w") as f:
+                f.write("unlisted\n")
+        self.assertEqual(self.run_checker(), 1)
+        self.assertIn("app3/MediaLanguagePolicy.php has the name of a master file", self.err)
+        self.assertIn("app3/README.md sits where a copy of the PHP implementation keeps its "
+                      "README.md", self.err)
+
+    def test_other_readmes_and_runners_are_not_mistaken_for_copies(self):
+        # README.md elsewhere is an ordinary file, and with no PHP copy in
+        # the lock a runner-shaped file is none of this checker's business.
+        os.makedirs("notes")
+        os.makedirs("tools/tests")
+        for path in ("notes/README.md", "README.md", "tools/tests/run-conformance.php"):
+            with open(path, "w") as f:
+                f.write("not a copy\n")
+        self.assertEqual(self.run_checker(), 0, self.err)
+        # With a PHP copy in the lock, a README.md away from any copy is
+        # still ordinary.
+        self.init_with_php_files()
+        os.unlink("tools/tests/run-conformance.php")
+        self.assertEqual(self.run_checker(), 0, self.err)
+
+    def test_an_unlisted_runner_is_found_in_a_git_checkout_too(self):
+        import subprocess
+        self.init_with_php_files()
+        subprocess.run(["git", "init", "-q"], check=True)
+        os.makedirs("app3/tests")
+        with open("app3/tests/run-conformance.php", "w") as f:
+            f.write("<?php exit(0);\n")
+        subprocess.run(["git", "add", "-A"], check=True)
+        self.assertEqual(self.run_checker(), 1)
+        self.assertIn("app3/tests/run-conformance.php is laid out like a copy", self.err)
+
     # --- second review (Codex, 28 Sept 2026) --------------------------------
 
     def test_lock_outside_the_repository_fails(self):
