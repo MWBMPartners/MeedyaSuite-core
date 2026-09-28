@@ -25,6 +25,25 @@ pub enum MetadataError {
     #[error("value conversion failed for tag '{tag_id}': {reason}")]
     ValueConversionFailed { tag_id: String, reason: String },
 
+    /// A `CommonTag::Language` value given to `write_tags` that the
+    /// language reader (policy MWBM-MEDIA-LANG, LANG-002) does not
+    /// recognise — `zzz`, a language *name* such as `English`, a locale
+    /// name such as `en_GB`, or nothing at all. The write is refused as a
+    /// whole and nothing is written to the file: storing the text would
+    /// put something that is not a language into a language field, and
+    /// storing `und` in its place would quietly lose what the caller said
+    /// (LANG-002, COMPAT-040 — report doubt, never resolve it by guessing).
+    ///
+    /// `value` is the whole value exactly as given; `problem` says which
+    /// part was not recognised (for a value holding several languages,
+    /// which one of them).
+    #[error(
+        "cannot write the language {value:?}: {problem}. Give a BCP 47 language tag such as \
+         `en`, `pt-BR` or `zh-Hant` (an old three-letter code such as `eng` is also accepted), \
+         or `und` when the language is not known. Nothing was written to the file"
+    )]
+    UnrecognisedLanguage { value: String, problem: String },
+
     // --- File I/O errors ---
     #[error("file not found: {0}")]
     FileNotFound(String),

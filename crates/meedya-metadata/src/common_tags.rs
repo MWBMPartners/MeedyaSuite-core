@@ -109,17 +109,27 @@ pub enum CommonTag {
     /// Governed by policy MWBM-MEDIA-LANG
     /// (`docs/standards/media-language-bcp47-policy.md`), TRACK-070.
     /// **Writing**: `tag_io::write_tags` reads the caller's value with the
-    /// LANG-002 reader (`meedya_lang::from_legacy_three_letter`) before
-    /// writing it — see `write_common_tag_to_lofty`'s `Language` arm for
-    /// the exact per-format rule (an ID3v2 tag gets the ISO 639-2
-    /// terminology three-letter code, `und` when the value is not
-    /// recognised; every other format gets the canonical BCP 47 tag, or
-    /// the caller's original text unchanged when it is not recognised).
+    /// LANG-002 reader for several values
+    /// (`meedya_lang::from_legacy_three_letter_all`) before writing it — the
+    /// value may list several languages separated by a null character
+    /// (`"eng\0fra"`), and every one is written, in order. See
+    /// `tag_io::write_language` for the exact per-format rule: an ID3v2 tag
+    /// gets each language's ISO 639-2 terminology three-letter code (`und`
+    /// for one that has no code); every other format gets each canonical
+    /// BCP 47 tag. **A value that is not recognised is refused**
+    /// (`MetadataError::UnrecognisedLanguage`) and nothing is written —
+    /// neither the text nor `und` in its place (LANG-002, COMPAT-040).
+    /// Give `und` when the language is not known. (Before Codex's review
+    /// r7 only the first of several languages was written, and an
+    /// unrecognised value was written unchanged, or as `und` on ID3v2.)
     /// **Reading**: `tag_io::read_tags` returns this field's raw text
     /// exactly as the file holds it — a three-letter code, a BCP 47 tag,
-    /// or whatever another tool happened to write. It is NOT normalised
-    /// on the way out, so **callers MUST read the value with
-    /// `meedya_lang::from_legacy_three_letter` before treating it as a
+    /// or whatever another tool happened to write; one entry per value
+    /// where the format stores them separately, or one entry with null
+    /// characters between the values (APE). It is NOT normalised on the
+    /// way out, so **callers MUST read each entry with
+    /// `meedya_lang::from_legacy_three_letter_all` (or, for the primary
+    /// language only, `from_legacy_three_letter`) before treating it as a
     /// language** — never assume it is already a BCP 47 tag.
     Language,
 

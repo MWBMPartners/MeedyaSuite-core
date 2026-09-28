@@ -193,6 +193,13 @@ pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
 /// Auto-detects the file format. Uses the file's existing primary tag type,
 /// or creates an appropriate new one. Existing values for the given tags
 /// are overwritten; other tags are preserved.
+///
+/// `CommonTag::Language` is not a plain pass-through: see
+/// `write_language` below (policy MWBM-MEDIA-LANG, TRACK-070). A language
+/// value this crate does not recognise refuses the WHOLE call with
+/// [`MetadataError::UnrecognisedLanguage`], before anything is saved, so
+/// the file is left exactly as it was — none of the other tags in `tags`
+/// are written either.
 pub fn write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<(), MetadataError> {
     if !path.exists() {
         return Err(MetadataError::FileNotFound(path.display().to_string()));
@@ -229,8 +236,12 @@ pub fn write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<(), Metad
         ))
     })?;
 
+    // Every value is applied to the in-memory tag first; the file is only
+    // saved once all of them have been accepted. A refused value (only
+    // `CommonTag::Language` can be refused) therefore returns here with the
+    // file untouched.
     for (common_tag, value) in tags {
-        write_common_tag_to_lofty(tag, *common_tag, value);
+        write_common_tag_to_lofty(tag, *common_tag, value)?;
     }
 
     tagged_file.save_to_path(path, WriteOptions::default())?;
@@ -352,7 +363,15 @@ pub fn write_registry_tags(
 
 /// Write a single CommonTag value to a lofty Tag, using the appropriate
 /// ItemKey for the tag type.
-fn write_common_tag_to_lofty(tag: &mut Tag, common_tag: CommonTag, value: &str) {
+///
+/// Fails only for `CommonTag::Language`, when the value is not a language
+/// this crate recognises (see `write_language`); every other tag is
+/// written as given, exactly as before.
+fn write_common_tag_to_lofty(
+    tag: &mut Tag,
+    common_tag: CommonTag,
+    value: &str,
+) -> Result<(), MetadataError> {
     match common_tag {
         // Standard accessor fields
         CommonTag::Title => tag.set_title(value.to_string()),
@@ -551,47 +570,7 @@ fn write_common_tag_to_lofty(tag: &mut Tag, common_tag: CommonTag, value: &str) 
                 ItemValue::Text(value.into()),
             ));
         }
-        CommonTag::Language => {
-            // Policy MWBM-MEDIA-LANG, TRACK-070: read the caller's value
-            // with the LANG-002 reader first, then decide what to write
-            // by which kind of tag this container actually gets (an
-            // ID3v2 tag has no full-tag language field at all — TRACK-070's
-            // table shows a dash — so it gets the three-letter code;
-            // every other format in the table has a full-tag field that
-            // takes the language as free text, so it gets the canonical
-            // BCP 47 tag).
-            let parsed = meedya_lang::from_legacy_three_letter(value);
-            let write_value = if tag.tag_type() == TagType::Id3v2 {
-                match &parsed {
-                    // `und` covers both "no ISO 639-2 code exists for this
-                    // language" and "this is a grandfathered/private-use/
-                    // malformed value with no primary language at all" —
-                    // `iso639_2_code` already makes that distinction moot
-                    // by returning `und` for both (see its doc comment).
-                    Some(lang_tag) => {
-                        meedya_lang::iso639_2_code(lang_tag, meedya_lang::Iso639Form::Terminology)
-                    }
-                    // The reader could not make sense of `value` at all —
-                    // there is no primary language to look an ISO 639-2
-                    // code up under, so `und` (TRACK-070's "for any other
-                    // language with no ISO 639-2 code... write `und`").
-                    None => "und".to_string(),
-                }
-            } else {
-                match &parsed {
-                    // Recognised: store the canonical tag, per LANG-001.
-                    Some(lang_tag) => lang_tag.tag.clone(),
-                    // Not recognised: a free-text field keeps what it was
-                    // given rather than losing it (LANG-026, COMPAT-040) —
-                    // never replaced with `und` or a guess.
-                    None => value.to_string(),
-                }
-            };
-            tag.insert(TagItem::new(
-                ItemKey::Language,
-                ItemValue::Text(write_value),
-            ));
-        }
+        CommonTag::Language => write_language(tag, value)?,
 
         // --- Contributor roles beyond Composer (#65) ---
         CommonTag::Lyricist => {
@@ -649,6 +628,147 @@ fn write_common_tag_to_lofty(tag: &mut Tag, common_tag: CommonTag, value: &str) 
             ));
         }
     }
+    Ok(())
+}
+
+/// Writes a `CommonTag::Language` value (policy MWBM-MEDIA-LANG,
+/// TRACK-070), or refuses it.
+///
+/// **Reading the caller's value.** It goes through the LANG-002 reader
+/// that handles several values (`meedya_lang::from_legacy_three_letter_all`),
+/// because a language field may hold more than one language, separated by
+/// a null character (`"eng\0fra"` — ID3v2.4's own way of listing several
+/// values, and what `read_tags` hands back for a file that has several).
+/// Every value is kept, in the order given; the first is the primary
+/// language. (Until Codex's review r7 this used the single-value reader,
+/// which returns the first value only, so `"eng\0fra"` was written as
+/// `eng` alone and French was silently lost.)
+///
+/// **What is written, per value.**
+/// - ID3v2 has no full-tag language field at all — TRACK-070's table shows
+///   a dash — only the three-letter `TLAN` frame, so each value becomes its
+///   ISO 639-2 **terminology** code (`pt-BR` → `por`), or `und` where the
+///   language has none (`yue`, a private-use or grandfathered tag). The
+///   codes go into ONE item, separated by null characters: one `TLAN` frame
+///   holding `por\0deu`, which is ID3v2.4's own multi-value form (lofty
+///   writes ID3v2.4 by default, so the nulls are kept). One item per value
+///   does NOT work here, and the difference only shows on a real file:
+///   lofty's in-memory conversion (`Id3v2Tag::from`) would join several
+///   items into one frame, but saving a file goes through lofty's
+///   `tag_frames` (0.22.4, `id3/v2/tag.rs`), which makes one frame per
+///   item — and a second `TLAN` frame replaces the first when the file is
+///   read, so only the LAST language survived (measured: `eng\0fra`
+///   written as two items read back as `fra`).
+/// - Every other format has a free-text field that takes the canonical
+///   BCP 47 tag (`eng` → `en`, `EN-gb` → `en-GB`). Vorbis comments and MP4
+///   freeform items hold several values as several fields/atoms with the
+///   same name, so one item is pushed per value (measured on real FLAC,
+///   Opus and M4A files: every value reads back, in order). APE is like
+///   ID3v2: an APE tag holds each key once (lofty's `ApeTag::insert`
+///   replaces an existing item, so a second item would overwrite the
+///   first), and APEv2's own way of listing several values is one item
+///   with the values separated by null characters — which is what is
+///   written.
+///
+/// **Refusing.** A value the reader does not recognise — `zzz`, a language
+/// *name* (`English`), a locale name (`en_GB`), or an empty value — is
+/// refused with [`MetadataError::UnrecognisedLanguage`], and one such value
+/// among several refuses the whole value: nothing is changed in `tag`.
+/// Writing `und` in its place would quietly lose what the caller said, and
+/// writing the text would put something that is not a language into a
+/// language field (LANG-002: an unrecognised value's structured value is
+/// `und`, with the original text kept alongside — a file's language field
+/// has nowhere to keep the original, so the caller has to decide; COMPAT-040:
+/// report doubt, never resolve it by guessing). Until Codex's review r7 an
+/// unrecognised value was written as-is to free-text fields and as `und` to
+/// ID3v2. Special values are recognised and written normally: `und`
+/// (not known), `mul`, `zxx`, `mis`, the local-use range `qaa`–`qtz`,
+/// private-use tags (`x-…`) and grandfathered tags.
+fn write_language(tag: &mut Tag, value: &str) -> Result<(), MetadataError> {
+    let values = language_values_to_write(value, tag.tag_type())?;
+    tag.remove_key(&ItemKey::Language);
+    if matches!(tag.tag_type(), TagType::Id3v2 | TagType::Ape) {
+        tag.insert(TagItem::new(
+            ItemKey::Language,
+            ItemValue::Text(values.join("\0")),
+        ));
+    } else {
+        for write_value in values {
+            // `push`, not `insert`: `insert` replaces every earlier item
+            // with the same key, which would keep only the last value.
+            tag.push(TagItem::new(
+                ItemKey::Language,
+                ItemValue::Text(write_value),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The text to store for each language in `value`, in order, for a tag of
+/// type `tag_type` — or the refusal, naming the first value that is not
+/// recognised. See [`write_language`] for the rules.
+fn language_values_to_write(value: &str, tag_type: TagType) -> Result<Vec<String>, MetadataError> {
+    let read = meedya_lang::from_legacy_three_letter_all(value);
+    let count = read.len();
+    let mut values = Vec::with_capacity(count);
+    for (index, parsed) in read.into_iter().enumerate() {
+        let Some(lang_tag) = parsed else {
+            return Err(MetadataError::UnrecognisedLanguage {
+                value: value.to_string(),
+                problem: describe_unrecognised_language(value, index, count),
+            });
+        };
+        values.push(if tag_type == TagType::Id3v2 {
+            meedya_lang::iso639_2_code(&lang_tag, meedya_lang::Iso639Form::Terminology)
+        } else {
+            lang_tag.tag
+        });
+    }
+    Ok(values)
+}
+
+/// Says, in plain words, which part of `value` was not recognised, for the
+/// refusal message. `index` and `count` come from
+/// `from_legacy_three_letter_all`; the value is split here exactly as that
+/// reader splits it (trailing null characters, then LANG-001's four
+/// whitespace characters, come off the whole value; it is split at each
+/// null character; each part is trimmed of the same whitespace), so the
+/// part named is the part the reader refused.
+fn describe_unrecognised_language(value: &str, index: usize, count: usize) -> String {
+    let lang_whitespace = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r');
+    let part = value
+        .trim_end_matches('\0')
+        .trim_matches(lang_whitespace)
+        .split('\0')
+        .map(|p| p.trim_matches(lang_whitespace))
+        .nth(index)
+        .unwrap_or("");
+    // Which value: the whole value when there is only one, otherwise its
+    // position ("value 2 of 3") so a caller with a long list can find it.
+    let subject = match (count > 1, part.is_empty()) {
+        (false, true) => "it".to_string(),
+        (false, false) => format!("{part:?}"),
+        (true, true) => format!("value {} of {count}", index + 1),
+        (true, false) => format!("value {} of {count}, {part:?},", index + 1),
+    };
+    let mut problem = if part.is_empty() {
+        format!("{subject} is empty, and an empty value is not a language")
+    } else {
+        format!("{subject} is not a language tag this library recognises")
+    };
+    if part.contains('_') {
+        // A hint only — the value is still refused, never converted: the
+        // caller may have meant something else entirely.
+        problem.push_str(
+            " (it looks like an operating-system locale name; in a language tag the parts are \
+             joined with hyphens, as in `en-GB`)",
+        );
+    }
+    if count > 1 {
+        problem.push_str(&format!(", so none of the {count} values was written"));
+    }
+    problem
 }
 
 #[cfg(test)]
@@ -656,7 +776,7 @@ mod tests {
     use super::*;
     // `TagType` used to be imported here only, kept out of the
     // module-level import so a non-test build didn't warn about it being
-    // unused — now that `write_common_tag_to_lofty`'s `Language` arm
+    // unused — now that the `Language` write (`write_language`)
     // reads `tag.tag_type()` in real (non-test) code too, the
     // module-level `use` above already brings it in via `use super::*;`,
     // so a second import here would be a redundant/unused-import warning.
@@ -985,14 +1105,27 @@ mod tests {
         let tag_type = TagType::Id3v2;
         let mut tag = Tag::new(tag_type);
 
-        // Should not panic for any variant. "1" parses fine for the
-        // numeric arms (Year/TrackNumber/DiscNumber).
+        // Should not panic, and should be accepted, for any variant. "1"
+        // parses fine for the numeric arms (Year/TrackNumber/DiscNumber).
+        // `Language` is the one arm that can refuse (policy MWBM-MEDIA-LANG,
+        // Codex review r7): "1" is not a language, so that arm is given a
+        // real one here, and "1" is proved to be refused just below.
         for variant in CommonTag::iter() {
-            write_common_tag_to_lofty(&mut tag, variant, "1");
+            let value = if variant == CommonTag::Language {
+                "en"
+            } else {
+                "1"
+            };
+            write_common_tag_to_lofty(&mut tag, variant, value)
+                .unwrap_or_else(|e| panic!("{variant:?} refused {value:?}: {e}"));
         }
+        assert!(matches!(
+            write_common_tag_to_lofty(&mut tag, CommonTag::Language, "1"),
+            Err(MetadataError::UnrecognisedLanguage { .. })
+        ));
 
         // Keep the original title assertion by writing Title last.
-        write_common_tag_to_lofty(&mut tag, CommonTag::Title, "Test");
+        write_common_tag_to_lofty(&mut tag, CommonTag::Title, "Test").expect("title");
         assert_eq!(tag.title().as_deref(), Some("Test"));
     }
 
@@ -1027,7 +1160,7 @@ mod tests {
     fn id3v2_roundtrip(variant: CommonTag, value: &str, recover_key: &ItemKey) -> Option<String> {
         use lofty::id3::v2::Id3v2Tag;
         let mut tag = Tag::new(TagType::Id3v2);
-        write_common_tag_to_lofty(&mut tag, variant, value);
+        write_common_tag_to_lofty(&mut tag, variant, value).expect("value accepted");
         // `Id3v2Tag::from` runs the save-side merge (TIPL synthesis etc.);
         // `Tag::from` runs the reload-side split back into ItemKeys.
         let id3 = Id3v2Tag::from(tag);
@@ -1041,7 +1174,7 @@ mod tests {
     fn vorbis_roundtrip(variant: CommonTag, value: &str, recover_key: &ItemKey) -> Option<String> {
         use lofty::ogg::VorbisComments;
         let mut tag = Tag::new(TagType::VorbisComments);
-        write_common_tag_to_lofty(&mut tag, variant, value);
+        write_common_tag_to_lofty(&mut tag, variant, value).expect("value accepted");
         let vc = VorbisComments::from(tag);
         let back = Tag::from(vc);
         back.get_string(recover_key).map(str::to_string)
@@ -1170,7 +1303,10 @@ mod tests {
     // free text and takes the canonical BCP 47 tag — `vorbis_roundtrip`
     // stands in for "write to a FLAC file" without needing a real FLAC
     // fixture, the same way the roundtrip helpers above stand in for a
-    // real MP3 file.
+    // real MP3 file. For a SINGLE value that stand-in is faithful; for
+    // several values it is not (lofty joins several items into one frame
+    // in memory but not when saving a file — see `write_language`), which
+    // is why the several-value tests further down also use real files.
     // ------------------------------------------------------------------
 
     #[test]
@@ -1208,27 +1344,389 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------------------
+    // Refusing an unrecognised language (policy MWBM-MEDIA-LANG, LANG-002
+    // and COMPAT-040; Codex review r7)
+    //
+    // Until review r7, `zzz` was written unchanged into free-text fields
+    // (Vorbis, MP4, APE) and as `und` into ID3v2. Both are wrong: the
+    // first stores something that is not a language in a language field,
+    // the second silently loses what the caller said. The value is now
+    // refused, with a message that says what was wrong and what to give
+    // instead, on every format alike.
+    // ------------------------------------------------------------------
+
+    /// Every tag type `write_tags` can end up writing a language into.
+    const LANGUAGE_TAG_TYPES: [TagType; 4] = [
+        TagType::Id3v2,
+        TagType::VorbisComments,
+        TagType::Mp4Ilst,
+        TagType::Ape,
+    ];
+
+    /// The refusal `write_common_tag_to_lofty` gives for `value` on a fresh
+    /// tag of `tag_type`, as its message; panics if the value was accepted.
+    fn language_refusal(tag_type: TagType, value: &str) -> String {
+        let mut tag = Tag::new(tag_type);
+        match write_common_tag_to_lofty(&mut tag, CommonTag::Language, value) {
+            Err(e @ MetadataError::UnrecognisedLanguage { .. }) => {
+                assert!(
+                    tag.get_strings(&ItemKey::Language).next().is_none(),
+                    "{tag_type:?}: a refused value must not leave anything in the tag"
+                );
+                e.to_string()
+            }
+            Err(other) => panic!("{tag_type:?}: {value:?} gave the wrong error: {other}"),
+            Ok(()) => panic!("{tag_type:?}: {value:?} was accepted, but must be refused"),
+        }
+    }
+
     #[test]
-    fn language_unrecognised_value_is_kept_as_is_on_flac_vorbis() {
-        // `zzz` is not a legacy ISO 639-2 code, not a registered language
-        // subtag, and not in the qaa-qtz local-use range — LANG-026 /
-        // COMPAT-040 say a free-text field keeps what it was given rather
-        // than losing it, so it is NOT replaced with `und` here.
+    fn language_unrecognised_value_is_refused_on_every_format() {
+        // `zzz`: not an ISO 639-2 code, not a registered subtag, not in
+        // the local-use range. `English`: a language NAME. `en_GB`: an
+        // operating-system locale name, never converted. `""` and `" "`:
+        // nothing at all.
+        for tag_type in LANGUAGE_TAG_TYPES {
+            for value in ["zzz", "English", "en_GB", "", " "] {
+                let message = language_refusal(tag_type, value);
+                // The message says plainly what to give instead.
+                for example in ["`en`", "`pt-BR`", "`und`"] {
+                    assert!(
+                        message.contains(example),
+                        "{tag_type:?}/{value:?}: message lacks {example}: {message}"
+                    );
+                }
+                assert!(message.contains("Nothing was written"), "{message}");
+            }
+        }
+    }
+
+    #[test]
+    fn language_refusal_names_the_value_and_hints_at_a_locale_name() {
+        let message = language_refusal(TagType::VorbisComments, "English");
+        assert!(
+            message.contains("\"English\" is not a language tag"),
+            "{message}"
+        );
+
+        // A locale name gets a hint, but is still refused, never converted.
+        let message = language_refusal(TagType::Id3v2, "en_GB");
+        assert!(message.contains("\"en_GB\""), "{message}");
+        assert!(message.contains("`en-GB`"), "{message}");
+
+        let message = language_refusal(TagType::Mp4Ilst, "");
+        assert!(message.contains("is empty"), "{message}");
+    }
+
+    #[test]
+    fn language_refusal_keeps_the_language_already_in_the_tag() {
+        // The tag already says French; a refused write must not disturb
+        // it — the refusal happens before anything is removed.
+        for tag_type in LANGUAGE_TAG_TYPES {
+            let mut tag = Tag::new(tag_type);
+            write_common_tag_to_lofty(&mut tag, CommonTag::Language, "fr").expect("fr");
+            let before: Vec<String> = tag
+                .get_strings(&ItemKey::Language)
+                .map(str::to_string)
+                .collect();
+            assert!(write_common_tag_to_lofty(&mut tag, CommonTag::Language, "zzz").is_err());
+            let after: Vec<String> = tag
+                .get_strings(&ItemKey::Language)
+                .map(str::to_string)
+                .collect();
+            assert_eq!(before, after, "{tag_type:?}");
+        }
+    }
+
+    #[test]
+    fn language_special_values_are_recognised_and_written() {
+        // `und` (not known), `mul` (several), `zxx` (no language), `mis`
+        // (no code of its own), local use `qaa`, a private-use tag and a
+        // grandfathered one are all real values, and are written normally:
+        // on ID3v2 as their ISO 639-2 code (`und` for the last two, which
+        // have none — TRACK-070), elsewhere as the canonical tag itself.
+        let cases = [
+            ("und", "und", "und"),
+            ("mul", "mul", "mul"),
+            ("zxx", "zxx", "zxx"),
+            ("mis", "mis", "mis"),
+            ("qaa", "qaa", "qaa"),
+            ("x-private", "und", "x-private"),
+            ("i-default", "und", "i-default"),
+            // ID3's own "not known" marker is read as `und` (LANG-002).
+            ("XXX", "und", "und"),
+        ];
+        for (input, id3v2, vorbis) in cases {
+            assert_eq!(
+                id3v2_roundtrip(CommonTag::Language, input, &ItemKey::Language).as_deref(),
+                Some(id3v2),
+                "ID3v2 {input:?}"
+            );
+            assert_eq!(
+                vorbis_roundtrip(CommonTag::Language, input, &ItemKey::Language).as_deref(),
+                Some(vorbis),
+                "Vorbis {input:?}"
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Several languages in one value (LANG-002; Codex review r7)
+    //
+    // A language field may hold several languages, separated by a null
+    // character (ID3v2.4's multi-value form, and what `read_tags` hands
+    // back). Until review r7 only the first was written.
+    // ------------------------------------------------------------------
+
+    /// Every language value recovered after an in-memory ID3v2 save
+    /// (`merge`) and reload (`split`), plus the raw `TLAN` frame text.
+    fn id3v2_languages(value: &str) -> (Vec<String>, Option<String>) {
+        use lofty::id3::v2::{FrameId, Id3v2Tag};
+        use std::borrow::Cow;
+        let mut tag = Tag::new(TagType::Id3v2);
+        write_common_tag_to_lofty(&mut tag, CommonTag::Language, value).expect("accepted");
+        let id3 = Id3v2Tag::from(tag);
+        let frame_text = id3
+            .get_text(&FrameId::Valid(Cow::Borrowed("TLAN")))
+            .map(str::to_string);
+        let back = Tag::from(id3);
+        let values = back
+            .get_strings(&ItemKey::Language)
+            .map(str::to_string)
+            .collect();
+        (values, frame_text)
+    }
+
+    /// Every language value recovered after an in-memory Vorbis round trip.
+    fn vorbis_languages(value: &str) -> Vec<String> {
+        use lofty::ogg::VorbisComments;
+        let mut tag = Tag::new(TagType::VorbisComments);
+        write_common_tag_to_lofty(&mut tag, CommonTag::Language, value).expect("accepted");
+        let vc = VorbisComments::from(tag);
         assert_eq!(
-            vorbis_roundtrip(CommonTag::Language, "zzz", &ItemKey::Language).as_deref(),
-            Some("zzz")
+            vc.get_all("LANGUAGE").count(),
+            value.split('\0').count(),
+            "one LANGUAGE field per value"
+        );
+        Tag::from(vc)
+            .get_strings(&ItemKey::Language)
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn language_two_values_are_both_written_on_id3v2() {
+        // Codex's exact input: French used to be dropped. (This in-memory
+        // conversion is not enough on its own — see the real-MP3 test
+        // below and `write_language` for why.)
+        let (values, frame) = id3v2_languages("eng\0fra");
+        assert_eq!(values, ["eng", "fra"]);
+        // One TLAN frame, the values separated by a null character.
+        assert_eq!(frame.as_deref(), Some("eng\0fra"));
+    }
+
+    #[test]
+    fn language_three_values_are_all_written_on_id3v2() {
+        // Each value becomes its own terminology code; `yue` has no
+        // ISO 639-2 code, so it is `und` in its place — never dropped,
+        // which would move the values after it up one place.
+        let (values, frame) = id3v2_languages("pt-BR\0ger\0yue");
+        assert_eq!(values, ["por", "deu", "und"]);
+        assert_eq!(frame.as_deref(), Some("por\0deu\0und"));
+    }
+
+    #[test]
+    fn language_two_and_three_values_are_all_written_on_vorbis() {
+        assert_eq!(vorbis_languages("eng\0fr-CA"), ["en", "fr-CA"]);
+        assert_eq!(
+            vorbis_languages("eng\0ger\0zh-Hant"),
+            ["en", "de", "zh-Hant"]
         );
     }
 
     #[test]
-    fn language_unrecognised_value_becomes_und_on_id3v2() {
-        // ID3v2 has no full-tag field to fall back to, so an unrecognised
-        // value becomes `und` here (TRACK-070) rather than being echoed —
-        // the opposite of the Vorbis case above, and the point of the
-        // test: the two formats deliberately behave differently.
+    fn language_several_values_are_one_null_separated_item_on_ape() {
+        // An APE tag holds each key once; APEv2 lists several values in
+        // one item, separated by null characters.
+        use lofty::ape::ApeTag;
+        let mut tag = Tag::new(TagType::Ape);
+        write_common_tag_to_lofty(&mut tag, CommonTag::Language, "eng\0ger\0zh-Hant")
+            .expect("accepted");
+        let ape = ApeTag::from(tag);
+        let item = ape.get("Language").expect("a Language item");
+        assert_eq!(item.value().text(), Some("en\0de\0zh-Hant"));
+    }
+
+    #[test]
+    fn language_one_unrecognised_value_among_several_refuses_them_all() {
+        for tag_type in LANGUAGE_TAG_TYPES {
+            let message = language_refusal(tag_type, "eng\0zzz\0fra");
+            assert!(message.contains("value 2 of 3, \"zzz\","), "{message}");
+            assert!(
+                message.contains("none of the 3 values was written"),
+                "{message}"
+            );
+            // Two values, the unrecognised one first.
+            let message = language_refusal(tag_type, "English\0fra");
+            assert!(message.contains("value 1 of 2, \"English\","), "{message}");
+            // An empty value between two nulls is unrecognised too.
+            let message = language_refusal(tag_type, "eng\0\0fra");
+            assert!(message.contains("value 2 of 3 is empty"), "{message}");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // The same, through real files (write_tags -> save -> read_tags)
+    //
+    // The in-memory round trips above prove what lofty's conversion does;
+    // these prove what actually lands in, and comes back out of, a file of
+    // each kind — including the MP3 the review named.
+    // ------------------------------------------------------------------
+
+    /// A minimal untagged MP3: three silent MPEG-1 Layer III frames
+    /// (128 kbit/s, 44.1 kHz, stereo — frame header `FF FB 90 00`), each
+    /// 417 bytes (144 × 128000 ÷ 44100, no padding) of which all but the
+    /// four header bytes are zero.
+    fn minimal_untagged_mp3() -> Vec<u8> {
+        const FRAME_LEN: usize = 417;
+        let mut out = Vec::with_capacity(3 * FRAME_LEN);
+        for _ in 0..3 {
+            let mut frame = vec![0u8; FRAME_LEN];
+            frame[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+            out.extend_from_slice(&frame);
+        }
+        out
+    }
+
+    /// A minimal untagged WavPack file: one 32-byte block header (`wvpk`,
+    /// stream version 0x410, first and last block, 44.1 kHz) and no audio.
+    /// WavPack's tag is APEv2, so this is how an APE write is tested on a
+    /// real file.
+    fn minimal_untagged_wavpack() -> Vec<u8> {
+        const FLAG_INITIAL_AND_FINAL_BLOCK: u32 = 0x800 | 0x1000;
+        const SAMPLE_RATE_44100: u32 = 9 << 23;
+        let mut block = Vec::with_capacity(32);
+        block.extend_from_slice(b"wvpk");
+        block.extend_from_slice(&24u32.to_le_bytes()); // size after these 8 bytes
+        block.extend_from_slice(&0x0410u16.to_le_bytes()); // stream version
+        block.extend_from_slice(&[0, 0]); // track number, sub-index
+        block.extend_from_slice(&0u32.to_le_bytes()); // total samples
+        block.extend_from_slice(&0u32.to_le_bytes()); // block index
+        block.extend_from_slice(&0u32.to_le_bytes()); // samples in this block
+        block.extend_from_slice(&(FLAG_INITIAL_AND_FINAL_BLOCK | SAMPLE_RATE_44100).to_le_bytes());
+        block.extend_from_slice(&0u32.to_le_bytes()); // checksum
+        block
+    }
+
+    /// Writes `languages` (with a title) to a fresh file built by `fixture`,
+    /// then reads the file back and returns every language value found.
+    fn file_languages(name: &str, fixture: Vec<u8>, languages: &str) -> Vec<String> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(name);
+        std::fs::write(&path, fixture).expect("write fixture");
+        write_tags(
+            &path,
+            &[
+                (CommonTag::Title, "Fixture Title".into()),
+                (CommonTag::Language, languages.into()),
+            ],
+        )
+        .unwrap_or_else(|e| panic!("{name}: write_tags: {e}"));
+        let read_back = read_tags(&path).unwrap_or_else(|e| panic!("{name}: read_tags: {e}"));
         assert_eq!(
-            id3v2_roundtrip(CommonTag::Language, "zzz", &ItemKey::Language).as_deref(),
-            Some("und")
+            read_back.get(&CommonTag::Title).map(Vec::as_slice),
+            Some(["Fixture Title".to_string()].as_slice()),
+            "{name}: the title must have been written too"
         );
+        read_back
+            .get(&CommonTag::Language)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn language_values_survive_a_real_mp3() {
+        assert_eq!(
+            file_languages("a.mp3", minimal_untagged_mp3(), "eng\0fra"),
+            ["eng", "fra"]
+        );
+        assert_eq!(
+            file_languages("b.mp3", minimal_untagged_mp3(), "pt-BR\0ger\0yue"),
+            ["por", "deu", "und"]
+        );
+    }
+
+    #[test]
+    fn language_values_survive_a_real_flac_and_opus() {
+        assert_eq!(
+            file_languages("a.flac", minimal_untagged_flac(), "eng\0fr-CA"),
+            ["en", "fr-CA"]
+        );
+        assert_eq!(
+            file_languages("b.opus", minimal_untagged_opus(), "eng\0ger\0zh-Hant"),
+            ["en", "de", "zh-Hant"]
+        );
+    }
+
+    #[test]
+    fn language_values_survive_a_real_m4a() {
+        assert_eq!(
+            file_languages("a.m4a", minimal_untagged_m4a(), "eng\0fr-CA"),
+            ["en", "fr-CA"]
+        );
+        assert_eq!(
+            file_languages("b.m4a", minimal_untagged_m4a(), "eng\0ger\0zh-Hant"),
+            ["en", "de", "zh-Hant"]
+        );
+    }
+
+    #[test]
+    fn language_values_survive_a_real_wavpack_ape_tag() {
+        // `read_tags` returns the APE item as it is stored — one value
+        // with null characters between the languages — which is the input
+        // shape `from_legacy_three_letter_all` reads.
+        assert_eq!(
+            file_languages("a.wv", minimal_untagged_wavpack(), "eng\0fr-CA"),
+            ["en\0fr-CA"]
+        );
+        assert_eq!(
+            file_languages("b.wv", minimal_untagged_wavpack(), "eng\0ger\0zh-Hant"),
+            ["en\0de\0zh-Hant"]
+        );
+    }
+
+    #[test]
+    fn a_refused_language_leaves_a_real_file_byte_for_byte_unchanged() {
+        let fixtures: [(&str, Vec<u8>); 5] = [
+            ("c.mp3", minimal_untagged_mp3()),
+            ("c.flac", minimal_untagged_flac()),
+            ("c.opus", minimal_untagged_opus()),
+            ("c.m4a", minimal_untagged_m4a()),
+            ("c.wv", minimal_untagged_wavpack()),
+        ];
+        for (name, fixture) in fixtures {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join(name);
+            std::fs::write(&path, &fixture).expect("write fixture");
+            // A good title first, then a language list with one bad value:
+            // the whole call is refused and neither is written.
+            let result = write_tags(
+                &path,
+                &[
+                    (CommonTag::Title, "Must Not Be Written".into()),
+                    (CommonTag::Language, "eng\0zzz".into()),
+                ],
+            );
+            assert!(
+                matches!(result, Err(MetadataError::UnrecognisedLanguage { .. })),
+                "{name}: {result:?}"
+            );
+            assert_eq!(
+                std::fs::read(&path).expect("read"),
+                fixture,
+                "{name} was changed"
+            );
+        }
     }
 }
