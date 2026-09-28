@@ -2,7 +2,7 @@
 
 > Codex-side mirror. The **canonical** long-form facts are in [`../.claude/MEMORY.md`](../.claude/MEMORY.md) —
 > read that; this file only adds what matters specifically when Codex is doing the work.
-> Last updated: 2026-09-23.
+> Last updated: 2026-09-28.
 
 ## Role of Codex in this project
 
@@ -25,3 +25,10 @@
   dotted query forms; `primary_tag_type()` as the lofty fallback; `kill_on_drop` on every subprocess;
   the tempo detector's "preference only breaks ties, never raises confidence" rule.
 - Two tag libraries (`mp4ameta` and `lofty`) coexist on purpose. Do not unify them.
+- On `feature/bcp47-language-policy`, several `tag_io` writes are **refused on purpose** rather
+  than allowed to lose data: ID3v2 language frames that cannot be merged safely (including an
+  old `TLA` frame inside an ID3v2.4 tag), and M4A writes that would drop a value or a registry
+  key M4A cannot store (#102, #103). The two public language steps must be taken in order —
+  `recover_languages_after_reading` right after reading, `gather_languages_before_saving` right
+  before saving. Details: `.claude/MEMORY.md`, "lofty: several languages".
+

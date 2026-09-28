@@ -672,3 +672,32 @@ available in the cloud container.
 
 **Addendum (same day):** owner answered the first open question — the eventual PR targets
 **`main`**, not `alpha`. Recorded in CLAUDE.md rule 8, HANDOFF §0, AGENTS.md and `.OpenAI/CONTEXT.md`.
+
+## 2026-09-28 — Language policy, revision 8: Codex's review of revisions 5–7
+
+On `feature/bcp47-language-policy` (issue #99). Codex reviewed the 21 commits `21fa942..7f944a7`
+and found four new problems, plus the two M4A problems already recorded as #102 and #103. All
+acted on, in `crates/meedya-metadata` and `crates/meedya-lyrics` only (the shared policy files
+that eight other repositories pin at `aaaa585` were not touched):
+
+- **Old `TLA` language frames.** lofty reads a frame named `TLA` plus a zero byte, inside an
+  ID3v2.3 tag, as `TLAN`; the frame reader looked only for `TLAN`, so two such frames lost a
+  language on a title write (reproduced, checked with mutagen). Names are now read exactly as
+  lofty reads them and merged. Measured along the way: inside an ID3v2.4 tag lofty does NOT read
+  that name as a language (mutagen does), and its save turns it into `TXXX:TLA` — so such a
+  frame refuses the save.
+- **Quadratic merge.** A set beside the ordered list; a test counts comparisons and hash steps
+  (no clock) and fails if the old list search comes back.
+- **The combined public helper undid a caller's edits** because it read the disk just before
+  the save. Split into `recover_languages_after_reading` (straight after reading) and
+  `gather_languages_before_saving` (just before saving). No consumer used the old one; removed.
+- **Lyricsfile YAML.** The review's example (U+0085 after a newline) was already escaped by the
+  YAML library on the Rust side, but U+2028/U+2029 were written raw inside a block, and js-yaml
+  (YAML 1.2) misread them. All four "other" line breaks now force quoting.
+- **#102 / #103 interim guards** (the lead's decision: refuse instead of losing). While
+  building the #102 guard, a further loss on the same route was found and refused too: a
+  freeform atom whose name holds a colon is renamed (`Meedya:Mood` → `Meedya`).
+
+Decision recorded: the doc-build check with `-D warnings` fails before and after this round on
+warnings in three crates this round may not touch; the two touched crates now pass it.
+853 / 1000 tests. Not yet reviewed; not pushed.

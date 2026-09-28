@@ -58,11 +58,11 @@
 //   decode, a frame that runs past the end of its tag, a frame whose name
 //   lofty would not accept (it must be three or four capital letters or
 //   digits), an ID3v2.4 frame named `TLA` and a zero. Refusing leaves the
-//   file exactly as it was; saving would have lost languages. (A file split the way this crate split them before
-//   revision 6, and `TagFile::save` still does — lofty's format-neutral
-//   save — has none of these, so the case that actually happens is always
-//   read: checked on real MP3, WAV and AIFF files split by
-//   `TagFile::save`.)
+//   file exactly as it was; saving would have lost languages. (A file
+//   split the way this crate split them before revision 6, and
+//   `TagFile::save` still does — lofty's format-neutral save — has none of
+//   these, so the case that actually happens is always read: checked on
+//   real MP3, WAV and AIFF files split by `TagFile::save`.)
 // - **The merge takes work in step with the number of values**: a set of
 //   the values already kept sits beside the ordered list (`first_of_each`),
 //   so a crafted frame holding 100,000 values costs 100,000 steps, not the

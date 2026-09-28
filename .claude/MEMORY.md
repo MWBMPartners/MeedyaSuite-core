@@ -163,6 +163,29 @@ Also: `supports_tag_type(Id3v2)` is **too permissive** as a guard — lofty repo
 read-only supported for FLAC/APE/MPC, so those pass the check and then fail at `save`. Use
 `primary_tag_type() != Id3v2` when you need *writable* Id3v2.
 
+## lofty: several languages, and what the M4A route loses (policy branch, 2026-09-28)
+
+These refusals are deliberate. Do not "fix" them by letting the save go ahead.
+
+- **ID3v2 language frames.** lofty keeps only the LAST of several language frames, so every
+  save in `tag_io` (and `meedya-lyrics`' `embed_synced`) first reads them from the file's bytes
+  (`id3v2_language_frames`) and merges them. A language frame is `TLAN`, `TLA` in an ID3v2.2
+  tag, or `TLA` plus a zero byte in an ID3v2.3 tag — lofty reads all of those as `TLAN`. The
+  same `TLA`-and-zero inside an **ID3v2.4** tag is NOT a language to lofty (mutagen says it is),
+  and lofty's save turns it into `TXXX:TLA`, so it refuses the save. Anything the reader cannot
+  read safely refuses too.
+- **Two steps, in this order**, for a caller saving its own lofty `TaggedFile`:
+  `recover_languages_after_reading` straight after reading (it reads the disk), then
+  `gather_languages_before_saving` just before saving (it never reads the disk). A single
+  helper doing both before the save undid the caller's own language edits; it was removed.
+- **M4A (#102, #103, interim guards).** Every M4A write except the language atom goes through
+  lofty's format-neutral `Tag`, which keeps only the first value of each text/picture/flag/
+  track atom and rebuilds a freeform name by splitting at colons. A write that would lose a
+  value (several cover images, several values in one text atom, several rtng values, a colon
+  inside a freeform name) is refused before anything is saved. `write_registry_tags` builds
+  `namespace:name` keys, which an M4A file cannot store (it needs `----:mean:name`), so on an
+  M4A file it refuses rather than report tags "written". The real fixes are still open.
+
 ## tokio: `timeout` alone does not kill a child process
 
 `tokio::time::timeout` around `Command::output()` unblocks the caller but leaves the child
