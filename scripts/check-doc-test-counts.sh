@@ -58,13 +58,33 @@ else
     echo "  measured: ${DEFAULT} default-features, ${ALL} --all-features"
 fi
 
+# A count is a whole number, and nothing else: anything else here is a
+# mistake in the caller, and matching it against the documents below
+# would prove nothing.
+for count in "$DEFAULT" "$ALL"; do
+    case "$count" in
+        '' | *[!0-9]*)
+            echo "FAILED: '${count}' is not a whole number, so it cannot be checked." >&2
+            exit 1
+            ;;
+    esac
+done
+
 status=0
 
-# Substring checks rather than a parse: deliberately tolerant of prose
-# rewording, but still catches a figure that has gone stale.
+# Whole-number checks rather than a parse: deliberately tolerant of prose
+# rewording, but still catches a figure that has gone stale. The number must
+# stand on its own - no digit directly before or after it, and not part of a
+# larger number written with a separator ("1,796", "0.796", "796.5") - so a
+# small or stale total cannot pass by matching digits inside some other
+# number. (This used to be a plain substring check: the stand-in review of
+# revision 5 showed a stand-in suite of 6 / 10 tests passing, because "6"
+# and "10" appear inside other numbers in every one of these files.) A
+# number at the end of a sentence ("796.") still counts.
 assert_contains() {
     local file="$1" value="$2" label="$3"
-    if ! grep -qF -- "$value" "$file"; then
+    local pattern="(^|[^0-9.,]|[^0-9][.,])${value}(\$|[^0-9.,]|[.,]\$|[.,][^0-9])"
+    if ! grep -qE -- "$pattern" "$file"; then
         echo "STALE: $file does not mention the measured ${label} count '${value}'"
         status=1
     fi
