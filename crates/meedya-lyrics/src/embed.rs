@@ -153,6 +153,19 @@ pub fn embed_synced(media: &Path, lyrics: &Lyrics, lang: [u8; 3]) -> Result<()> 
         });
     }
 
+    // Step 1 of the two `tag_io` steps that keep a file's languages whole
+    // through a save, taken straight after reading and before anything is
+    // changed: a file that ALREADY holds one `TLAN` frame per language
+    // (split by an older save, or by `meedya-tags-extended`'s
+    // `TagFile::save`) was read by lofty as its last frame only, and this
+    // save used to delete the rest (found by the stand-in review of
+    // revision 6). This reads such frames from the file and puts every
+    // language back; when they cannot be read it refuses, and nothing is
+    // saved. (It used to run just before the save, inside one combined
+    // helper; Codex's review of revisions 5–7 found that order undoes a
+    // caller's own language change, so the helper was split in two.)
+    tag_io::recover_languages_after_reading(&mut tagged, media)?;
+
     // Serialize a SynchronizedTextFrame and insert it as a SYLT binary frame.
     // Lofty doesn't expose SYLT as a Frame enum variant in 0.22, so we go
     // via bytes — this is the documented escape hatch for less-common frames.
@@ -205,19 +218,14 @@ pub fn embed_synced(media: &Path, lyrics: &Lyrics, lang: [u8; 3]) -> Result<()> 
     id3v2_typed.insert(sylt_frame);
     *id3v2 = lofty::tag::Tag::from(id3v2_typed);
 
-    // A file listing several languages holds them in ONE `TLAN` frame, but
-    // the conversion just above hands them back as one item per language,
-    // and saving would write each as a frame of its own — a reader keeps
-    // only the last, so adding lyrics used to cut three languages down to
-    // one (found by the stand-in review of revision 5). And a file that
-    // ALREADY holds one `TLAN` frame per language (split by an older save,
-    // or by `meedya-tags-extended`'s `TagFile::save`) was read by lofty as
-    // its last frame only, so this save deleted the rest (found by the
-    // stand-in review of revision 6). The shared helper reads such frames
-    // from the file and puts every language back into one item, as every
-    // save in `tag_io` does; when they cannot be read it refuses, and
-    // nothing is saved.
-    tag_io::keep_languages_whole_before_saving(&mut tagged, media)?;
+    // Step 2, just before the save: a file listing several languages holds
+    // them in ONE `TLAN` frame, but the conversion just above hands them
+    // back as one item per language, and saving would write each as a
+    // frame of its own — a reader keeps only the last, so adding lyrics
+    // used to cut three languages down to one (found by the stand-in
+    // review of revision 5). This joins them into one item again, as every
+    // save in `tag_io` does. It does not read the file.
+    tag_io::gather_languages_before_saving(&mut tagged);
 
     let file = std::fs::OpenOptions::new()
         .read(true)
