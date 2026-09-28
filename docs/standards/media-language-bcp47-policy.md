@@ -115,7 +115,7 @@ A project implements the parts marked for it, and SHOULD NOT build the rest.
     Latin America and the Caribbean);
   - **variant** — five to eight characters, or four starting with a digit
     (`1996`, `valencia`);
-  - **extension** — a single letter other than `x` followed by more
+  - **extension** — a single letter or digit other than `x` followed by more
     subtags (`u-ca-gregory`);
   - **private use** — `x-` followed by subtags agreed privately.
 - **Language group** — every tag sharing one primary language: `en`,
@@ -154,17 +154,20 @@ a key, not as a stored value, not as a foreign key, not in an exported
 [RFC 5646 §4.5](https://www.rfc-editor.org/rfc/rfc5646#section-4.5), using
 the reference data file):
 
-1. Remove leading and trailing whitespace (spaces, tabs, line breaks).
-   An empty string is not a tag.
+1. Remove leading and trailing spaces (U+0020), tabs (U+0009), line feeds
+   (U+000A) and carriage returns (U+000D) — those four characters and no
+   others. Anything else, a no-break space included, is part of the value
+   and makes it malformed. An empty string is not a tag.
 2. If the whole tag (ignoring case) is a **grandfathered** tag in the
    registry (`i-klingon`, `en-GB-oed`, `i-default` …): use its replacement
    if the registry gives one and carry on with that; otherwise keep the tag
    exactly as the registry spells it — it is not reordered or split.
 3. Check it is **well formed** under RFC 5646's grammar: hyphen-separated
    subtags of 1–8 ASCII letters and digits, in the order language, optional
-   extlang (at most one), optional script, optional region, variants,
-   extensions, private use. The same variant twice, or the same extension
-   letter twice, is malformed. Underscores are not separators (see
+   extlang, optional script, optional region, variants, extensions, private
+   use. RFC 5646's grammar allows up to three extlangs, but no valid tag has
+   more than one, so this policy treats more than one as malformed. The
+   same variant twice, or the same extension letter twice, is malformed. Underscores are not separators (see
    LANG-004). A primary language of four to eight letters is allowed by
    the grammar but is accepted only if the registry lists it — none is
    listed today — so a language *name* such as `English` or `Deutsch` is
@@ -174,13 +177,19 @@ the reference data file):
    gives a replacement for (`sgn-BR` → `bzs`), use the replacement.
 5. Replace each subtag that has a registry **Preferred-Value**: languages
    (`iw` → `he`, `in` → `id`, `mo` → `ro`), regions (`DD` → `DE`,
-   `BU` → `MM`), variants (`heploc` → `alalc97`). An **extlang** replaces
-   the language before it: `zh-yue-HK` → `yue-HK`.
+   `BU` → `MM`), variants (`heploc` → `alalc97`). A **registered extlang**
+   replaces the language before it — `zh-yue-HK` → `yue-HK` — and the
+   language it leaves behind is then itself checked for a Preferred-Value:
+   `ar-ajp` → `ajp` → `apc`. An extlang the registry does not list is kept
+   where it is (`zh-abc` stays `zh-abc`).
 6. Put **extensions** in order of their single letter (`a-…` before
    `u-…`), keeping each extension's own subtags in their written order.
-7. Set the **case**: language, extlang, variants, extensions and private
-   use in lower case; script in title case (`Hant`); region in upper case
-   (`TW`); three-digit regions unchanged.
+7. Set the **case**: language, extlang, variants, and every subtag of an
+   extension or of the private-use part in lower case; script in title case
+   (`Hant`); region in upper case (`TW`); three-digit regions unchanged.
+   (RFC 5646 §2.1.1 keeps subtags after a single-letter subtag in lower
+   case; this is also the form Unicode CLDR uses. Stating it here removes
+   any doubt about `en-x-foo-ab`: it stays lower case.)
 
 Canonical form does **not** add or remove anything else. It does not add a
 script or region (LANG-024), and it does not remove a script the registry
@@ -196,26 +205,46 @@ reported. Neither is guessed at.
 Many containers and tag formats store three-letter ISO 639-2 codes (`eng`,
 `ger`, `fre`): MP4's media header, Matroska's old `Language` field, ID3's
 `TLAN` frame and the language field of `COMM`/`USLT`, most `ffprobe`
-output. BCP 47 requires the shortest code, so these MUST be converted when
-read:
+output. Free-text fields often hold them too — MusicBrainz Picard writes
+`eng` into Vorbis and MP4 `LANGUAGE` fields. BCP 47 requires the shortest
+code, so **every language value read from a file, a tag or another system
+MUST go through this reader**, not straight into LANG-001. (LANG-001 alone
+is for a value already known to be a BCP 47 tag, such as a tag a person
+types into a tag field.)
 
-1. Lower-case it. If it is in the data file's `iso639_2` table, use that
-   (`eng` → `en`; both `ger` and `deu` → `de`; `chi` and `zho` → `zh`;
-   withdrawn `scc` → `sr`).
-2. Otherwise, if it is itself a registered language subtag (a genuine ISO
-   639-3 code such as `yue` or `cmn`, or one in the local-use range
-   `qaa`–`qtz`), canonicalise it as a tag.
-3. `XXX` (any case) — ID3's own "language not known" marker — means `und`.
-4. Matroska files written before version 4 may hold a three-letter code, a
-   hyphen and a two-letter country: `fre-ca` for Canadian French
-   ([RFC 9559 §12](https://www.rfc-editor.org/rfc/rfc9559#section-12)).
-   Convert the code by steps 1–2 and keep the country as the region:
-   `fre-ca` → `fr-CA`.
-5. Anything else is **unrecognised**. It MUST NOT be turned into a guessed
-   language. The structured value is `und`, and the original text SHOULD be
-   kept alongside so nothing is lost and a person can fix it.
+Before the steps: remove trailing null characters (U+0000 — fixed-width
+fields are padded with them) and the four whitespace characters of
+LANG-001 step 1. If the field holds several values (ID3v2.4 separates them
+with a null character), split them first and read each on its own; the
+first is the primary language.
 
-A two-letter or longer value in such a field is canonicalised as a tag.
+Then exactly one of these applies, in this order:
+
+1. `XXX`, in any case — ID3's own "language not known" marker — means `und`.
+2. Exactly three ASCII letters: lower-case it. If it is in the data file's
+   `iso639_2` table, use the table's answer (`eng` → `en`; both `ger` and
+   `deu` → `de`; `chi` and `zho` → `zh`; withdrawn `scc` → `sr`).
+   Otherwise, if it is a registered language subtag (a genuine ISO 639-3
+   code such as `yue` or `cmn`) or in the local-use range `qaa`–`qtz`,
+   canonicalise it as a tag (LANG-001). Otherwise it is **unrecognised**.
+3. Three letters, a hyphen and two letters — how Matroska files written
+   before version 4 give a country
+   ([RFC 9559 §12](https://www.rfc-editor.org/rfc/rfc9559#section-12)):
+   read the three letters by step 2 and keep the two letters as the region
+   (`fre-ca` → `fr-CA`). If the three letters are unrecognised or mean
+   `und`, the whole value is **unrecognised**.
+4. Anything else (two letters, or a longer tag) is canonicalised as a tag
+   (LANG-001); if that finds it malformed, it is **unrecognised**.
+
+An unrecognised value MUST NOT be turned into a guessed language. The
+structured value is `und`, and the original text SHOULD be kept alongside
+so nothing is lost and a person can fix it.
+
+**A format's own default is not a guess.** Where a format defines a value
+for a missing field — Matroska's `Language` element defaults to `eng`, and
+its `FlagDefault` to 1 (RFC 9559) — a reader applies that default, because
+that is what the file says. LANG-003 forbids inventing a language; it does
+not forbid reading one the format defines.
 
 ### LANG-003 — Unknown is `und`, never a guess
 
@@ -264,6 +293,16 @@ The original language MUST come first in stored order.
   first, then the rest of the group in canonical order.
 - If several languages are marked original (a bilingual work), their groups
   come first, in canonical order among themselves.
+- This applies to special codes too: a track marked original whose language
+  is `und` (not known) or `mul` still comes first, because it is the
+  original. Only a malformed value (LANG-026) is never promoted.
+- Each list is ordered from its own items' markers. For tracks, that means
+  each track type separately (TRACK-060): an original audio track does not
+  promote subtitles of the same language unless they are marked original
+  too. (Matroska's `FlagOriginal` is a per-track flag, and this keeps the
+  order a plain reading of what the file says.) A data model that records
+  the original language once for the whole work, rather than per item,
+  marks every item whose canonical tag equals it.
 - If nothing is marked original, nothing is promoted.
 
 ### LANG-020 — Order by primary language code
@@ -285,9 +324,10 @@ Within one language group, tags MUST be ordered by how specific they are:
 2. language + script — `zh-Hans`
 3. language + region — `en-GB`
 4. language + script + region — `zh-Hant-TW`
-5. anything carrying variants, extensions or private-use subtags, ordered
-   among themselves by rules 1–4 applied to their language, script and
-   region, then by the rest of the tag as plain ASCII
+5. anything carrying an unregistered extlang, variants, extensions or
+   private-use subtags, ordered among themselves by rules 1–4 applied to
+   their language, script and region, then by the rest of the tag as plain
+   ASCII
 
 So `zh`, `zh-Hans`, `zh-Hant`, `zh-TW`, `zh-Hans-CN`, `zh-Hant-TW`.
 
@@ -318,7 +358,8 @@ separate field, or a record of where the value came from.
 
 ### LANG-025 — Where special codes go
 
-After all ordinary languages, in this fixed order:
+After all ordinary languages (and after any original group LANG-010
+promoted), in this fixed order:
 
 1. `mul` — several languages
 2. `mis` — a language with no code
@@ -329,8 +370,10 @@ After all ordinary languages, in this fixed order:
 7. private-use-only tags (`x-…`), in ASCII order
 8. malformed values (LANG-026)
 
-Each of 1–5 is its own language group, so `und-Latn` sorts after `und`
-under LANG-021.
+Every code in 1–5 is its own language group — each local-use code too, so
+`qaa` and `qab` are two groups, in ASCII order — and within a group LANG-021
+applies: `und-Latn` sorts after `und`, and `qaa-GB` after `qaa` but before
+`qab`.
 
 ### LANG-026 — Malformed values are kept, flagged and put last
 
@@ -375,7 +418,7 @@ recorded there, not only in its title:
 | Deaf / hard of hearing (SDH) | `FlagHearingImpaired` | `hearing_impaired` (and `captions` for captions) |
 | Audio description | `FlagVisualImpaired` | `visual_impaired` |
 | Text descriptions of the picture | `FlagTextDescriptions` | `descriptions` |
-| Dub | — | `dub` |
+| Dub | `FlagOriginal` = 0 (what ffmpeg's Matroska writer does with `dub`) | `dub` |
 
 A title MAY repeat the role in words for simple players ("English — SDH").
 The words MUST NOT be the only record, and a reader MUST prefer the flags
@@ -429,15 +472,18 @@ For self-contained files, write **both** where the format supports it:
 |---|---|---|
 | Matroska / WebM | `LanguageBCP47` (and `TagLanguageBCP47`, `ChapLanguageBCP47`); readers MUST ignore the old field when it is present | `Language` — **bibliographic** form (`ger`, `fre`, `chi`) |
 | MP4 / MOV | extended language box `elng` | media header `mdhd` language — **terminology** form (`deu`, `fra`, `zho`) |
-| ID3 (MP3) | — (none exists) | `TLAN`, and the language of `COMM`/`USLT` — terminology form |
-| Vorbis comments (FLAC, Ogg) | `LANGUAGE` (free text: write the tag) | — |
+| ID3 (MP3) | — (none exists) | `TLAN`, and the language of `COMM`/`USLT` — terminology form (ID3v2.4 says only "ISO-639-2"; this policy picks the terminology form so every writer agrees) |
+| Vorbis comments (FLAC, Ogg) | `LANGUAGE` (free text: write the tag; read it with LANG-002, because other tools write `eng` there) | — |
+| MP4 freeform `LANGUAGE` item | the tag (read it with LANG-002, as above) | — |
 | TTML | `xml:lang` | — |
 | WebVTT, SRT, ASS | no language field: use the file name (TEXT-030) and, where the format allows a header note, the tag | — |
 
 When a three-letter field must be written, take the code for the tag's
 primary language from the data file's `iso639_2_for_language` table, in
-the form the format needs (the table above); for a language with no ISO
-639-2 code, or for `und`, write `und` (ID3 MAY use `XXX`). The two forms
+the form the format needs (the table above). A primary language in the
+local-use range `qaa`–`qtz` is written as itself. For any other language
+with no ISO 639-2 code, for `und`, and for a grandfathered, private-use or
+malformed value, write `und` (ID3 MAY use `XXX`). The two forms
 differ for twenty languages, so using the wrong one is a real error, not
 a matter of taste. Converting down loses
 the region and script: that is why the full-tag field MUST also be written
@@ -483,12 +529,17 @@ If the user has set language preferences, the language groups of those
 preferences come first, in the user's priority order.
 
 A preference's group is its primary language: a preference for `en-GB`
-brings the whole English group forward.
+brings the whole English group forward. A preference may name a special
+code — `zxx` from someone who wants the music-only track, say — and it is
+honoured like any other. A malformed preference is ignored.
 
 ### UI-030 — Then the original
 
-The original language's group (LANG-010's meaning) comes next, if a
-preference has not already placed it. With no preferences, it comes first.
+The original language's group (LANG-010's meaning, special codes
+included) comes next, if a preference has not already placed it. With no
+preferences, it comes first. If several groups are original, they are
+ordered among themselves as UI-040 orders groups — by localised name — so
+a menu reads alphabetically, not by code.
 
 ### UI-040 — Then everything else, alphabetically by localised name
 
@@ -508,8 +559,11 @@ Japanese (original), Dutch, English, French, German, Spanish.
 Within a group, in this order of importance:
 
 1. **Role** — as TRACK-050. When the user has asked for an accessibility
-   role (audio description, or SDH/captions), tracks with that role move
-   ahead of the main ones within their group (AUTO-040).
+   role (audio description, or SDH/captions), tracks *placed* by that role
+   move ahead of the main ones within their group (AUTO-040). "Placed by"
+   uses TRACK-050's rule — a track with several roles is placed by the
+   latest in its list — so a forced SDH track counts as forced and does not
+   move ahead.
 2. **Exact preference** — a tag the user listed exactly (`en-GB`) comes
    before the group's other tags, in preference order. Only exact matches
    are promoted; `en` is not promoted by a preference for `en-GB`.
@@ -571,8 +625,15 @@ tags state a script and the scripts differ (`zh-Hans` against `zh-Hant`,
 script may not be able to read the other.
 
 Match strength, best first: exact → general → specific → related → none.
-Different primary languages never match. `und`, `mul`, `zxx` and
-private-use tags only match themselves exactly.
+Different primary languages never match. These only ever match themselves
+exactly: `und`, `mul`, `mis` and `zxx` (two "unknown" or "uncoded" tracks
+need not be the same language); tags that are private use from the start
+(`x-…`); and grandfathered tags with no replacement (`i-default`). A tag
+that merely *ends* in a private-use part (`en-x-foo`) is an ordinary tag.
+
+**Distance** — for general and specific matches — counts every
+hyphen-separated part added or removed, single-letter parts included:
+`en-u-ca-gregory` against `en` is general, distance 3.
 
 Matching MUST NOT change either tag. It MUST NOT use likely-subtag
 inference (LANG-024): `zh-TW` and `zh-Hans` are "related", not a mismatch,
@@ -585,14 +646,17 @@ Choosing which track plays is a different job from ordering the menu. The
 selection MUST NOT be "whatever is first in the menu", and MUST give the
 same answer whatever order the tracks are listed in: where the tie-breaks
 below leave two tracks level, the **track identifier** decides (the number
-or ID the file gives the track), never its position in a list. It MAY use:
+or ID the file gives the track — compared as numbers when both are numbers,
+otherwise as plain text), never its position in a list. It MAY use:
 preferences, exact regional and script preference, original, default,
 forced, roles, accessibility settings, playback context and saved choices.
 
 ### AUTO-020 — Choosing audio
 
-1. Commentary and other special tracks are never chosen automatically
-   unless every audio track is one.
+1. Tracks placed (TRACK-050) as **commentary** or **other** are never
+   chosen automatically unless every audio track is one. Alternate mixes and
+   audio description can be chosen, but rank after the main programme
+   (audio description ranks first when the user has asked for it).
 2. For each preference, in order: find the tracks that match it (MATCH,
    related or better). If any do, choose the best of them by, in order:
    role (main first; audio description first when the user has asked for
@@ -601,7 +665,9 @@ forced, roles, accessibility settings, playback context and saved choices.
 3. If no preference matched: the original track(s), best by role, default
    flag, canonical order, identifier.
 4. Otherwise the default track(s), by the same tie-breaks.
-5. Otherwise the first track in canonical order.
+5. Otherwise the best by role (as in step 2), then canonical order, then
+   identifier — so with nothing else to go on, a main-programme track is
+   still chosen over an audio-description track nobody asked for.
 
 ### AUTO-030 — Choosing subtitles
 
@@ -609,21 +675,26 @@ The subtitle choice depends on the audio chosen and on a subtitle mode:
 
 - **off** — nothing.
 - **forced only** — the forced track that best matches the *audio's*
-  language (related or better; ties by default flag, canonical order,
-  identifier). Nothing if there is none, or if the audio's language is
+  language (related or better; then match strength, fewer removed or extra
+  subtags, default flag, canonical order, identifier). Nothing if there is none, or if the audio's language is
   `und` (not known), `mul` (several) or `zxx` (none) — there is nothing to
   match a forced track against.
 - **always** — for each preference in order, the best-matching subtitle
   that is not forced, commentary or other (SDH first if the user has asked
-  for captions, otherwise full subtitles first; then match strength,
-  default flag, canonical order, identifier). If no preference matches: the
-  default non-forced track, else nothing.
+  for captions, otherwise full subtitles first; then match strength, fewer
+  removed or extra subtags, default flag, canonical order, identifier). If
+  no preference matches: the default-flagged track among those that are not
+  forced, commentary or other (ties by canonical order, identifier), else
+  nothing.
 - **automatic** (the usual default) — if the audio's language matches one of
   the user's preferences (related or better), or the user has none, act as
   **forced only**. Otherwise act as **always**.
 
 A forced track is never chosen by **always**, and a full track is never
-chosen by **forced only** (TRACK-030).
+chosen by **forced only** (TRACK-030). If no audio track was chosen (a
+silent video), the audio's language counts as not known: **forced only**
+gives nothing, and **automatic** acts as **always** when the user has
+preferences.
 
 ### AUTO-040 — Accessibility preferences
 
@@ -654,12 +725,26 @@ from the original.
 
 ### TEXT-030 — File names carry the tag, unchanged
 
-A sidecar file named by language (subtitles, lyrics) MUST use the canonical
-tag in the name — `Film.en-GB.srt`, `Song.zh-Hant.lrc` — with role words as
-separate dot-separated parts where used (`Film.en.sdh.srt`,
-`Film.en.forced.srt`). The tag MUST be checked to be well formed before it
-is put into a file name, because a malformed value may contain characters
-that are unsafe in a path.
+A sidecar file named by language (subtitles, lyrics) MUST follow this
+shape:
+
+    {media file stem}.{tag}[.{role}…][.{n}].{extension}
+
+- **The tag comes first, always.** It is the canonical tag (`Film.en-GB.srt`,
+  `Song.zh-Hant.lrc`); when the language is not known, or the value is
+  malformed, it is `und`. A malformed value never goes into a file name —
+  it could contain characters that are unsafe in a path.
+- **Role words** follow, in TRACK-050 order, from this list only: `sdh`,
+  `forced`, `commentary` (`Film.en.sdh.srt`, `Film.en.forced.srt`). A
+  reader also accepts `cc` and `hi` as `sdh`, because other tools write
+  them.
+- **A number** (`.2`, `.3` …) is added only when two sidecars would
+  otherwise get the same name, numbering from the second.
+- **Reading one back:** take the stem from the media file the sidecar
+  belongs to — never guess where the stem ends — so `Mr. Robot.en.sdh.srt`
+  beside `Mr. Robot.mkv` reads as tag `en`, role `sdh`. Because the tag is
+  always first, a role word is never mistaken for a language (`sdh` is also
+  the code for Southern Kurdish, and `hi` for Hindi).
 
 ### TEXT-040 — Presentation follows Part B
 
@@ -731,6 +816,8 @@ the rules it checks. Sections:
 |---|---|---|
 | `canonicalise` | LANG-001, LANG-026 | all |
 | `legacy_three_letter` | LANG-002, LANG-003 | canonical, text |
+| `iso639_2_write` | TRACK-070 | canonical (writes old three-letter fields) |
+| `sidecar_name` | TEXT-030 | any that names or reads sidecar files |
 | `posix_locale` | LANG-004 | any that reads OS locales |
 | `canonical_order` | LANG-010 to LANG-027 | canonical, text |
 | `track_order` | TRACK-050, TRACK-060 | canonical (tracks) |
@@ -754,9 +841,10 @@ build).
 
 `docs/standards/data/bcp47-language-data-v1.json` is generated by
 `scripts/media-lang/generate_language_data.py` from the IANA Language
-Subtag Registry and the SIL ISO 639-3 table (see [Sources](#sources)). It
-holds the replacements used by LANG-001, the three-letter table used by
-LANG-002, and the registered subtags. Implementations read it (or an exact
+Subtag Registry and the ISO 639-2 list as published by Debian's iso-codes
+project (see [Sources](#sources)). It holds the replacements used by
+LANG-001, the reading table used by LANG-002, the writing table used by
+TRACK-070, and the registered subtags. Implementations read it (or an exact
 copy) rather than keeping their own lists.
 
 ### 8.3 Copies in other repositories
@@ -771,11 +859,24 @@ the core commit the copies came from, and each file's SHA-256 checksum and
 master path. The checker `scripts/media-lang/check_copies.py` (itself
 copied verbatim) runs in that repository's existing CI and fails when:
 
-- a copy has been edited (its checksum no longer matches the lock); or
-- the lock's checksums do not match the master files at the recorded core
-  commit (downloaded from GitHub; the core repository is public, so no
-  secret is needed). A download failure fails the check — it never passes
-  silently.
+- a copy has been edited (its checksum no longer matches the lock);
+- the lock leaves out one of the files every copy must have (this
+  document, the test cases and their schema, the data and its schema, the
+  checker), or a file in the repository has the name of a master file but
+  is not in the lock — so deleting a lock line cannot switch a check off;
+- a master path is not one of the master files, or a local path points
+  outside the repository;
+- the recorded commit is not part of MeedyaSuite-core's own history on an
+  approved branch (GitHub will serve a commit that exists only in someone's
+  fork under the original repository's address, so this is checked); or
+- the lock's checksums do not match the master files at that commit
+  (downloaded from GitHub; the core repository is public, so no secret is
+  needed). A download or lookup failure fails the check — it never passes
+  silently. The local-only mode (`--offline`) refuses to run in CI.
+
+Copies MUST be kept byte for byte: a repository that converts line endings
+marks them unconverted (`-text` in `.gitattributes`); the checker says so
+when that is the cause of a mismatch.
 
 To take a new version: run the checker's `--update <commit>` mode, which
 downloads the master files at that commit, replaces the copies and rewrites
@@ -818,8 +919,14 @@ role ordering; automatic selection.
     answer the same;
   - **patch** (`1.0.1`) — wording only.
 - The test cases carry their own `fixtures_version` and state the policy
-  version they belong to; the data file carries its own `data_version`
-  (a registry refresh changes data without changing rules).
+  version they belong to; the data file carries its own `data_version`.
+- **A data refresh is not a rule change.** When a newer IANA registry or
+  ISO 639-2 list changes an answer (a code newly deprecated, say), the data
+  version goes up, the affected cases are updated to the new answer and the
+  fixtures version goes up by a minor step, in one change — the policy
+  version does not, because no rule changed. Every implementation then
+  takes the new data. A change to a *rule* follows the version numbers
+  above.
 - A change to ordering, matching or selection MUST update, in the same
   change: this document, its changelog, the affected cases, and every
   implementation in section 9. Silently changing behaviour is not allowed.
@@ -844,6 +951,21 @@ Known limitations, deliberately left for a later version:
 - No bundled localised-name data: names come from each platform.
 - Unicode locale extensions (`-u-…`) are ordered but not otherwise
   interpreted.
+- Macrolanguages are not related to their members: canonical form turns
+  `zh-cmn-Hans` into `cmn-Hans` (the registry's own rule), and MATCH-040
+  then finds no match between a `zh-Hans` preference and a `cmn-Hans`
+  track; `no` and `nb` behave the same. Matching through the registry's
+  macrolanguage data is planned for a later minor version, since it only
+  adds matches.
+
+Revised before first use (28 Sept 2026) after an independent review: the
+copy checker was hardened (it could be pointed at another repository's
+file, at a fork-only commit, or have a file removed from checking by
+deleting a lock line); the ISO 639-2 data was rebuilt from the real ISO
+639-2 list (50 ISO 639-5-only group codes had been included); and about
+twenty points where two careful implementations could disagree were
+settled, each with a test case. No version was published before this
+revision, so it stays 1.0.0.
 
 ---
 
@@ -855,8 +977,9 @@ Known limitations, deliberately left for a later version:
   tags (MATCH rules follow its "lookup" idea, with the additions stated).
 - [IANA Language Subtag Registry](https://www.iana.org/assignments/language-subtag-registry/language-subtag-registry)
   — registered subtags and replacements.
-- [SIL ISO 639-3 code tables](https://iso639-3.sil.org/code_tables/download_tables)
-  — ISO 639-1 / 639-2 / 639-3 correspondences.
+- [ISO 639-2 list, Debian iso-codes](https://salsa.debian.org/iso-codes-team/iso-codes)
+  — the ISO 639-2 codes with their bibliographic, terminology and ISO 639-1
+  forms, copied from the ISO 639-2 Registration Authority.
 - [ISO 639-2 change history](https://www.loc.gov/standards/iso639-2/php/code_changes.php)
   — withdrawn three-letter codes.
 - [RFC 9559](https://www.rfc-editor.org/rfc/rfc9559) — Matroska:

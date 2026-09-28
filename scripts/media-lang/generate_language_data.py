@@ -25,65 +25,80 @@
 #    https://www.iana.org/assignments/language-subtag-registry/language-subtag-registry
 #    Gives every registered subtag, which ones are deprecated, and what
 #    replaces them ("Preferred-Value").
-# 2. The SIL ISO 639-3 code table:
-#    https://iso639-3.sil.org/sites/iso639-3/files/downloads/iso-639-3.tab
-#    Gives, for each three-letter code, its ISO 639-2 "B" and "T" forms and
-#    its two-letter ISO 639-1 form. Containers such as MP4 and older MKV
-#    store three-letter codes ("eng", "ger"); BCP 47 requires the shortest
-#    code ("en", "de"), so this table is how old container values are read.
-#    The Library of Congress publishes the same mapping, but its site refuses
-#    automated downloads (HTTP 403, checked 28 Sept 2026); SIL is the
-#    official registration authority for ISO 639-3 and carries the same
-#    Part 2B / Part 2T / Part 1 columns.
+# 2. The ISO 639-2 code list as published by Debian's iso-codes project:
+#    https://salsa.debian.org/iso-codes-team/iso-codes/-/raw/main/data/iso_639-2.json
+#    iso-codes copies the list from the ISO 639-2 Registration Authority
+#    (the Library of Congress) and gives, for each code, its terminology
+#    ("T") form, its bibliographic ("B") form where different, and its
+#    two-letter ISO 639-1 form. Containers such as MP4 and older MKV store
+#    these three-letter codes ("eng", "ger"); BCP 47 requires the shortest
+#    code ("en", "de"), so this list is how old container values are read
+#    and how the old three-letter fields are written.
+#
+#    Why not the Library of Congress directly: its site refuses automated
+#    downloads (HTTP 403, checked 28 Sept 2026).
+#    Why not the SIL ISO 639-3 table (the first version of this script used
+#    it): SIL lists individual languages and macrolanguages only, so the
+#    ISO 639-2 *group* codes ("afa", Afro-Asiatic languages) had to be
+#    guessed from the IANA registry's "Scope: collection" records — and that
+#    guess was wrong. The registry also holds 50 group codes that exist only
+#    in ISO 639-5 (added 2009-07-29, e.g. "alv"), which are NOT ISO 639-2
+#    codes and must never be written into an MP4 or Matroska three-letter
+#    field. The first version included them; an independent review caught
+#    it (28 Sept 2026). The Debian list is the actual ISO 639-2 list, so no
+#    guess is needed.
 #
 # The IANA URL always serves the newest registry, and old versions are not
 # kept there, so this script does not download anything: regenerating the
-# data is a deliberate act (a data-version bump), not something a build does.
+# data is a deliberate act (a data-version bump — see the policy's
+# "Changing this policy"), not something a build does. The sources section
+# of the output records each file's date or commit and checksum.
 #
 # WHAT IT CANNOT DO
 # -----------------
-# ISO 639-2 also has about sixty "collective" codes (for example "afa",
-# Afro-Asiatic languages) that ISO 639-3 does not list. They are still
-# registered in the IANA registry as language subtags, so they are covered
-# by rule 2 in build_iso639_2_map(); nothing is lost. A three-letter code
-# that is in neither source is left out of the map on purpose — callers must
-# report it as unrecognised rather than guess (policy rule LANG-002).
+# It knows only what the two sources say. The four withdrawn codes below are
+# the only hand-written data. A three-letter code in neither source is left
+# out on purpose: callers report it as unrecognised rather than guess
+# (policy rule LANG-002).
 #
 # Usage:
 #   python3 scripts/media-lang/generate_language_data.py \
 #       --registry path/to/language-subtag-registry \
-#       --iso639-3 path/to/iso-639-3.tab \
-#       --retrieved 2026-09-28 \
+#       --iso639-2 path/to/iso_639-2.json \
+#       --iso639-2-commit <iso-codes git commit the file came from> \
 #       --out docs/standards/data/bcp47-language-data-v1.json
 
 import argparse
 import hashlib
 import json
+import re
 import sys
 
 POLICY_ID = "MWBM-MEDIA-LANG"
 POLICY_VERSION = "1.0.0"
 # The data file is versioned on its own, because a registry refresh changes
-# the data without changing any rule. The policy document says which data
-# versions a given policy version accepts.
+# the data without changing any rule (see the policy's "Changing this
+# policy" for what a data change requires).
 DATA_VERSION = "1.0.0"
 
-# ISO 639-2 codes that were WITHDRAWN, so neither source above lists them
-# any more, but which old media files still carry (an MKV muxed before 2008
-# can say "scc" for Serbian). Each maps to the code that replaced it, per the
+# ISO 639-2 codes that were WITHDRAWN, so the current list no longer has
+# them, but which old media files still carry (an MKV muxed before 2008 can
+# say "scc" for Serbian). Each maps to the code that replaced it, per the
 # ISO 639-2 Registration Authority's published change history
-# (https://www.loc.gov/standards/iso639-2/php/code_changes.php):
+# (https://www.loc.gov/standards/iso639-2/php/code_changes.php — that page
+# could not be fetched automatically; these four are from the author's
+# reading of it and are not independently checked by any test):
 #   scc -> srp (sr)  and  scr -> hrv (hr): the B codes for Serbian and
-#          Croatian, withdrawn 2008-06-28 in favour of the single B/T codes.
-#   mol -> rum/ron (ro): Moldavian, withdrawn 2008-11-03.
-#   jaw -> jav (jv): Javanese, changed 2001-01-03.
+#          Croatian, withdrawn in 2008 in favour of single B/T codes.
+#   mol -> rum/ron (ro): Moldavian, withdrawn in 2008.
+#   jaw -> jav (jv): Javanese, changed in 2001.
 # Kept deliberately short: only codes that were once valid ISO 639-2 and
-# have a single clear successor. Anything else stays unrecognised.
+# have a single clear successor. Anything else stays unrecognised. These
+# are for READING only; they never appear in the writing table.
 WITHDRAWN_ISO639_2 = {"scc": "sr", "scr": "hr", "mol": "ro", "jaw": "jv"}
 
-REGISTRY_URL ="https://www.iana.org/assignments/language-subtag-registry/language-subtag-registry"
-SIL_URL = "https://iso639-3.sil.org/sites/iso639-3/files/downloads/iso-639-3.tab"
-
+REGISTRY_URL = "https://www.iana.org/assignments/language-subtag-registry/language-subtag-registry"
+ISO639_2_URL = "https://salsa.debian.org/iso-codes-team/iso-codes/-/raw/main/data/iso_639-2.json"
 
 def sha256_of(path):
     """Checksum of a source file, recorded so a reader can tell exactly
@@ -228,110 +243,80 @@ def build_registry_sections(records):
     }
 
 
-def build_iso639_2_writing_table(sil_path, collectives):
-    """For WRITING an old three-letter field: map each BCP 47 language
-    subtag that has an ISO 639-2 code to both forms of that code.
 
-    Formats disagree on which form they want. Matroska's old `Language`
-    element uses the bibliographic (B) form — "ger", "fre", "chi" — per
-    RFC 9559 section 12. MP4/MOV's media header uses the terminology (T)
-    form — "deu", "fra", "zho" — per ISO/IEC 14496-12. For most languages
-    the two are the same; for twenty they differ. Storing both means no
-    implementation ever has to guess which one a format wants.
-    """
-    table = {}
-    with open(sil_path, encoding="utf-8") as f:
-        header = f.readline().rstrip("\n").split("\t")
-        col = {name: i for i, name in enumerate(header)}
-        for line in f:
-            cells = line.rstrip("\n").split("\t")
-            part2b, part2t, part1 = cells[col["Part2b"]], cells[col["Part2t"]], cells[col["Part1"]]
-            if not (part2b or part2t):
-                continue
-            subtag = part1 or part2t or part2b
-            table[subtag] = {"b": part2b or part2t, "t": part2t or part2b}
-    for code in collectives:
-        table.setdefault(code, {"b": code, "t": code})
-    return dict(sorted(table.items()))
+def read_iso639_2(path):
+    """Read Debian iso-codes' ISO 639-2 list into (codes, local_use_range).
 
-
-def build_iso639_2_map(sil_path, registry_preferred):
-    """Map every ISO 639-2 three-letter code in the SIL table (both B and T
-    forms) to the BCP 47 language subtag that means the same language.
-
-    Rule 1 (here) — the code is in the SIL table as Part 2B or Part 2T: use
-             its two-letter Part 1 code when there is one ("ger" and "deu"
-             -> "de"), otherwise its Part 2T code, which is then itself the
-             registered subtag.
-    Rule 2 (in main(), via iso639_2_collectives_and_specials) — the ISO
-             639-2 codes the SIL table does not list (collections such as
-             "afa", and the special codes "mis", "mul", "und", "zxx") are
-             registered IANA language subtags and map to themselves.
-    A deprecated result is replaced by its registry Preferred-Value, so the
-    map always yields a canonical subtag.
-    """
-    mapping = {}
-    with open(sil_path, encoding="utf-8") as f:
-        header = f.readline().rstrip("\n").split("\t")
-        col = {name: i for i, name in enumerate(header)}
-        for needed in ("Id", "Part2b", "Part2t", "Part1"):
-            if needed not in col:
-                sys.exit(f"SIL table has no {needed} column — format changed?")
-        for line in f:
-            cells = line.rstrip("\n").split("\t")
-            part2b, part2t, part1 = cells[col["Part2b"]], cells[col["Part2t"]], cells[col["Part1"]]
-            if not (part2b or part2t):
-                continue
-            target = part1 or part2t or part2b
-            for code in (part2b, part2t):
-                if code:
-                    mapping[code] = target
-    for code, target in list(mapping.items()):
-        mapping[code] = registry_preferred.get(target, target)
-    return dict(sorted(mapping.items()))
-
-
-def iso639_2_collectives_and_specials(records):
-    """The registered three-letter subtags that ISO 639-2 defines but ISO
-    639-3 does not: collections ("afa") and the four special codes.
-
-    Only these are added, deliberately not every three-letter subtag in the
-    registry: the registry also holds all ~7,800 ISO 639-3 codes, which are
-    not ISO 639-2 codes, and admitting them would let a typo in an old
-    container field ("enn") pass as a valid legacy code. The registry marks
-    exactly the ISO 639-2 collections with Scope: collection and the four
-    specials with Scope: special."""
-    out = []
-    for r in records:
-        if first(r, "Type") != "language":
+    Each code is a dict {"t": terminology code, "b": bibliographic code
+    (same as t for all but twenty), "one": ISO 639-1 two-letter code or
+    None}. The local-use range ("qaa-qtz") is returned separately: it is a
+    range, not a code, and implementations test it by comparison."""
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    rows = doc.get("639-2")
+    if not isinstance(rows, list) or not rows:
+        sys.exit("ISO 639-2 file has no '639-2' list — format changed?")
+    codes, local_range = [], None
+    for row in rows:
+        t = row.get("alpha_3", "")
+        if re.fullmatch(r"[a-z]{3}-[a-z]{3}", t):
+            local_range = t.split("-")
             continue
-        subtag = first(r, "Subtag")
-        scope = first(r, "Scope")
-        if subtag and len(subtag) == 3 and ".." not in subtag and scope in ("collection", "special"):
-            out.append(subtag)
-    return out
+        if not re.fullmatch(r"[a-z]{3}", t):
+            sys.exit(f"unexpected ISO 639-2 code {t!r}")
+        b = row.get("bibliographic", t)
+        one = row.get("alpha_2")
+        codes.append({"t": t, "b": b, "one": one})
+    if local_range != ["qaa", "qtz"]:
+        sys.exit(f"expected the local-use range qaa-qtz, found {local_range}")
+    return codes, local_range
+
+
+def build_iso639_2_tables(codes, registry_languages, registry_preferred):
+    """Build the reading table (every B and T code -> BCP 47 subtag) and the
+    writing table (BCP 47 subtag -> {"b", "t"}).
+
+    The BCP 47 subtag for an ISO 639-2 code is its ISO 639-1 code when it
+    has one, otherwise the T code itself (BCP 47 uses the shortest code).
+    A deprecated result is replaced by its registry Preferred-Value, so the
+    reading table always yields a canonical subtag. Every result must be a
+    registered language subtag, or the sources disagree and the run stops.
+    """
+    reading, writing = {}, {}
+    registered = set(registry_languages)
+    for code in codes:
+        subtag = code["one"] or code["t"]
+        subtag = registry_preferred.get(subtag, subtag)
+        if subtag not in registered:
+            sys.exit(f"ISO 639-2 {code['t']} maps to {subtag}, which the IANA registry does not list")
+        reading[code["t"]] = subtag
+        reading[code["b"]] = subtag
+        if subtag in writing and writing[subtag] != {"b": code["b"], "t": code["t"]}:
+            sys.exit(f"two ISO 639-2 codes map to {subtag}: {writing[subtag]} and {code}")
+        writing[subtag] = {"b": code["b"], "t": code["t"]}
+    for code, target in WITHDRAWN_ISO639_2.items():
+        if code in reading:
+            sys.exit(f"{code} is listed as withdrawn but the current list still defines it — review the table")
+        reading[code] = target
+    return dict(sorted(reading.items())), dict(sorted(writing.items()))
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description="Generate the MWBM-MEDIA-LANG reference data.")
     ap.add_argument("--registry", required=True)
-    ap.add_argument("--iso639-3", required=True, dest="iso639_3")
-    ap.add_argument("--retrieved", required=True, help="date the SIL table was downloaded, YYYY-MM-DD")
+    ap.add_argument("--iso639-2", required=True, dest="iso639_2")
+    ap.add_argument("--iso639-2-commit", required=True, dest="iso639_2_commit",
+                    help="the iso-codes git commit the ISO 639-2 file was taken from")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+    if not re.fullmatch(r"[0-9a-f]{40}", args.iso639_2_commit):
+        sys.exit("--iso639-2-commit must be a full 40-character commit")
 
     file_date, records = parse_registry(args.registry)
     sections = build_registry_sections(records)
-    iso = build_iso639_2_map(args.iso639_3, sections["preferred"]["language"])
-    for code in iso639_2_collectives_and_specials(records):
-        iso.setdefault(code, sections["preferred"]["language"].get(code, code))
-    for code, target in WITHDRAWN_ISO639_2.items():
-        if code in iso:
-            sys.exit(f"{code} is listed as withdrawn but a source still defines it — review the table")
-        iso[code] = target
-    iso = dict(sorted(iso.items()))
-    writing = build_iso639_2_writing_table(
-        args.iso639_3, iso639_2_collectives_and_specials(records))
+    codes, local_range = read_iso639_2(args.iso639_2)
+    reading, writing = build_iso639_2_tables(
+        codes, sections["languages"], sections["preferred"]["language"])
 
     data = {
         "$schema": "./bcp47-language-data-v1.schema.json",
@@ -344,10 +329,10 @@ def main():
                 "file_date": file_date,
                 "sha256": sha256_of(args.registry),
             },
-            "sil_iso_639_3": {
-                "url": SIL_URL,
-                "retrieved": args.retrieved,
-                "sha256": sha256_of(args.iso639_3),
+            "iso_639_2": {
+                "url": ISO639_2_URL,
+                "iso_codes_commit": args.iso639_2_commit,
+                "sha256": sha256_of(args.iso639_2),
             },
         },
         "special_languages": {
@@ -357,17 +342,19 @@ def main():
             "zxx": "no linguistic content",
         },
         **sections,
-        "iso639_2": iso,
+        "iso639_2": reading,
         "iso639_2_for_language": writing,
+        "iso639_2_local_use": local_range,
     }
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
-        # Compact separators keep the file small enough to embed in an app;
-        # sort_keys keeps regeneration byte-stable, so a registry refresh
-        # shows up as a readable diff of what actually changed.
+        # indent=1 keeps the file readable in a diff while staying small
+        # enough to embed; sort_keys keeps regeneration byte-stable, so a
+        # registry refresh shows up as a readable diff of what changed.
         json.dump(data, f, ensure_ascii=False, sort_keys=True, indent=1)
         f.write("\n")
     print(f"wrote {args.out}: registry {file_date}, "
-          f"{len(sections['languages'])} languages, {len(iso)} ISO 639-2 codes")
+          f"{len(sections['languages'])} languages, {len(reading)} ISO 639-2 codes read, "
+          f"{len(writing)} written")
 
 
 if __name__ == "__main__":

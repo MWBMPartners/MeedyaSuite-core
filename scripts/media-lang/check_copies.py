@@ -8,8 +8,11 @@
 # to the master copies in MWBMPartners/MeedyaSuite-core.
 #
 # THIS FILE IS ITSELF COPIED VERBATIM into every repository that uses the
-# policy (and listed in that repository's lock, so an edited copy of the
-# checker is caught too). Change it in MeedyaSuite-core only.
+# policy, and listed in that repository's lock, so an accidental edit to the
+# copy is caught. A deliberate edit to the checker cannot be caught by the
+# checker itself — an edited checker can skip its own check — so a change
+# to this file in a consumer repository is something review must notice.
+# Change it in MeedyaSuite-core only.
 #
 # WHY COPIES AT ALL
 # -----------------
@@ -20,7 +23,7 @@
 #
 # THE LOCK FILE (default: docs/standards/MWBM-MEDIA-LANG.lock)
 # -----------------------------------------------------------
-# Plain text, written by --update, never by hand:
+# Plain text, written by --init / --update, never by hand:
 #
 #   # comment lines start with '#'
 #   policy MWBM-MEDIA-LANG 1.0.0
@@ -28,79 +31,155 @@
 #   file <sha256> <path in this repo> <path in MeedyaSuite-core>
 #   file ...
 #
-# Paths may not contain spaces (checked), so the three-column form is safe.
+# WHAT A NORMAL RUN CHECKS (CI runs this mode; every check must pass)
+# -------------------------------------------------------------------
+# 1. The lock is well formed: one policy line, one source line, no local
+#    path listed twice.
+# 2. Every master path is one of the known master files (MASTER_FILES), and
+#    the lock includes all the REQUIRED ones. (An independent review on
+#    28 Sept 2026 showed the first version would follow a master path such
+#    as "../../../other/repo/README.md" to a file in an unrelated
+#    repository, and that deleting a lock line quietly stopped a file being
+#    checked. Both are closed here.)
+# 3. Every local path stays inside this repository, is not inside .git, and
+#    is not a shortcut (symbolic link) — so --update can never be steered
+#    into writing somewhere else.
+# 4. No file in the repository carries the name of a master file without
+#    being listed in the lock (so removing a line cannot hide a copy).
+# 5. Every local copy has the checksum recorded in the lock.
+# 6. The recorded commit is part of MeedyaSuite-core's own history on one of
+#    APPROVED_BRANCHES, asked of GitHub's compare lookup. (GitHub serves a
+#    commit that exists only in someone's FORK under the original
+#    repository's raw address, so without this a fork could supply an
+#    edited "master". Also shown by the review.)
+# 7. The lock's checksums match the master files downloaded at that commit.
+# A download or lookup that fails for ANY reason fails the run: a check
+# that could not run is never reported as a pass.
 #
-# WHAT A NORMAL RUN CHECKS (both must pass; CI runs this mode)
-# ------------------------------------------------------------
-# 1. Every local copy still has the checksum recorded in the lock — so a
-#    hand edit to a copy fails the build.
-# 2. The recorded checksums match the master files at the recorded commit,
-#    downloaded from GitHub. MeedyaSuite-core is public, so no token is
-#    needed. If the download fails for ANY reason the run fails: a check
-#    that could not run is never reported as a pass.
-#
-# --offline skips step 2 and says so loudly. It is for working without a
-# network; CI must not use it.
+# --offline skips 6 and 7, says so loudly, and refuses to run at all when
+# the CI or GITHUB_ACTIONS environment variable is set.
 #
 # WHAT IT CANNOT DO
 # -----------------
 # It does not tell you a newer policy version exists — moving to one is a
 # deliberate change (the policy's section 8.3). It does not check that the
 # repository's code follows the policy; the conformance test cases do that.
+# It cannot protect against an edited copy of itself (see above).
 #
-# Usage:
+# Usage (run from the repository root):
 #   python3 scripts/media-lang/check_copies.py                 # verify (CI)
 #   python3 scripts/media-lang/check_copies.py --offline       # local only
 #   python3 scripts/media-lang/check_copies.py --update <commit>
-#       re-download every file listed in the lock at <commit>, overwrite the
-#       copies and rewrite the lock
 #   python3 scripts/media-lang/check_copies.py --init <commit> \
 #       --file <local path>=<master path> [--file ...]
-#       first-time setup: fetch the named files and write a new lock
+# Set GITHUB_TOKEN to have the commit lookup authenticated (GitHub allows
+# only 60 unauthenticated lookups an hour per address).
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 MASTER_REPO = "MWBMPartners/MeedyaSuite-core"
 RAW_URL = "https://raw.githubusercontent.com/{repo}/{commit}/{path}"
+COMPARE_URL = "https://api.github.com/repos/{repo}/compare/{base}...{head}"
 DEFAULT_LOCK = "docs/standards/MWBM-MEDIA-LANG.lock"
 POLICY_MASTER_PATH = "docs/standards/media-language-bcp47-policy.md"
+
+# The only files a lock may point at. Exact paths, not prefixes, so no
+# path trick can reach anything else. Adding a master file means adding it
+# here — a change to this script, which consumers then take by --update.
+REQUIRED_MASTER_FILES = (
+    POLICY_MASTER_PATH,
+    "tests/fixtures/bcp47-language-policy-v1.json",
+    "tests/fixtures/bcp47-language-policy-v1.schema.json",
+    "docs/standards/data/bcp47-language-data-v1.json",
+    "docs/standards/data/bcp47-language-data-v1.schema.json",
+    "scripts/media-lang/check_copies.py",
+)
+OPTIONAL_MASTER_FILES = (
+    "bindings/php/media-language/MediaLanguagePolicy.php",
+    "bindings/php/media-language/tests/run-conformance.php",
+    "bindings/php/media-language/README.md",
+)
+MASTER_FILES = REQUIRED_MASTER_FILES + OPTIONAL_MASTER_FILES
+# Names distinctive enough that a file carrying one is certainly a copy.
+# README.md and run-conformance.php are left out: other files legitimately
+# share those names.
+DISTINCTIVE_NAMES = tuple(sorted({os.path.basename(p) for p in MASTER_FILES}
+                                 - {"README.md", "run-conformance.php"}))
+
+# Branches of MeedyaSuite-core a pinned commit may come from. The policy
+# work is merged into feature/work-in-progress and then main; while that is
+# under way, its own branch is approved too. A commit reachable from any of
+# these is accepted.
+APPROVED_BRANCHES = ("main", "feature/work-in-progress", "feature/bcp47-language-policy")
+
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
-# A full commit is required, never a branch name: a branch moves, so a lock
-# naming one would check against a different master tomorrow.
+SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$")
 
 
-def fail(message):
-    print(f"MWBM-MEDIA-LANG copy check FAILED: {message}", file=sys.stderr)
-    sys.exit(1)
+class CheckFailed(Exception):
+    """A check did not pass; the message says why in plain words."""
 
 
 def sha256_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def sha256_file(path):
-    with open(path, "rb") as f:
-        return sha256_bytes(f.read())
-
-
 def download(commit, master_path):
-    """Fetch one master file at one commit. Any failure is fatal: the caller
+    """Fetch one master file at one commit. Any failure raises: the caller
     must never treat "could not download" as "matches"."""
+    if master_path not in MASTER_FILES:
+        raise CheckFailed(f"refusing to download {master_path!r}: not a master file")
     url = RAW_URL.format(repo=MASTER_REPO, commit=commit, path=master_path)
     try:
         with urllib.request.urlopen(url, timeout=30) as response:
             return response.read()
     except (urllib.error.URLError, OSError) as exc:
-        fail(f"could not download {url} ({exc}). The check cannot run without it, "
-             "so it fails rather than passing. Use --offline only when working "
-             "without a network, never in CI.")
+        raise CheckFailed(f"could not download {url} ({exc}). The check cannot run without "
+                          "it, so it fails rather than passing.")
+
+
+def commit_is_on_approved_branch(commit):
+    """True if the commit is an ancestor of (or equal to) an approved branch
+    of MeedyaSuite-core, per GitHub's compare lookup ("behind" or
+    "identical" means the branch contains the commit). A commit that exists
+    only in a fork is "diverged" or unknown, so it fails. A lookup that
+    cannot be made raises — it is never read as "yes"."""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "mwbm-media-lang-check"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    last_error = None
+    for branch in APPROVED_BRANCHES:
+        url = COMPARE_URL.format(repo=MASTER_REPO, base=urllib.parse.quote(branch, safe=""),
+                                 head=commit)
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as r:
+                status = json.load(r).get("status")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                # The branch does not exist (any more) or the commit is not
+                # in this repository's network: not an approval, keep looking.
+                continue
+            last_error = exc
+            continue
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            last_error = exc
+            continue
+        if status in ("behind", "identical"):
+            return True
+    if last_error is not None:
+        raise CheckFailed(f"could not ask GitHub whether {commit[:12]} is part of {MASTER_REPO}'s "
+                          f"history ({last_error}). The check fails rather than passing.")
+    return False
 
 
 def read_policy_version(text):
@@ -109,11 +188,29 @@ def read_policy_version(text):
     return match.group(1) if match else None
 
 
-def parse_lock(lock_path):
+def check_local_path(path, root):
+    """A local path must be a plain relative path inside the repository,
+    outside .git, and not a symbolic link (or inside one)."""
+    if not SAFE_PATH_RE.match(path) or any(part in (".", "..") for part in path.split("/")):
+        raise CheckFailed(f"local path {path!r} is not a plain relative path")
+    if path == ".git" or path.startswith(".git/"):
+        raise CheckFailed(f"local path {path!r} is inside .git")
+    full = os.path.join(root, path)
+    real_root = os.path.realpath(root)
+    if os.path.commonpath([os.path.realpath(full), real_root]) != real_root:
+        raise CheckFailed(f"local path {path!r} leads outside the repository")
+    probe = root
+    for part in path.split("/"):
+        probe = os.path.join(probe, part)
+        if os.path.islink(probe):
+            raise CheckFailed(f"local path {path!r} goes through a symbolic link, which is refused")
+
+
+def parse_lock(lock_path, root):
     if not os.path.isfile(lock_path):
-        fail(f"no lock file at {lock_path}")
+        raise CheckFailed(f"no lock file at {lock_path}")
     policy_version = commit = None
-    files = []
+    files, seen_local = [], set()
     with open(lock_path, encoding="utf-8") as f:
         for number, raw in enumerate(f, 1):
             line = raw.strip()
@@ -121,118 +218,179 @@ def parse_lock(lock_path):
                 continue
             parts = line.split()
             if parts[0] == "policy" and len(parts) == 3 and parts[1] == "MWBM-MEDIA-LANG":
+                if policy_version is not None:
+                    raise CheckFailed(f"{lock_path} line {number}: a second policy line")
                 policy_version = parts[2]
             elif parts[0] == "source" and len(parts) == 3 and parts[1] == MASTER_REPO:
+                if commit is not None:
+                    raise CheckFailed(f"{lock_path} line {number}: a second source line")
                 commit = parts[2]
             elif parts[0] == "file" and len(parts) == 4 and SHA_RE.match(parts[1]):
-                files.append({"sha256": parts[1], "local": parts[2], "master": parts[3]})
+                entry = {"sha256": parts[1], "local": parts[2], "master": parts[3]}
+                if entry["master"] not in MASTER_FILES:
+                    raise CheckFailed(f"{lock_path} line {number}: {entry['master']!r} is not a master file")
+                check_local_path(entry["local"], root)
+                if entry["local"] in seen_local:
+                    raise CheckFailed(f"{lock_path} line {number}: {entry['local']} is listed twice")
+                seen_local.add(entry["local"])
+                files.append(entry)
             else:
-                fail(f"{lock_path} line {number} is not understood: {line!r}")
-    if not policy_version or not commit or not COMMIT_RE.match(commit) or not files:
-        fail(f"{lock_path} must have a policy line, a source line with a full "
-             "40-character commit, and at least one file line")
+                raise CheckFailed(f"{lock_path} line {number} is not understood: {line!r}")
+    if not policy_version or not commit or not COMMIT_RE.match(commit):
+        raise CheckFailed(f"{lock_path} must have one policy line and one source line with a full "
+                          "40-character commit")
+    missing = [m for m in REQUIRED_MASTER_FILES if m not in {e["master"] for e in files}]
+    if missing:
+        raise CheckFailed(f"{lock_path} leaves out files every copy must have: {', '.join(missing)}")
     return policy_version, commit, files
 
 
+def unlisted_copies(root, files):
+    """Files in the repository named like a master file but not in the lock."""
+    listed = {os.path.normpath(e["local"]) for e in files}
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "target", ".build")]
+        for name in filenames:
+            if name in DISTINCTIVE_NAMES:
+                rel = os.path.normpath(os.path.relpath(os.path.join(dirpath, name), root))
+                if rel not in listed:
+                    found.append(rel)
+    return sorted(found)
+
+
+def mismatch_message(entry, data, actual):
+    """Say what is wrong with a copy, naming line-ending conversion when
+    that is the whole difference (a false failure on Windows checkouts)."""
+    if sha256_bytes(data.replace(b"\r\n", b"\n")) == entry["sha256"]:
+        return (f"{entry['local']} differs only in its line endings — something converted them. "
+                "Mark the policy copies unconverted in .gitattributes (for example "
+                f"'{entry['local']} -text') and check them out again.")
+    return (f"{entry['local']} has been changed (checksum {actual[:12]}…, lock says "
+            f"{entry['sha256'][:12]}…). Copies must not be edited here: change the master in "
+            "MeedyaSuite-core and run --update.")
+
+
 def write_lock(lock_path, policy_version, commit, files):
-    for entry in files:
-        for key in ("local", "master"):
-            if re.search(r"\s", entry[key]):
-                fail(f"path {entry[key]!r} contains a space; the lock format cannot hold it")
     os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
     with open(lock_path, "w", encoding="utf-8", newline="\n") as f:
         f.write("# MWBM-MEDIA-LANG copy lock. Written by scripts/media-lang/check_copies.py\n")
-        f.write("# --update; do not edit by hand. Master: MWBMPartners/MeedyaSuite-core.\n")
+        f.write("# --init / --update; do not edit by hand. Master: MWBMPartners/MeedyaSuite-core.\n")
         f.write(f"policy MWBM-MEDIA-LANG {policy_version}\n")
         f.write(f"source {MASTER_REPO} {commit}\n")
         for entry in files:
             f.write(f"file {entry['sha256']} {entry['local']} {entry['master']}\n")
 
 
-def fetch_into_place(commit, files):
-    """Download each master file at the commit, write it to its local path,
-    and return the policy version read from the policy document."""
+def fetch_into_place(commit, files, root):
+    """Download EVERY file first, then write them all. A download that fails
+    part-way therefore changes nothing on disk. Returns the policy version
+    read from the policy document."""
+    if not commit_is_on_approved_branch(commit):
+        raise CheckFailed(f"{commit[:12]} is not part of {MASTER_REPO}'s history on "
+                          f"{', '.join(APPROVED_BRANCHES)}; refusing to copy from it")
+    downloaded = [(entry, download(commit, entry["master"])) for entry in files]
     policy_version = None
-    for entry in files:
-        data = download(commit, entry["master"])
-        os.makedirs(os.path.dirname(entry["local"]) or ".", exist_ok=True)
-        with open(entry["local"], "wb") as f:
-            f.write(data)
-        entry["sha256"] = sha256_bytes(data)
+    for entry, data in downloaded:
         if entry["master"] == POLICY_MASTER_PATH:
             policy_version = read_policy_version(data.decode("utf-8"))
     if not policy_version:
-        fail(f"the files must include the policy document ({POLICY_MASTER_PATH}), "
-             "and its header must state a version")
+        raise CheckFailed(f"the policy document at {commit[:12]} does not state a version")
+    for entry, data in downloaded:
+        full = os.path.join(root, entry["local"])
+        os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
+        with open(full, "wb") as f:
+            f.write(data)
+        entry["sha256"] = sha256_bytes(data)
     return policy_version
 
 
-def verify(lock_path, offline):
-    policy_version, commit, files = parse_lock(lock_path)
+def verify(lock_path, root, offline):
+    policy_version, commit, files = parse_lock(lock_path, root)
     problems = []
+    for rel in unlisted_copies(root, files):
+        problems.append(f"{rel} has the name of a master file but is not in the lock")
     for entry in files:
-        if not os.path.isfile(entry["local"]):
+        full = os.path.join(root, entry["local"])
+        if not os.path.isfile(full):
             problems.append(f"{entry['local']} is missing")
             continue
-        actual = sha256_file(entry["local"])
+        with open(full, "rb") as f:
+            data = f.read()
+        actual = sha256_bytes(data)
         if actual != entry["sha256"]:
-            problems.append(f"{entry['local']} has been changed (checksum {actual[:12]}…, "
-                            f"lock says {entry['sha256'][:12]}…). Copies must not be edited "
-                            "here: change the master in MeedyaSuite-core and run --update.")
-        if entry["master"] == POLICY_MASTER_PATH and os.path.isfile(entry["local"]):
-            with open(entry["local"], encoding="utf-8") as f:
-                stated = read_policy_version(f.read())
+            problems.append(mismatch_message(entry, data, actual))
+        if entry["master"] == POLICY_MASTER_PATH:
+            stated = read_policy_version(data.decode("utf-8", errors="replace"))
             if stated != policy_version:
                 problems.append(f"{entry['local']} says version {stated}, lock says {policy_version}")
     if problems:
-        fail("\n  " + "\n  ".join(problems))
+        raise CheckFailed("\n  " + "\n  ".join(problems))
     if offline:
-        print(f"MWBM-MEDIA-LANG {policy_version}: {len(files)} local copies match the lock. "
-              "NOT CHECKED against the master (--offline).")
-        return
+        return (f"MWBM-MEDIA-LANG {policy_version}: {len(files)} local copies match the lock. "
+                "NOT CHECKED against the master (--offline).")
+    if not commit_is_on_approved_branch(commit):
+        raise CheckFailed(f"the lock's commit {commit[:12]} is not part of {MASTER_REPO}'s "
+                          f"history on {', '.join(APPROVED_BRANCHES)}")
     for entry in files:
-        master = sha256_bytes(download(commit, entry["master"]))
-        if master != entry["sha256"]:
+        if sha256_bytes(download(commit, entry["master"])) != entry["sha256"]:
             problems.append(f"{entry['local']}: the lock's checksum does not match "
                             f"{entry['master']} at {commit[:12]} in {MASTER_REPO}")
     if problems:
-        fail("\n  " + "\n  ".join(problems))
-    print(f"MWBM-MEDIA-LANG {policy_version}: {len(files)} copies match the master "
-          f"at {MASTER_REPO}@{commit[:12]}.")
+        raise CheckFailed("\n  " + "\n  ".join(problems))
+    return (f"MWBM-MEDIA-LANG {policy_version}: {len(files)} copies match the master at "
+            f"{MASTER_REPO}@{commit[:12]}.")
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="Check or update copies of the MWBM-MEDIA-LANG policy files.")
     ap.add_argument("--lock", default=DEFAULT_LOCK, help=f"lock file path (default {DEFAULT_LOCK})")
-    ap.add_argument("--offline", action="store_true", help="check local copies only (never in CI)")
+    ap.add_argument("--offline", action="store_true", help="check local copies only (refused in CI)")
     ap.add_argument("--update", metavar="COMMIT", help="re-fetch every locked file at COMMIT")
     ap.add_argument("--init", metavar="COMMIT", help="first-time setup at COMMIT (with --file)")
     ap.add_argument("--file", action="append", default=[], metavar="LOCAL=MASTER",
                     help="with --init: a file to copy, as local-path=master-path")
-    args = ap.parse_args()
-
-    if args.update or args.init:
-        commit = args.update or args.init
-        if not COMMIT_RE.match(commit):
-            fail("give a full 40-character commit, not a branch or short hash")
-        if args.init:
-            if not args.file:
-                fail("--init needs at least one --file local=master")
-            files = []
-            for spec in args.file:
-                if "=" not in spec:
-                    fail(f"--file {spec!r} must be local-path=master-path")
-                local, master = spec.split("=", 1)
-                files.append({"sha256": "", "local": local, "master": master})
-        else:
-            _, _, files = parse_lock(args.lock)
-        policy_version = fetch_into_place(commit, files)
-        write_lock(args.lock, policy_version, commit, files)
-        print(f"Copied {len(files)} files at {commit[:12]}; lock written to {args.lock} "
-              f"(policy {policy_version}). Now update code and tests as the policy changelog requires.")
-        return
-    verify(args.lock, args.offline)
+    args = ap.parse_args(argv)
+    root = os.getcwd()
+    try:
+        if args.offline and (os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS")):
+            raise CheckFailed("--offline does not check the master, so it is refused in CI "
+                              "(the CI or GITHUB_ACTIONS variable is set)")
+        if args.update or args.init:
+            commit = args.update or args.init
+            if not COMMIT_RE.match(commit):
+                raise CheckFailed("give a full 40-character commit, not a branch or short hash")
+            if args.init:
+                if not args.file:
+                    raise CheckFailed("--init needs --file local=master for each file")
+                files, seen = [], set()
+                for spec in args.file:
+                    if "=" not in spec:
+                        raise CheckFailed(f"--file {spec!r} must be local-path=master-path")
+                    local, master = spec.split("=", 1)
+                    if master not in MASTER_FILES:
+                        raise CheckFailed(f"{master!r} is not a master file")
+                    check_local_path(local, root)
+                    if local in seen:
+                        raise CheckFailed(f"{local} is given twice")
+                    seen.add(local)
+                    files.append({"sha256": "", "local": local, "master": master})
+                missing = [m for m in REQUIRED_MASTER_FILES if m not in {e["master"] for e in files}]
+                if missing:
+                    raise CheckFailed(f"--init must include every required file; missing: {', '.join(missing)}")
+            else:
+                _, _, files = parse_lock(args.lock, root)
+            policy_version = fetch_into_place(commit, files, root)
+            write_lock(args.lock, policy_version, commit, files)
+            print(f"Copied {len(files)} files at {commit[:12]}; lock written to {args.lock} "
+                  f"(policy {policy_version}). Now update code and tests as the policy changelog requires.")
+            return 0
+        print(verify(args.lock, root, args.offline))
+        return 0
+    except CheckFailed as exc:
+        print(f"MWBM-MEDIA-LANG copy check FAILED: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

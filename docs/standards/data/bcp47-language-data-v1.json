@@ -1023,7 +1023,6 @@
  },
  "iso639_2": {
   "aar": "aa",
-  "aav": "aav",
   "abk": "ab",
   "ace": "ace",
   "ach": "ach",
@@ -1039,13 +1038,10 @@
   "ale": "ale",
   "alg": "alg",
   "alt": "alt",
-  "alv": "alv",
   "amh": "am",
   "ang": "ang",
   "anp": "anp",
   "apa": "apa",
-  "aqa": "aqa",
-  "aql": "aql",
   "ara": "ar",
   "arc": "arc",
   "arg": "an",
@@ -1057,14 +1053,11 @@
   "asm": "as",
   "ast": "ast",
   "ath": "ath",
-  "auf": "auf",
   "aus": "aus",
   "ava": "av",
   "ave": "ae",
   "awa": "awa",
-  "awd": "awd",
   "aym": "ay",
-  "azc": "azc",
   "aze": "az",
   "bad": "bad",
   "bai": "bai",
@@ -1102,11 +1095,6 @@
   "car": "car",
   "cat": "ca",
   "cau": "cau",
-  "cba": "cba",
-  "ccn": "ccn",
-  "ccs": "ccs",
-  "cdc": "cdc",
-  "cdd": "cdd",
   "ceb": "ceb",
   "cel": "cel",
   "ces": "cs",
@@ -1136,7 +1124,6 @@
   "crh": "crh",
   "crp": "crp",
   "csb": "csb",
-  "csu": "csu",
   "cus": "cus",
   "cym": "cy",
   "cze": "cs",
@@ -1150,7 +1137,6 @@
   "dgr": "dgr",
   "din": "din",
   "div": "dv",
-  "dmn": "dmn",
   "doi": "doi",
   "dra": "dra",
   "dsb": "dsb",
@@ -1160,7 +1146,6 @@
   "dyu": "dyu",
   "dzo": "dz",
   "efi": "efi",
-  "egx": "egx",
   "egy": "egy",
   "eka": "eka",
   "ell": "el",
@@ -1169,8 +1154,6 @@
   "enm": "enm",
   "epo": "eo",
   "est": "et",
-  "esx": "esx",
-  "euq": "euq",
   "eus": "eu",
   "ewe": "ee",
   "ewo": "ewo",
@@ -1183,7 +1166,6 @@
   "fin": "fi",
   "fiu": "fiu",
   "fon": "fon",
-  "fox": "fox",
   "fra": "fr",
   "fre": "fr",
   "frm": "frm",
@@ -1205,10 +1187,7 @@
   "gle": "ga",
   "glg": "gl",
   "glv": "gv",
-  "gme": "gme",
   "gmh": "gmh",
-  "gmq": "gmq",
-  "gmw": "gmw",
   "goh": "goh",
   "gon": "gon",
   "gor": "gor",
@@ -1216,7 +1195,6 @@
   "grb": "grb",
   "grc": "grc",
   "gre": "el",
-  "grk": "grk",
   "grn": "gn",
   "gsw": "gsw",
   "guj": "gu",
@@ -1233,20 +1211,16 @@
   "hit": "hit",
   "hmn": "hmn",
   "hmo": "ho",
-  "hmx": "hmx",
-  "hok": "hok",
   "hrv": "hr",
   "hsb": "hsb",
   "hun": "hu",
   "hup": "hup",
   "hye": "hy",
-  "hyx": "hyx",
   "iba": "iba",
   "ibo": "ig",
   "ice": "is",
   "ido": "io",
   "iii": "ii",
-  "iir": "iir",
   "ijo": "ijo",
   "iku": "iu",
   "ile": "ie",
@@ -1261,13 +1235,11 @@
   "iro": "iro",
   "isl": "is",
   "ita": "it",
-  "itc": "itc",
   "jav": "jv",
   "jaw": "jv",
   "jbo": "jbo",
   "jpn": "ja",
   "jpr": "jpr",
-  "jpx": "jpx",
   "jrb": "jrb",
   "kaa": "kaa",
   "kab": "kab",
@@ -1282,7 +1254,6 @@
   "kaw": "kaw",
   "kaz": "kk",
   "kbd": "kbd",
-  "kdo": "kdo",
   "kha": "kha",
   "khi": "khi",
   "khm": "km",
@@ -1377,7 +1348,6 @@
   "nds": "nds",
   "nep": "ne",
   "new": "new",
-  "ngf": "ngf",
   "nia": "nia",
   "nic": "nic",
   "niu": "niu",
@@ -1398,8 +1368,6 @@
   "nzi": "nzi",
   "oci": "oc",
   "oji": "oj",
-  "omq": "omq",
-  "omv": "omv",
   "ori": "or",
   "orm": "om",
   "osa": "osa",
@@ -1417,19 +1385,14 @@
   "per": "fa",
   "phi": "phi",
   "phn": "phn",
-  "plf": "plf",
   "pli": "pi",
   "pol": "pl",
   "pon": "pon",
   "por": "pt",
-  "poz": "poz",
-  "pqe": "pqe",
-  "pqw": "pqw",
   "pra": "pra",
   "pro": "pro",
   "pus": "ps",
   "que": "qu",
-  "qwe": "qwe",
   "raj": "raj",
   "rap": "rap",
   "rar": "rar",
@@ -1454,7 +1417,6 @@
   "scn": "scn",
   "sco": "sco",
   "scr": "hr",
-  "sdv": "sdv",
   "sel": "sel",
   "sem": "sem",
   "sga": "sga",
@@ -1484,7 +1446,6 @@
   "sot": "st",
   "spa": "es",
   "sqi": "sq",
-  "sqj": "sqj",
   "srd": "sc",
   "srn": "srn",
   "srp": "sr",
@@ -1498,13 +1459,11 @@
   "swa": "sw",
   "swe": "sv",
   "syc": "syc",
-  "syd": "syd",
   "syr": "syr",
   "tah": "ty",
   "tai": "tai",
   "tam": "ta",
   "tat": "tt",
-  "tbq": "tbq",
   "tel": "te",
   "tem": "tem",
   "ter": "ter",
@@ -1523,7 +1482,6 @@
   "tog": "tog",
   "ton": "to",
   "tpi": "tpi",
-  "trk": "trk",
   "tsi": "tsi",
   "tsn": "tn",
   "tso": "ts",
@@ -1532,7 +1490,6 @@
   "tup": "tup",
   "tur": "tr",
   "tut": "tut",
-  "tuw": "tuw",
   "tvl": "tvl",
   "twi": "tw",
   "tyv": "tyv",
@@ -1543,7 +1500,6 @@
   "umb": "umb",
   "und": "und",
   "urd": "ur",
-  "urj": "urj",
   "uzb": "uz",
   "vai": "vai",
   "ven": "ve",
@@ -1559,9 +1515,7 @@
   "wln": "wa",
   "wol": "wo",
   "xal": "xal",
-  "xgn": "xgn",
   "xho": "xh",
-  "xnd": "xnd",
   "yao": "yao",
   "yap": "yap",
   "yid": "yi",
@@ -1573,10 +1527,6 @@
   "zgh": "zgh",
   "zha": "za",
   "zho": "zh",
-  "zhx": "zhx",
-  "zle": "zle",
-  "zls": "zls",
-  "zlw": "zlw",
   "znd": "znd",
   "zul": "zu",
   "zun": "zun",
@@ -1587,10 +1537,6 @@
   "aa": {
    "b": "aar",
    "t": "aar"
-  },
-  "aav": {
-   "b": "aav",
-   "t": "aav"
   },
   "ab": {
    "b": "abk",
@@ -1652,10 +1598,6 @@
    "b": "alt",
    "t": "alt"
   },
-  "alv": {
-   "b": "alv",
-   "t": "alv"
-  },
   "am": {
    "b": "amh",
    "t": "amh"
@@ -1675,14 +1617,6 @@
   "apa": {
    "b": "apa",
    "t": "apa"
-  },
-  "aqa": {
-   "b": "aqa",
-   "t": "aqa"
-  },
-  "aql": {
-   "b": "aql",
-   "t": "aql"
   },
   "ar": {
    "b": "ara",
@@ -1720,10 +1654,6 @@
    "b": "ath",
    "t": "ath"
   },
-  "auf": {
-   "b": "auf",
-   "t": "auf"
-  },
   "aus": {
    "b": "aus",
    "t": "aus"
@@ -1736,10 +1666,6 @@
    "b": "awa",
    "t": "awa"
   },
-  "awd": {
-   "b": "awd",
-   "t": "awd"
-  },
   "ay": {
    "b": "aym",
    "t": "aym"
@@ -1747,10 +1673,6 @@
   "az": {
    "b": "aze",
    "t": "aze"
-  },
-  "azc": {
-   "b": "azc",
-   "t": "azc"
   },
   "ba": {
    "b": "bak",
@@ -1888,26 +1810,6 @@
    "b": "cau",
    "t": "cau"
   },
-  "cba": {
-   "b": "cba",
-   "t": "cba"
-  },
-  "ccn": {
-   "b": "ccn",
-   "t": "ccn"
-  },
-  "ccs": {
-   "b": "ccs",
-   "t": "ccs"
-  },
-  "cdc": {
-   "b": "cdc",
-   "t": "cdc"
-  },
-  "cdd": {
-   "b": "cdd",
-   "t": "cdd"
-  },
   "ce": {
    "b": "che",
    "t": "che"
@@ -2008,10 +1910,6 @@
    "b": "csb",
    "t": "csb"
   },
-  "csu": {
-   "b": "csu",
-   "t": "csu"
-  },
   "cu": {
    "b": "chu",
    "t": "chu"
@@ -2064,10 +1962,6 @@
    "b": "din",
    "t": "din"
   },
-  "dmn": {
-   "b": "dmn",
-   "t": "dmn"
-  },
   "doi": {
    "b": "doi",
    "t": "doi"
@@ -2108,10 +2002,6 @@
    "b": "efi",
    "t": "efi"
   },
-  "egx": {
-   "b": "egx",
-   "t": "egx"
-  },
   "egy": {
    "b": "egy",
    "t": "egy"
@@ -2144,10 +2034,6 @@
    "b": "spa",
    "t": "spa"
   },
-  "esx": {
-   "b": "esx",
-   "t": "esx"
-  },
   "et": {
    "b": "est",
    "t": "est"
@@ -2155,10 +2041,6 @@
   "eu": {
    "b": "baq",
    "t": "eus"
-  },
-  "euq": {
-   "b": "euq",
-   "t": "euq"
   },
   "ewo": {
    "b": "ewo",
@@ -2203,10 +2085,6 @@
   "fon": {
    "b": "fon",
    "t": "fon"
-  },
-  "fox": {
-   "b": "fox",
-   "t": "fox"
   },
   "fr": {
    "b": "fre",
@@ -2272,21 +2150,9 @@
    "b": "glg",
    "t": "glg"
   },
-  "gme": {
-   "b": "gme",
-   "t": "gme"
-  },
   "gmh": {
    "b": "gmh",
    "t": "gmh"
-  },
-  "gmq": {
-   "b": "gmq",
-   "t": "gmq"
-  },
-  "gmw": {
-   "b": "gmw",
-   "t": "gmw"
   },
   "gn": {
    "b": "grn",
@@ -2315,10 +2181,6 @@
   "grc": {
    "b": "grc",
    "t": "grc"
-  },
-  "grk": {
-   "b": "grk",
-   "t": "grk"
   },
   "gsw": {
    "b": "gsw",
@@ -2372,17 +2234,9 @@
    "b": "hmn",
    "t": "hmn"
   },
-  "hmx": {
-   "b": "hmx",
-   "t": "hmx"
-  },
   "ho": {
    "b": "hmo",
    "t": "hmo"
-  },
-  "hok": {
-   "b": "hok",
-   "t": "hok"
   },
   "hr": {
    "b": "hrv",
@@ -2407,10 +2261,6 @@
   "hy": {
    "b": "arm",
    "t": "hye"
-  },
-  "hyx": {
-   "b": "hyx",
-   "t": "hyx"
   },
   "hz": {
    "b": "her",
@@ -2439,10 +2289,6 @@
   "ii": {
    "b": "iii",
    "t": "iii"
-  },
-  "iir": {
-   "b": "iir",
-   "t": "iir"
   },
   "ijo": {
    "b": "ijo",
@@ -2488,10 +2334,6 @@
    "b": "ita",
    "t": "ita"
   },
-  "itc": {
-   "b": "itc",
-   "t": "itc"
-  },
   "iu": {
    "b": "iku",
    "t": "iku"
@@ -2507,10 +2349,6 @@
   "jpr": {
    "b": "jpr",
    "t": "jpr"
-  },
-  "jpx": {
-   "b": "jpx",
-   "t": "jpx"
   },
   "jrb": {
    "b": "jrb",
@@ -2551,10 +2389,6 @@
   "kbd": {
    "b": "kbd",
    "t": "kbd"
-  },
-  "kdo": {
-   "b": "kdo",
-   "t": "kdo"
   },
   "kg": {
    "b": "kon",
@@ -2932,10 +2766,6 @@
    "b": "ndo",
    "t": "ndo"
   },
-  "ngf": {
-   "b": "ngf",
-   "t": "ngf"
-  },
   "nia": {
    "b": "nia",
    "t": "nia"
@@ -3024,14 +2854,6 @@
    "b": "orm",
    "t": "orm"
   },
-  "omq": {
-   "b": "omq",
-   "t": "omq"
-  },
-  "omv": {
-   "b": "omv",
-   "t": "omv"
-  },
   "or": {
    "b": "ori",
    "t": "ori"
@@ -3100,25 +2922,9 @@
    "b": "pol",
    "t": "pol"
   },
-  "plf": {
-   "b": "plf",
-   "t": "plf"
-  },
   "pon": {
    "b": "pon",
    "t": "pon"
-  },
-  "poz": {
-   "b": "poz",
-   "t": "poz"
-  },
-  "pqe": {
-   "b": "pqe",
-   "t": "pqe"
-  },
-  "pqw": {
-   "b": "pqw",
-   "t": "pqw"
   },
   "pra": {
    "b": "pra",
@@ -3139,10 +2945,6 @@
   "qu": {
    "b": "que",
    "t": "que"
-  },
-  "qwe": {
-   "b": "qwe",
-   "t": "qwe"
   },
   "raj": {
    "b": "raj",
@@ -3235,10 +3037,6 @@
   "sd": {
    "b": "snd",
    "t": "snd"
-  },
-  "sdv": {
-   "b": "sdv",
-   "t": "sdv"
   },
   "se": {
    "b": "sme",
@@ -3344,10 +3142,6 @@
    "b": "alb",
    "t": "sqi"
   },
-  "sqj": {
-   "b": "sqj",
-   "t": "sqj"
-  },
   "sr": {
    "b": "srp",
    "t": "srp"
@@ -3400,10 +3194,6 @@
    "b": "syc",
    "t": "syc"
   },
-  "syd": {
-   "b": "syd",
-   "t": "syd"
-  },
   "syr": {
    "b": "syr",
    "t": "syr"
@@ -3415,10 +3205,6 @@
   "tai": {
    "b": "tai",
    "t": "tai"
-  },
-  "tbq": {
-   "b": "tbq",
-   "t": "tbq"
   },
   "te": {
    "b": "tel",
@@ -3500,10 +3286,6 @@
    "b": "tur",
    "t": "tur"
   },
-  "trk": {
-   "b": "trk",
-   "t": "trk"
-  },
   "ts": {
    "b": "tso",
    "t": "tso"
@@ -3527,10 +3309,6 @@
   "tut": {
    "b": "tut",
    "t": "tut"
-  },
-  "tuw": {
-   "b": "tuw",
-   "t": "tuw"
   },
   "tvl": {
    "b": "tvl",
@@ -3575,10 +3353,6 @@
   "ur": {
    "b": "urd",
    "t": "urd"
-  },
-  "urj": {
-   "b": "urj",
-   "t": "urj"
   },
   "uz": {
    "b": "uzb",
@@ -3636,17 +3410,9 @@
    "b": "xal",
    "t": "xal"
   },
-  "xgn": {
-   "b": "xgn",
-   "t": "xgn"
-  },
   "xh": {
    "b": "xho",
    "t": "xho"
-  },
-  "xnd": {
-   "b": "xnd",
-   "t": "xnd"
   },
   "yao": {
    "b": "yao",
@@ -3692,22 +3458,6 @@
    "b": "chi",
    "t": "zho"
   },
-  "zhx": {
-   "b": "zhx",
-   "t": "zhx"
-  },
-  "zle": {
-   "b": "zle",
-   "t": "zle"
-  },
-  "zls": {
-   "b": "zls",
-   "t": "zls"
-  },
-  "zlw": {
-   "b": "zlw",
-   "t": "zlw"
-  },
   "znd": {
    "b": "znd",
    "t": "znd"
@@ -3729,6 +3479,10 @@
    "t": "zza"
   }
  },
+ "iso639_2_local_use": [
+  "qaa",
+  "qtz"
+ ],
  "language_ranges": [
   [
    "qaa",
@@ -12982,10 +12736,10 @@
    "sha256": "755fad43283be7b41ebe3c89ad054b6eaf928f404f9c0edb74799e0eab74beb1",
    "url": "https://www.iana.org/assignments/language-subtag-registry/language-subtag-registry"
   },
-  "sil_iso_639_3": {
-   "retrieved": "2026-09-28",
-   "sha256": "7a5ac370703ea0897356a8c383f2147865caf479e41c1c7bd96cc4c5f65e6907",
-   "url": "https://iso639-3.sil.org/sites/iso639-3/files/downloads/iso-639-3.tab"
+  "iso_639_2": {
+   "iso_codes_commit": "90b9fe56ec2f3a05675d525d3587ab6c18f30376",
+   "sha256": "0e9c25b3860cec74ce9367b0434c538caac4a3128a4c91c5fc7824fdc648d479",
+   "url": "https://salsa.debian.org/iso-codes-team/iso-codes/-/raw/main/data/iso_639-2.json"
   }
  },
  "special_languages": {
