@@ -42,7 +42,7 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-core` | (facade re-exports only — `tags-extended` and `library-import` now included) | 0 | Stable |
 | `meedya-db` | `client`, `export`, `models` | 4 | Foundation stable; specific endpoints may evolve |
 | `meedya-audio-analysis` | `tempo`, `key`, `decode` (feature-gated, default-on) | 67 | Experimental |
-| `meedya-fingerprint` | `acoustid`, `chromaprint` (feature-gated, non-default), `replaygain` | 10 | Stable |
+| `meedya-fingerprint` | `acoustid`, `chromaprint` (feature-gated, non-default), `replaygain` | 12 | Stable |
 | `meedya-lang` | `tag`, `canonical`, `roles`, `tracks`, `presentation`, `matching`, `select`, `sidecar` | 116 | Stable — fixture-conformance tested against `tests/fixtures/bcp47-language-policy-v1.json` (288 cases) |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
 | `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 145 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
@@ -56,7 +56,7 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 >
 > Earlier revisions of this file accumulated a long narrative of incremental count deltas (466 → 511 → 533 → 546 → 664 …) which had drifted from reality. That narration has been removed: the only trustworthy number is one you just measured. Guarding these counts automatically in CI is tracked in issue #71.
 
-Per-crate, `--all-features` (measured): `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-lang` 116 · `meedya-library-import` 30 · `meedya-lyrics` 145 · `meedya-metadata` 120 · `meedya-providers` 199 · `meedya-tags-extended` 180.
+Per-crate, `--all-features` (measured): `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 17 · `meedya-lang` 116 · `meedya-library-import` 30 · `meedya-lyrics` 145 · `meedya-metadata` 120 · `meedya-providers` 201 · `meedya-tags-extended` 180 (sum 927). The table above gives default-features figures, which sum to 780.
 
 ---
 

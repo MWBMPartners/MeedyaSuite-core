@@ -18,9 +18,9 @@ Written in Rust. Distributable to all Meedya apps via:
 | [`meedya-library-import`](crates/meedya-library-import) | Ingest playback bounds + metadata from external library DBs. `itunes_xml` parses Music.app exports; `cuesheet` is a full CUE parser at CD-frame precision. | Implemented | 30 |
 | [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar + ID3v2 SYLT tag-embed, Lyricsfile YAML canonical model with Apple Music TTML import (syllable-level timing) and LRC/Enhanced-LRC/SRT/WebVTT/ASS export. | Implemented | 145 |
 | [`meedya-lang`](crates/meedya-lang) | Shared implementation of the Media Language & BCP 47 Policy (`MWBM-MEDIA-LANG`): canonical BCP 47 tags, stored order, presentation order, role ordering, preference matching, automatic audio/subtitle selection, sidecar file naming. Conformance-tested against a 288-case fixture shared with the PHP implementation. | Implemented | 116 |
-| [`meedya-providers`](crates/meedya-providers) | Metadata provider framework: traits, capabilities, registry, rate limiting, cover art helpers, match scoring, Lucene/Solr query escaping (`lucene`). | Implemented | 59 (199 with `--all-features`) |
+| [`meedya-providers`](crates/meedya-providers) | Metadata provider framework: traits, capabilities, registry, rate limiting, cover art helpers, match scoring, Lucene/Solr query escaping (`lucene`). | Implemented | 59 (201 with `--all-features`) |
 | [`meedya-audio-analysis`](crates/meedya-audio-analysis) | Tempo (BPM) and musical key detection from the audio itself. Refuses to answer rather than guess when it is not sure. | Implemented | 67 |
-| [`meedya-fingerprint`](crates/meedya-fingerprint) | AcoustID fingerprinting + ReplayGain/EBU R128 loudness analysis. | Implemented | 10 (15 with `--all-features`) |
+| [`meedya-fingerprint`](crates/meedya-fingerprint) | AcoustID fingerprinting + ReplayGain/EBU R128 loudness analysis. | Implemented | 12 (17 with `--all-features`) |
 | [`meedya-db`](crates/meedya-db) | MeedyaDB API client, shared media models (Track/Album/Artist), database export trait. | Implemented | 4 |
 | [`meedya-core`](crates/meedya-core) | Unified facade crate re-exporting the implemented crates behind feature flags. | Implemented | — |
 
