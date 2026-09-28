@@ -205,6 +205,14 @@ pub fn embed_synced(media: &Path, lyrics: &Lyrics, lang: [u8; 3]) -> Result<()> 
     id3v2_typed.insert(sylt_frame);
     *id3v2 = lofty::tag::Tag::from(id3v2_typed);
 
+    // A file listing several languages holds them in ONE `TLAN` frame, but
+    // the conversion just above hands them back as one item per language,
+    // and saving would write each as a frame of its own — a reader keeps
+    // only the last, so adding lyrics used to cut three languages down to
+    // one (found by the stand-in review of revision 5). The shared helper
+    // puts them back into one item, as every save in `tag_io` does.
+    tag_io::gather_languages_before_saving(&mut tagged);
+
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -406,6 +414,57 @@ mod tests {
         };
         let err = embed_synced(Path::new("/nonexistent/file.mp3"), &lyrics, *b"1ng").unwrap_err();
         assert!(matches!(err, Error::InvalidLanguageCode));
+    }
+
+    /// A minimal untagged MP3: three silent MPEG-1 Layer III frames
+    /// (header `FF FB 90 00`, 417 bytes each). The same fixture as
+    /// meedya-metadata's tag_io.rs tests, duplicated for the same reason
+    /// as the FLAC one above.
+    fn minimal_untagged_mp3() -> Vec<u8> {
+        const FRAME_LEN: usize = 417;
+        let mut out = Vec::with_capacity(3 * FRAME_LEN);
+        for _ in 0..3 {
+            let mut frame = vec![0u8; FRAME_LEN];
+            frame[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+            out.extend_from_slice(&frame);
+        }
+        out
+    }
+
+    #[test]
+    fn embed_synced_keeps_every_language_in_one_tlan_frame() {
+        // Found by the stand-in review of revision 5: an MP3 listing three
+        // languages in one TLAN frame came out of `embed_synced` with three
+        // frames, of which a reader keeps only the last. The file is saved
+        // here with `tag_io::gather_languages_before_saving`, like every
+        // save in meedya-metadata.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("song.mp3");
+        std::fs::write(&path, minimal_untagged_mp3()).expect("write fixture");
+        tag_io::write_tags(
+            &path,
+            &[(CommonTag::Language, "pt-BR\0ger\0zh-Hant".into())],
+        )
+        .expect("three languages");
+
+        let lyrics = Lyrics {
+            plain: None,
+            synced: Some(vec![SyncedLine {
+                at: Duration::from_millis(500),
+                text: "hello".into(),
+            }]),
+        };
+        embed_synced(&path, &lyrics, id3_language("pt-BR")).expect("embed_synced");
+
+        let read_back = tag_io::read_tags(&path).expect("read_tags");
+        assert_eq!(
+            read_back.get(&CommonTag::Language).map(Vec::as_slice),
+            Some(["por", "deu", "zho"].map(String::from).as_slice())
+        );
+        let bytes = std::fs::read(&path).expect("read file");
+        let tlan_frames = bytes.windows(4).filter(|w| *w == b"TLAN").count();
+        assert_eq!(tlan_frames, 1, "exactly one TLAN frame");
+        assert_eq!(bytes.windows(4).filter(|w| *w == b"SYLT").count(), 1);
     }
 
     #[test]

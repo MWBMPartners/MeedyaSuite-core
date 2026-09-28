@@ -13,11 +13,37 @@
 //
 // Includes convenience functions for writing ReplayGain and AcoustID
 // results from meedya-fingerprint, closing the analysis→write loop.
+//
+// Every write in this file goes through ONE function, `edit_and_save`,
+// which opens the file, lets the caller change its main tag, and saves
+// it. It exists so that a file's language field — which can hold several
+// languages — survives every write whole, whatever the write was for.
+// Two lofty behaviours made that fail before (both found by the stand-in
+// review of revision 5, and reproduced on real files):
+//
+// - ID3v2 (MP3, WAV, AIFF): lofty reads one `TLAN` frame holding
+//   `por\0deu\0zho` as three separate language items, and saving a file
+//   writes one `TLAN` frame per item. A reader keeps only the LAST of
+//   several `TLAN` frames, so a title-only write turned three languages
+//   into one (`zho`). `gather_languages_before_saving` puts them back into
+//   one item just before every save.
+// - MP4 (M4A): several languages belong in ONE
+//   `----:com.apple.iTunes:LANGUAGE` atom holding several `data` atoms (the
+//   form iTunes, mutagen and mp4ameta write). lofty's format-neutral `Tag`
+//   keeps only the first `data` atom of an atom, so reading lost the rest,
+//   and any write — even one that never touched the language — deleted
+//   them from the file. MP4 files are therefore opened through lofty's own
+//   MP4 type (`Mp4File` and its `Ilst`), and the language atom is read and
+//   written there, whole; everything else still goes through the
+//   format-neutral `Tag`, exactly as before.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 
-use lofty::config::WriteOptions;
+use lofty::config::{ParseOptions, WriteOptions};
+use lofty::file::{FileType, TaggedFile};
+use lofty::mp4::{Atom, AtomData, AtomIdent, Ilst, Mp4File};
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem, TagType};
@@ -30,6 +56,14 @@ use crate::tag_registry::{TagRegistry, TagScope};
 /// A map of common tags to their values (supports multi-value fields).
 pub type TagMap = HashMap<CommonTag, Vec<String>>;
 
+/// The MP4 atom a language is stored in: the freeform
+/// `----:com.apple.iTunes:LANGUAGE` atom, the one lofty's own
+/// `ItemKey::Language` maps to for MP4 (lofty 0.22.4, `tag/item.rs`).
+const MP4_LANGUAGE: AtomIdent<'static> = AtomIdent::Freeform {
+    mean: Cow::Borrowed("com.apple.iTunes"),
+    name: Cow::Borrowed("LANGUAGE"),
+};
+
 // ============================================================
 // Reading
 // ============================================================
@@ -39,24 +73,50 @@ pub type TagMap = HashMap<CommonTag, Vec<String>>;
 /// Auto-detects the file format and reads whichever tag type is present
 /// (ID3v2, Vorbis Comment, MP4 ilst, APE, etc.). Returns a `TagMap`
 /// mapping `CommonTag` variants to their string values.
+///
+/// `CommonTag::Language` holds every language the file lists, in order,
+/// one entry per language — except on APE, where the tag stores the list
+/// as one value with null characters between the languages, and that one
+/// value is returned as it is. On MP4 every `data` atom of the language
+/// atom is returned (see the top of this file for why that needed care).
 pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
     if !path.exists() {
         return Err(MetadataError::FileNotFound(path.display().to_string()));
     }
 
-    let tagged_file = Probe::open(path)?.read()?;
-
     let mut result = TagMap::new();
+    match open_file(path)? {
+        OpenedFile::Mp4(mut mp4) => {
+            let mut ilst = mp4.remove_ilst().unwrap_or_default();
+            let languages = take_mp4_languages(&mut ilst);
+            // Everything except the language, read through the same
+            // format-neutral view `Probe::read` would have given.
+            collect_common_tags(&Tag::from(ilst), &mut result);
+            let values = mp4_language_texts(&languages);
+            if !values.is_empty() {
+                result.insert(CommonTag::Language, values);
+            }
+        }
+        OpenedFile::Other(tagged_file) => {
+            // Try primary tag first, fall back to any available tag
+            if let Some(tag) = read_source(&tagged_file) {
+                collect_common_tags(tag, &mut result);
+            }
+        }
+    }
+    Ok(result)
+}
 
-    // Try primary tag first, fall back to any available tag
-    let tag = tagged_file
+/// The tag `read_tags` reads from: the file's main tag, or failing that
+/// any tag it has.
+fn read_source(tagged_file: &TaggedFile) -> Option<&Tag> {
+    tagged_file
         .primary_tag()
-        .or_else(|| tagged_file.first_tag());
+        .or_else(|| tagged_file.first_tag())
+}
 
-    let Some(tag) = tag else {
-        return Ok(result);
-    };
-
+/// Every `CommonTag` value in `tag`, added to `result`.
+fn collect_common_tags(tag: &Tag, result: &mut TagMap) {
     // Extract standard accessor fields
     if let Some(v) = tag.title() {
         result
@@ -180,8 +240,6 @@ pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
             }
         }
     }
-
-    Ok(result)
 }
 
 // ============================================================
@@ -194,58 +252,60 @@ pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
 /// or creates an appropriate new one. Existing values for the given tags
 /// are overwritten; other tags are preserved.
 ///
-/// `CommonTag::Language` is not a plain pass-through: see
-/// `write_language` below (policy MWBM-MEDIA-LANG, TRACK-070). A language
-/// value this crate does not recognise refuses the WHOLE call with
-/// [`MetadataError::UnrecognisedLanguage`], before anything is saved, so
-/// the file is left exactly as it was — none of the other tags in `tags`
-/// are written either.
+/// `CommonTag::Language` is not a plain pass-through (policy
+/// MWBM-MEDIA-LANG, TRACK-070); see `write_language` below for what is
+/// written for each format. Three rules apply to it here:
+///
+/// - **Several `Language` entries in one call are all written**, in the
+///   order given — `[(Language, "eng"), (Language, "fra")]` writes both,
+///   as does one entry `"eng\0fra"`. (Until the stand-in review of
+///   revision 5 each entry replaced the one before, so only the last
+///   survived.)
+/// - **An unchanged value is left alone.** When the call's languages,
+///   joined with null characters, are exactly what the file already holds
+///   (`read_tags`' `Language` values joined the same way), the language
+///   field is not touched at all — not checked, not converted, not
+///   rewritten — exactly as if no `Language` entry had been given. This is
+///   what lets a caller read a file, change its title, and write every
+///   field back: a file whose `LANGUAGE` another tool set to `English`
+///   used to have that whole save refused. (The same rule MeedyaManager
+///   adopted, COMPAT-030.) An empty value given for a file that holds no
+///   language is likewise unchanged.
+/// - **A changed value this crate does not recognise refuses the WHOLE
+///   call** with [`MetadataError::UnrecognisedLanguage`], before anything
+///   is saved, so the file is left exactly as it was — none of the other
+///   tags in `tags` are written either.
 pub fn write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<(), MetadataError> {
     if !path.exists() {
         return Err(MetadataError::FileNotFound(path.display().to_string()));
     }
 
-    let mut tagged_file = Probe::open(path)?.read()?;
+    // Every `Language` entry in the call, in order: they are written
+    // together, once (see the doc comment above).
+    let language_entries: Vec<&str> = tags
+        .iter()
+        .filter(|(common_tag, _)| *common_tag == CommonTag::Language)
+        .map(|(_, value)| value.as_str())
+        .collect();
 
-    // #79 — an untagged file has no `primary_tag()`, and the old fallback
-    // hardcoded `TagType::Id3v2` here regardless of container. `insert_tag`
-    // silently no-ops when the container doesn't support the tag type it's
-    // given (lofty file/tagged_file.rs), so on e.g. a fresh untagged .m4a
-    // (the standard MeedyaDL download product) the Id3v2 insert was dropped
-    // on the floor and the `tag_mut(tag_type).unwrap()` below panicked on
-    // the resulting `None`. `primary_tag_type()` derives the correct tag
-    // type from the FILE type instead (Mp4 -> Mp4Ilst, Flac/Opus/Vorbis/
-    // Speex -> VorbisComments, etc.), which is always write-supported for
-    // its own format, so the insert always lands.
-    let tag_type = tagged_file
-        .primary_tag()
-        .map(Tag::tag_type)
-        .unwrap_or_else(|| tagged_file.primary_tag_type());
-
-    // Ensure the tag exists before borrowing mutably
-    if tagged_file.tag(tag_type).is_none() {
-        tagged_file.insert_tag(Tag::new(tag_type));
-    }
-
-    // Unreachable now that tag_type always comes from an existing tag or
-    // primary_tag_type() (both write-supported), but house style forbids
-    // unwrap — surface a proper error instead of assuming it can't happen.
-    let tag = tagged_file.tag_mut(tag_type).ok_or_else(|| {
-        MetadataError::UnsupportedFormat(format!(
-            "cannot create a {tag_type:?} tag in this container"
-        ))
-    })?;
-
-    // Every value is applied to the in-memory tag first; the file is only
-    // saved once all of them have been accepted. A refused value (only
-    // `CommonTag::Language` can be refused) therefore returns here with the
-    // file untouched.
-    for (common_tag, value) in tags {
-        write_common_tag_to_lofty(tag, *common_tag, value)?;
-    }
-
-    tagged_file.save_to_path(path, WriteOptions::default())?;
-    Ok(())
+    edit_and_save(path, |tag, languages| {
+        // Every value is applied to the in-memory tag first; the file is
+        // only saved once all of them have been accepted. A refused value
+        // (only a language can be refused) therefore returns here with
+        // the file untouched.
+        for (common_tag, value) in tags {
+            if *common_tag != CommonTag::Language {
+                write_common_tag_to_lofty(tag, *common_tag, value)?;
+            }
+        }
+        if !language_entries.is_empty()
+            && language_entries.join("\0") != languages.current.join("\0")
+        {
+            languages.replacement =
+                Some(language_values_to_write(&language_entries, tag.tag_type())?);
+        }
+        Ok(())
+    })
 }
 
 /// Write ReplayGain analysis results to a media file.
@@ -312,49 +372,247 @@ pub fn write_registry_tags(
         TagScope::Track => &registry.track_tags,
     };
 
-    let mut tagged_file = Probe::open(path)?.read()?;
+    // The file's languages are not touched here, but saving goes through
+    // `edit_and_save` all the same, so they survive the save whole.
+    edit_and_save(path, |tag, _languages| {
+        let mut count = 0;
 
-    // #79 — see the matching comment in write_tags above: fall back to the
-    // container's own primary tag type (always write-supported) instead of
-    // hardcoding Id3v2, which insert_tag silently drops on non-ID3v2
-    // containers.
-    let tag_type = tagged_file
-        .primary_tag()
-        .map(Tag::tag_type)
-        .unwrap_or_else(|| tagged_file.primary_tag_type());
+        for def in defs {
+            let Some(json_val) = json_path::extract_json_value(json_source, &def.json_path) else {
+                continue;
+            };
+            let Some(string_val) = json_path::value_to_string(&json_val, &def.value_type) else {
+                continue;
+            };
 
-    if tagged_file.tag(tag_type).is_none() {
-        tagged_file.insert_tag(Tag::new(tag_type));
-    }
-
-    // Unreachable — see write_tags above — but house style forbids unwrap.
-    let tag = tagged_file.tag_mut(tag_type).ok_or_else(|| {
-        MetadataError::UnsupportedFormat(format!(
-            "cannot create a {tag_type:?} tag in this container"
-        ))
-    })?;
-
-    let mut count = 0;
-
-    for def in defs {
-        let Some(json_val) = json_path::extract_json_value(json_source, &def.json_path) else {
-            continue;
-        };
-        let Some(string_val) = json_path::value_to_string(&json_val, &def.value_type) else {
-            continue;
-        };
-
-        for atom in &def.atoms {
-            // Write as a custom/freeform item with the full namespace
-            let key = ItemKey::Unknown(format!("{}:{}", atom.namespace, atom.name));
-            // #65 — insert_unchecked: lofty's insert() rejects ItemKey::Unknown (re_map allow_unknown=false), silently dropping freeform atoms; insert_unchecked is lofty's documented API for Unknown keys.
-            tag.insert_unchecked(TagItem::new(key, ItemValue::Text(string_val.clone())));
+            for atom in &def.atoms {
+                // Write as a custom/freeform item with the full namespace
+                let key = ItemKey::Unknown(format!("{}:{}", atom.namespace, atom.name));
+                // #65 — insert_unchecked: lofty's insert() rejects ItemKey::Unknown (re_map allow_unknown=false), silently dropping freeform atoms; insert_unchecked is lofty's documented API for Unknown keys.
+                tag.insert_unchecked(TagItem::new(key, ItemValue::Text(string_val.clone())));
+            }
+            count += 1;
         }
-        count += 1;
-    }
 
-    tagged_file.save_to_path(path, WriteOptions::default())?;
-    Ok(count)
+        Ok(count)
+    })
+}
+
+/// Gathers every language item in `tagged_file`'s ID3v2 tag (and APE tag)
+/// into ONE item, the values separated by null characters, so that saving
+/// writes one `TLAN` frame (one APE `Language` item) holding every
+/// language, instead of one frame per language. **Call it just before
+/// every save of a `TaggedFile` that may carry an ID3v2 tag** — every save
+/// in `tag_io` does, and so does `meedya-lyrics`' `embed_synced`.
+///
+/// Why it is needed: lofty reads one `TLAN` frame holding `por\0deu\0zho`
+/// (ID3v2.4's own way of listing several values) as three separate
+/// language items, but saving a file turns each item into its own frame
+/// (lofty 0.22.4, `id3/v2/tag.rs`, `tag_frames`). A reader keeps only the
+/// LAST of several `TLAN` frames, so any save — a title change, a
+/// ReplayGain write, synchronised lyrics — silently cut three languages
+/// down to the last one (found by the stand-in review of revision 5 on
+/// MP3, WAV and AIFF). APE has the same one-item-per-key rule (lofty's
+/// `ApeTag::insert` replaces an existing item), so an APE tag is gathered
+/// the same way.
+///
+/// It does nothing when a tag holds one language item or none, or when
+/// any of its language items is not text (there is nothing it could join
+/// those with, so they are left exactly as they are). What it CANNOT do:
+/// bring back languages a file had already lost — a file saved before
+/// this fix may hold several `TLAN` frames, and lofty reads only the last
+/// of them, so the others are gone before this function ever sees them.
+/// Nor does it reach `meedya-tags-extended`'s `TagFile::save`: that crate
+/// is built on an older lofty (0.21), whose `TaggedFile` is a different
+/// type this function cannot take, so a file saved through it still has
+/// several languages split into several frames (measured on a real MP3;
+/// left for a separate change, since moving that crate to lofty 0.22
+/// changes the lofty types its public API hands out).
+pub fn gather_languages_before_saving(tagged_file: &mut TaggedFile) {
+    for tag_type in [TagType::Id3v2, TagType::Ape] {
+        let Some(tag) = tagged_file.tag_mut(tag_type) else {
+            continue;
+        };
+        let items: Vec<&TagItem> = tag.get_items(&ItemKey::Language).collect();
+        if items.len() < 2 {
+            continue;
+        }
+        let Some(values) = items
+            .iter()
+            .map(|item| item.value().text())
+            .collect::<Option<Vec<&str>>>()
+        else {
+            continue;
+        };
+        let joined = values.join("\0");
+        tag.remove_key(&ItemKey::Language);
+        tag.insert(TagItem::new(ItemKey::Language, ItemValue::Text(joined)));
+    }
+}
+
+// ============================================================
+// Opening and saving
+// ============================================================
+
+/// A file opened for reading or changing its tags.
+enum OpenedFile {
+    /// An MP4 file, through lofty's own MP4 type, so the language atom can
+    /// be read and written whole (see the top of this file).
+    Mp4(Mp4File),
+    /// Any other format, through lofty's format-neutral `TaggedFile`.
+    Other(TaggedFile),
+}
+
+/// Opens `path`, deciding its format exactly as `Probe::open(path)?.read()`
+/// does (from the file name's extension), with lofty's default reading
+/// options — so every file that is not MP4 is read exactly as before.
+fn open_file(path: &Path) -> Result<OpenedFile, MetadataError> {
+    let probe = Probe::open(path)?;
+    if probe.file_type() == Some(FileType::Mp4) {
+        let mut reader = probe.into_inner();
+        Ok(OpenedFile::Mp4(Mp4File::read_from(
+            &mut reader,
+            ParseOptions::default(),
+        )?))
+    } else {
+        Ok(OpenedFile::Other(probe.read()?))
+    }
+}
+
+/// A file's language field while a write is being prepared.
+struct LanguageField {
+    /// Every language value the file holds now, exactly as `read_tags`
+    /// returns them.
+    current: Vec<String>,
+    /// The values to store instead, already in the form this tag stores
+    /// (see `language_values_to_write`), or `None` to leave the field
+    /// exactly as it is.
+    replacement: Option<Vec<String>>,
+}
+
+/// Opens `path`, lets `edit` change the file's main tag (and, through the
+/// [`LanguageField`], its languages), then saves the file. The ONE way
+/// this module saves a file, so every write — whatever it is for — keeps
+/// the file's languages whole (see the top of this file). Nothing is
+/// saved when `edit` returns an error.
+///
+/// - **MP4**: the language atom is taken out of the file's `Ilst` first
+///   and held on one side; the rest is split into lofty's format-neutral
+///   `Tag` for `edit` (`split_tag`), merged back (`merge_tag` — together,
+///   exactly the conversion lofty's own `TaggedFile` save performs), and
+///   the language atom is put back as ONE atom holding every value: the
+///   replacement if `edit` asked for one, otherwise every `data` atom the
+///   file had. A file written before this fix, with one atom per
+///   language, is therefore rewritten in the usual one-atom form.
+/// - **Every other format**: `edit` gets the main tag (created if the file
+///   has none), a replacement is stored with `put_languages`, and
+///   [`gather_languages_before_saving`] runs just before the save.
+fn edit_and_save<T>(
+    path: &Path,
+    edit: impl FnOnce(&mut Tag, &mut LanguageField) -> Result<T, MetadataError>,
+) -> Result<T, MetadataError> {
+    match open_file(path)? {
+        OpenedFile::Mp4(mut mp4) => {
+            let mut ilst = mp4.remove_ilst().unwrap_or_default();
+            let held = take_mp4_languages(&mut ilst);
+            let mut languages = LanguageField {
+                current: mp4_language_texts(&held),
+                replacement: None,
+            };
+            let (remainder, mut tag) = ilst.split_tag();
+            let out = edit(&mut tag, &mut languages)?;
+            let mut merged = remainder.merge_tag(tag);
+            let data: Vec<AtomData> = match languages.replacement {
+                Some(values) => values.into_iter().map(AtomData::UTF8).collect(),
+                None => held.into_iter().flat_map(Atom::into_data).collect(),
+            };
+            // `replace_atom` also removes any language atom the format-
+            // neutral tag might have produced, so the file ends up with
+            // exactly one. `from_collection` gives `None` for no values:
+            // then there is no language atom at all.
+            match Atom::from_collection(MP4_LANGUAGE, data) {
+                Some(atom) => merged.replace_atom(atom),
+                None => merged.remove(&MP4_LANGUAGE).for_each(drop),
+            }
+            merged.save_to_path(path, WriteOptions::default())?;
+            Ok(out)
+        }
+        OpenedFile::Other(mut tagged_file) => {
+            let current = read_source(&tagged_file)
+                .map(|tag| {
+                    tag.get_strings(&ItemKey::Language)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // #79 — an untagged file has no `primary_tag()`, and the old
+            // fallback hardcoded `TagType::Id3v2` here regardless of
+            // container. `insert_tag` silently no-ops when the container
+            // doesn't support the tag type it's given (lofty
+            // file/tagged_file.rs), so on e.g. a fresh untagged .m4a (the
+            // standard MeedyaDL download product) the Id3v2 insert was
+            // dropped on the floor and the `tag_mut(tag_type).unwrap()`
+            // below panicked on the resulting `None`. `primary_tag_type()`
+            // instead derives the correct tag type from the FILE type
+            // (Flac/Opus/Vorbis/Speex -> VorbisComments, etc.), which is
+            // always write-supported for its own format, so the insert
+            // always lands. (MP4 no longer reaches here at all.)
+            let tag_type = tagged_file
+                .primary_tag()
+                .map(Tag::tag_type)
+                .unwrap_or_else(|| tagged_file.primary_tag_type());
+
+            // Ensure the tag exists before borrowing mutably
+            if tagged_file.tag(tag_type).is_none() {
+                tagged_file.insert_tag(Tag::new(tag_type));
+            }
+
+            // Unreachable now that tag_type always comes from an existing
+            // tag or primary_tag_type() (both write-supported), but house
+            // style forbids unwrap — surface a proper error instead of
+            // assuming it can't happen.
+            let tag = tagged_file.tag_mut(tag_type).ok_or_else(|| {
+                MetadataError::UnsupportedFormat(format!(
+                    "cannot create a {tag_type:?} tag in this container"
+                ))
+            })?;
+
+            let mut languages = LanguageField {
+                current,
+                replacement: None,
+            };
+            let out = edit(tag, &mut languages)?;
+            if let Some(values) = languages.replacement {
+                put_languages(tag, values);
+            }
+
+            gather_languages_before_saving(&mut tagged_file);
+            tagged_file.save_to_path(path, WriteOptions::default())?;
+            Ok(out)
+        }
+    }
+}
+
+/// Takes every language atom out of `ilst` (a file written before the
+/// stand-in review of revision 5 may have one atom per language), in the
+/// order the file holds them.
+fn take_mp4_languages(ilst: &mut Ilst) -> Vec<Atom<'static>> {
+    ilst.remove(&MP4_LANGUAGE).collect()
+}
+
+/// Every text value in `atoms`' `data` atoms, in order — what `read_tags`
+/// returns for an MP4 file's language. A `data` atom that is not text is
+/// skipped here (it is still kept in the file).
+fn mp4_language_texts(atoms: &[Atom<'static>]) -> Vec<String> {
+    atoms
+        .iter()
+        .flat_map(Atom::data)
+        .filter_map(|data| match data {
+            AtomData::UTF8(text) | AtomData::UTF16(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 // ============================================================
@@ -632,17 +890,21 @@ fn write_common_tag_to_lofty(
 }
 
 /// Writes a `CommonTag::Language` value (policy MWBM-MEDIA-LANG,
-/// TRACK-070), or refuses it.
+/// TRACK-070) into an in-memory `tag`, or refuses it. `write_tags` does
+/// not come through here — it reads every `Language` entry of a call
+/// together and stores them through `edit_and_save` (which is also what
+/// makes the MP4 form below real) — but the conversion and the refusal
+/// are the same ones, from `language_values_to_write` and
+/// `put_languages`.
 ///
 /// **Reading the caller's value.** It goes through the LANG-002 reader
 /// that handles several values (`meedya_lang::from_legacy_three_letter_all`),
 /// because a language field may hold more than one language, separated by
 /// a null character (`"eng\0fra"` — ID3v2.4's own way of listing several
-/// values, and what `read_tags` hands back for a file that has several).
-/// Every value is kept, in the order given; the first is the primary
-/// language. (Until Codex's review r7 this used the single-value reader,
-/// which returns the first value only, so `"eng\0fra"` was written as
-/// `eng` alone and French was silently lost.)
+/// values). Every value is kept, in the order given; the first is the
+/// primary language. (Until Codex's review r7 this used the single-value
+/// reader, which returns the first value only, so `"eng\0fra"` was written
+/// as `eng` alone and French was silently lost.)
 ///
 /// **What is written, per value.**
 /// - ID3v2 has no full-tag language field at all — TRACK-070's table shows
@@ -652,23 +914,28 @@ fn write_common_tag_to_lofty(
 ///   codes go into ONE item, separated by null characters: one `TLAN` frame
 ///   holding `por\0deu`, which is ID3v2.4's own multi-value form (lofty
 ///   writes ID3v2.4 by default, so the nulls are kept). One item per value
-///   does NOT work here, and the difference only shows on a real file:
-///   lofty's in-memory conversion (`Id3v2Tag::from`) would join several
-///   items into one frame, but saving a file goes through lofty's
-///   `tag_frames` (0.22.4, `id3/v2/tag.rs`), which makes one frame per
-///   item — and a second `TLAN` frame replaces the first when the file is
-///   read, so only the LAST language survived (measured: `eng\0fra`
-///   written as two items read back as `fra`).
+///   does NOT work on a file: lofty makes one frame per item when it saves
+///   a file, and a reader keeps only the LAST `TLAN` frame — see
+///   [`gather_languages_before_saving`], which is what keeps this one item
+///   whole through every later save too (a file read back holds one item
+///   PER LANGUAGE again).
 /// - Every other format has a free-text field that takes the canonical
-///   BCP 47 tag (`eng` → `en`, `EN-gb` → `en-GB`). Vorbis comments and MP4
-///   freeform items hold several values as several fields/atoms with the
-///   same name, so one item is pushed per value (measured on real FLAC,
-///   Opus and M4A files: every value reads back, in order). APE is like
-///   ID3v2: an APE tag holds each key once (lofty's `ApeTag::insert`
-///   replaces an existing item, so a second item would overwrite the
-///   first), and APEv2's own way of listing several values is one item
-///   with the values separated by null characters — which is what is
-///   written.
+///   BCP 47 tag (`eng` → `en`, `EN-gb` → `en-GB`).
+///   - Vorbis comments hold several values as several `LANGUAGE` fields,
+///     so one item is pushed per value (measured on real FLAC and Opus
+///     files: every value reads back, in order).
+///   - MP4 holds several values as ONE `----:com.apple.iTunes:LANGUAGE`
+///     atom with one `data` atom per value — the form iTunes, mutagen and
+///     mp4ameta write, and the one ffprobe reads its first value from. A
+///     format-neutral `Tag` cannot express that (lofty turns each item into
+///     an atom of its own), so in memory one item is pushed per value, and
+///     `edit_and_save` writes the file's atom itself, through lofty's `Ilst`.
+///     (Revision 5 saved the items as they were: one atom per language, and
+///     ffprobe then showed the LAST language as the file's language.)
+///   - APE is like ID3v2: an APE tag holds each key once (lofty's
+///     `ApeTag::insert` replaces an existing item), and APEv2's own way of
+///     listing several values is one item with the values separated by
+///     null characters — which is what is written.
 ///
 /// **Refusing.** A value the reader does not recognise — `zzz`, a language
 /// *name* (`English`), a locale name (`en_GB`), or an empty value — is
@@ -683,9 +950,20 @@ fn write_common_tag_to_lofty(
 /// unrecognised value was written as-is to free-text fields and as `und` to
 /// ID3v2. Special values are recognised and written normally: `und`
 /// (not known), `mul`, `zxx`, `mis`, the local-use range `qaa`–`qtz`,
-/// private-use tags (`x-…`) and grandfathered tags.
+/// private-use tags (`x-…`) and grandfathered tags. (`write_tags` refuses
+/// only a CHANGED value: one identical to what the file already holds is
+/// left alone before it ever gets here — see its doc comment.)
 fn write_language(tag: &mut Tag, value: &str) -> Result<(), MetadataError> {
-    let values = language_values_to_write(value, tag.tag_type())?;
+    let values = language_values_to_write(&[value], tag.tag_type())?;
+    put_languages(tag, values);
+    Ok(())
+}
+
+/// Stores `values` — already converted by `language_values_to_write` — as
+/// `tag`'s languages, replacing any it had: one null-separated item on
+/// ID3v2 and APE, one item per value everywhere else. See
+/// [`write_language`] for why.
+fn put_languages(tag: &mut Tag, values: Vec<String>) {
     tag.remove_key(&ItemKey::Language);
     if matches!(tag.tag_type(), TagType::Id3v2 | TagType::Ape) {
         tag.insert(TagItem::new(
@@ -702,28 +980,45 @@ fn write_language(tag: &mut Tag, value: &str) -> Result<(), MetadataError> {
             ));
         }
     }
-    Ok(())
 }
 
-/// The text to store for each language in `value`, in order, for a tag of
-/// type `tag_type` — or the refusal, naming the first value that is not
-/// recognised. See [`write_language`] for the rules.
-fn language_values_to_write(value: &str, tag_type: TagType) -> Result<Vec<String>, MetadataError> {
-    let read = meedya_lang::from_legacy_three_letter_all(value);
-    let count = read.len();
-    let mut values = Vec::with_capacity(count);
-    for (index, parsed) in read.into_iter().enumerate() {
-        let Some(lang_tag) = parsed else {
-            return Err(MetadataError::UnrecognisedLanguage {
-                value: value.to_string(),
-                problem: describe_unrecognised_language(value, index, count),
+/// The text to store for every language in `entries` — each entry one
+/// value as a caller gave it, which may itself list several languages
+/// separated by null characters — in order, for a tag of type `tag_type`;
+/// or the refusal, naming the first value that is not recognised. Each
+/// entry is read on its own, so the languages from `["eng\0fra", "deu"]`
+/// are exactly those of `"eng\0fra\0deu"`. See [`write_language`] for the
+/// rules.
+fn language_values_to_write(
+    entries: &[&str],
+    tag_type: TagType,
+) -> Result<Vec<String>, MetadataError> {
+    let mut values = Vec::new();
+    for (entry_index, entry) in entries.iter().enumerate() {
+        let read = meedya_lang::from_legacy_three_letter_all(entry);
+        let count = read.len();
+        for (index, parsed) in read.into_iter().enumerate() {
+            let Some(lang_tag) = parsed else {
+                let mut problem = describe_unrecognised_language(entry, index, count);
+                if entries.len() > 1 {
+                    // Several `Language` entries in one call: say which.
+                    problem = format!(
+                        "in language entry {} of the {} given together, {problem}",
+                        entry_index + 1,
+                        entries.len()
+                    );
+                }
+                return Err(MetadataError::UnrecognisedLanguage {
+                    value: (*entry).to_string(),
+                    problem,
+                });
+            };
+            values.push(if tag_type == TagType::Id3v2 {
+                meedya_lang::iso639_2_code(&lang_tag, meedya_lang::Iso639Form::Terminology)
+            } else {
+                lang_tag.tag
             });
-        };
-        values.push(if tag_type == TagType::Id3v2 {
-            meedya_lang::iso639_2_code(&lang_tag, meedya_lang::Iso639Form::Terminology)
-        } else {
-            lang_tag.tag
-        });
+        }
     }
     Ok(values)
 }
@@ -1728,5 +2023,545 @@ mod tests {
                 "{name} was changed"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Languages survive every later write (stand-in review of revision 5)
+    //
+    // Writing several languages worked, but the NEXT write of any kind —
+    // a title change, ReplayGain, a registry tag — cut them down: on
+    // ID3v2 (MP3, WAV, AIFF) lofty re-saved one `TLAN` frame per language
+    // and a reader keeps only the last; on MP4 the languages sat in one
+    // atom each (ffprobe showed the LAST as the file's language), and an
+    // atom holding several `data` atoms — the usual form — was read as its
+    // first value only and lost the rest on the next save. Reproduced on
+    // the reviewer's real files before the fix; these tests hold it.
+    // ------------------------------------------------------------------
+
+    /// A minimal untagged WAV: `RIFF`/`WAVE`, a 16-bit mono 8 kHz PCM
+    /// `fmt ` chunk and a `data` chunk of eight silent samples. lofty
+    /// writes a WAV file's ID3v2 tag into an `id3 ` chunk, and ID3v2 is
+    /// the tag type it prefers for WAV, so this is how an ID3v2 write to
+    /// a WAV file is tested.
+    fn minimal_untagged_wav() -> Vec<u8> {
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        fmt.extend_from_slice(&1u16.to_le_bytes()); // one channel
+        fmt.extend_from_slice(&8_000u32.to_le_bytes()); // sample rate
+        fmt.extend_from_slice(&16_000u32.to_le_bytes()); // bytes per second
+        fmt.extend_from_slice(&2u16.to_le_bytes()); // bytes per sample frame
+        fmt.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+        let mut body = Vec::new();
+        body.extend_from_slice(b"WAVE");
+        body.extend_from_slice(b"fmt ");
+        body.extend_from_slice(&u32::try_from(fmt.len()).expect("fits").to_le_bytes());
+        body.extend_from_slice(&fmt);
+        body.extend_from_slice(b"data");
+        body.extend_from_slice(&16u32.to_le_bytes());
+        body.extend_from_slice(&[0u8; 16]);
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&u32::try_from(body.len()).expect("fits").to_le_bytes());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    /// A minimal untagged AIFF: `FORM`/`AIFF`, a `COMM` chunk (one
+    /// channel, eight 16-bit sample frames, 8 kHz as an 80-bit extended
+    /// number: exponent 16383 + 12, mantissa 8000 << 51) and an `SSND`
+    /// chunk. Like WAV, lofty's preferred tag for AIFF is ID3v2 (written
+    /// into an `ID3 ` chunk).
+    fn minimal_untagged_aiff() -> Vec<u8> {
+        let mut comm = Vec::new();
+        comm.extend_from_slice(&1u16.to_be_bytes()); // channels
+        comm.extend_from_slice(&8u32.to_be_bytes()); // sample frames
+        comm.extend_from_slice(&16u16.to_be_bytes()); // bits per sample
+        comm.extend_from_slice(&[0x40, 0x0B, 0xFA, 0, 0, 0, 0, 0, 0, 0]); // 8000.0
+        let mut ssnd = Vec::new();
+        ssnd.extend_from_slice(&0u32.to_be_bytes()); // offset
+        ssnd.extend_from_slice(&0u32.to_be_bytes()); // block size
+        ssnd.extend_from_slice(&[0u8; 16]);
+        let mut body = Vec::new();
+        body.extend_from_slice(b"AIFF");
+        body.extend_from_slice(b"COMM");
+        body.extend_from_slice(&u32::try_from(comm.len()).expect("fits").to_be_bytes());
+        body.extend_from_slice(&comm);
+        body.extend_from_slice(b"SSND");
+        body.extend_from_slice(&u32::try_from(ssnd.len()).expect("fits").to_be_bytes());
+        body.extend_from_slice(&ssnd);
+        let mut out = Vec::new();
+        out.extend_from_slice(b"FORM");
+        out.extend_from_slice(&u32::try_from(body.len()).expect("fits").to_be_bytes());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    /// How many times `needle` occurs in `haystack` — a byte check of the
+    /// saved file, independent of lofty's reading of it.
+    fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
+        haystack
+            .windows(needle.len())
+            .filter(|window| *window == needle)
+            .count()
+    }
+
+    /// One write made to a file by path, for the table below.
+    type FileWrite = fn(&Path);
+
+    /// A function building an untagged file's bytes.
+    type Fixture = fn() -> Vec<u8>;
+
+    /// The three kinds of write the review named, each unrelated to the
+    /// language: a title-only `write_tags`, `write_replaygain_tags`, and a
+    /// registry write (the registry path saves the file separately from
+    /// `write_tags`).
+    fn unrelated_writes() -> [(&'static str, FileWrite); 3] {
+        fn title(path: &Path) {
+            write_tags(path, &[(CommonTag::Title, "Changed Title".into())]).expect("title write");
+        }
+        fn replaygain(path: &Path) {
+            let result = meedya_fingerprint::ReplayGainResult {
+                integrated_loudness: -14.2,
+                true_peak: 0.933,
+                gain_db: -3.8,
+                reference_level: -18.0,
+            };
+            write_replaygain_tags(path, &result, None).expect("ReplayGain write");
+        }
+        fn registry(path: &Path) {
+            let registry = TagRegistry::from_toml(
+                "[track.Mood]\njson_path = \"mood\"\nvalue_type = \"string\"\n\
+                 atoms = [{ namespace = \"meedya\", name = \"Mood\" }]\n",
+            )
+            .expect("registry");
+            let json = serde_json::json!({ "mood": "calm" });
+            let written = write_registry_tags(path, &registry, &json, TagScope::Track)
+                .expect("registry write");
+            assert_eq!(written, 1);
+        }
+        [
+            ("title-only write_tags", title),
+            ("write_replaygain_tags", replaygain),
+            ("write_registry_tags", registry),
+        ]
+    }
+
+    const THREE_LANGUAGES: &str = "pt-BR\0ger\0zh-Hant";
+
+    #[test]
+    fn three_languages_survive_every_later_write_on_mp3_wav_and_aiff() {
+        let fixtures: [(&str, Fixture); 3] = [
+            ("mp3", minimal_untagged_mp3),
+            ("wav", minimal_untagged_wav),
+            ("aiff", minimal_untagged_aiff),
+        ];
+        for (extension, fixture) in fixtures {
+            for (write_name, unrelated_write) in unrelated_writes() {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let path = dir.path().join(format!("f.{extension}"));
+                std::fs::write(&path, fixture()).expect("write fixture");
+                write_tags(&path, &[(CommonTag::Language, THREE_LANGUAGES.into())])
+                    .expect("three languages");
+                unrelated_write(&path);
+
+                let read_back = read_tags(&path).expect("read_tags");
+                assert_eq!(
+                    read_back.get(&CommonTag::Language).map(Vec::as_slice),
+                    Some(["por", "deu", "zho"].map(String::from).as_slice()),
+                    "{extension} after {write_name}: every language, in order"
+                );
+                let bytes = std::fs::read(&path).expect("read file");
+                assert_eq!(
+                    occurrences(&bytes, b"TLAN"),
+                    1,
+                    "{extension} after {write_name}: exactly one TLAN frame in the saved file"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gather_languages_before_saving_joins_the_items_lofty_splits_on_reading() {
+        // What lofty hands back for a file whose one TLAN frame lists
+        // three languages: three items. The helper makes them one again.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.mp3");
+        std::fs::write(&path, minimal_untagged_mp3()).expect("write fixture");
+        write_tags(&path, &[(CommonTag::Language, THREE_LANGUAGES.into())]).expect("write");
+        let mut tagged_file = Probe::open(&path).expect("open").read().expect("read");
+        let items = |tagged_file: &TaggedFile| -> Vec<String> {
+            tagged_file
+                .tag(TagType::Id3v2)
+                .expect("an ID3v2 tag")
+                .get_strings(&ItemKey::Language)
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(items(&tagged_file), ["por", "deu", "zho"]);
+        gather_languages_before_saving(&mut tagged_file);
+        assert_eq!(items(&tagged_file), ["por\0deu\0zho"]);
+        // A second run changes nothing.
+        gather_languages_before_saving(&mut tagged_file);
+        assert_eq!(items(&tagged_file), ["por\0deu\0zho"]);
+    }
+
+    /// The language atoms of a saved MP4 file, read through lofty's own
+    /// MP4 type: one inner list per `----:com.apple.iTunes:LANGUAGE` atom,
+    /// holding that atom's text values in order.
+    fn mp4_language_atoms(path: &Path) -> Vec<Vec<String>> {
+        let mut file = std::fs::File::open(path).expect("open");
+        let mp4 = Mp4File::read_from(&mut file, ParseOptions::default()).expect("an MP4 file");
+        let Some(ilst) = mp4.ilst() else {
+            return Vec::new();
+        };
+        ilst.into_iter()
+            .filter(|atom| atom.ident() == &MP4_LANGUAGE)
+            .map(|atom| mp4_language_texts(std::slice::from_ref(atom)))
+            .collect()
+    }
+
+    #[test]
+    fn mp4_languages_are_one_atom_holding_one_data_atom_each() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.m4a");
+        std::fs::write(&path, minimal_untagged_m4a()).expect("write fixture");
+        write_tags(&path, &[(CommonTag::Language, THREE_LANGUAGES.into())]).expect("write");
+        // One atom, three values, the primary language first — the form
+        // iTunes and mutagen write, and the one ffprobe takes its first
+        // value from (revision 5 wrote three atoms, and ffprobe showed the
+        // LAST language).
+        assert_eq!(
+            mp4_language_atoms(&path),
+            [vec!["pt-BR".to_string(), "de".into(), "zh-Hant".into()]]
+        );
+        assert_eq!(
+            occurrences(&std::fs::read(&path).expect("read"), b"LANGUAGE"),
+            1
+        );
+        assert_eq!(
+            read_tags(&path).expect("read").get(&CommonTag::Language),
+            Some(&vec!["pt-BR".to_string(), "de".into(), "zh-Hant".into()])
+        );
+    }
+
+    #[test]
+    fn mp4_languages_survive_every_later_write() {
+        for (write_name, unrelated_write) in unrelated_writes() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("f.m4a");
+            std::fs::write(&path, minimal_untagged_m4a()).expect("write fixture");
+            write_tags(&path, &[(CommonTag::Language, THREE_LANGUAGES.into())]).expect("write");
+            unrelated_write(&path);
+            assert_eq!(
+                mp4_language_atoms(&path),
+                [vec!["pt-BR".to_string(), "de".into(), "zh-Hant".into()]],
+                "after {write_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn mp4_language_atom_written_by_another_tool_is_read_whole_and_kept() {
+        // The usual form, as another tool writes it: ONE atom, several
+        // `data` atoms. Built with lofty's own `Ilst` (bypassing this
+        // crate), the same shape mutagen and mp4ameta produce. Before the
+        // fix `read_tags` saw only `en`, and the title write below
+        // deleted `fr` and `de` from the file.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.m4a");
+        std::fs::write(&path, minimal_untagged_m4a()).expect("write fixture");
+        let mut ilst = Ilst::new();
+        ilst.insert(
+            Atom::from_collection(
+                MP4_LANGUAGE,
+                vec![
+                    AtomData::UTF8("en".into()),
+                    AtomData::UTF8("fr".into()),
+                    AtomData::UTF8("de".into()),
+                ],
+            )
+            .expect("three values"),
+        );
+        ilst.save_to_path(&path, WriteOptions::default())
+            .expect("save");
+
+        let three = vec!["en".to_string(), "fr".into(), "de".into()];
+        assert_eq!(
+            read_tags(&path).expect("read").get(&CommonTag::Language),
+            Some(&three)
+        );
+        write_tags(&path, &[(CommonTag::Title, "Changed Title".into())]).expect("title");
+        assert_eq!(mp4_language_atoms(&path), std::slice::from_ref(&three));
+        assert_eq!(
+            read_tags(&path).expect("read").get(&CommonTag::Language),
+            Some(&three)
+        );
+    }
+
+    #[test]
+    fn mp4_file_with_one_language_atom_per_value_is_read_whole_and_mended_on_save() {
+        // The form revision 5 wrote: a format-neutral `Tag` with one
+        // language item per value, saved as it was — one atom per value.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.m4a");
+        std::fs::write(&path, minimal_untagged_m4a()).expect("write fixture");
+        let mut tag = Tag::new(TagType::Mp4Ilst);
+        for value in ["en", "fr", "de"] {
+            tag.push(TagItem::new(
+                ItemKey::Language,
+                ItemValue::Text(value.into()),
+            ));
+        }
+        tag.save_to_path(&path, WriteOptions::default())
+            .expect("save");
+        assert_eq!(
+            mp4_language_atoms(&path).len(),
+            3,
+            "the old form: three atoms"
+        );
+
+        let three = vec!["en".to_string(), "fr".into(), "de".into()];
+        assert_eq!(
+            read_tags(&path).expect("read").get(&CommonTag::Language),
+            Some(&three)
+        );
+        // Any later save puts them in one atom, in the same order.
+        write_tags(&path, &[(CommonTag::Title, "Changed Title".into())]).expect("title");
+        assert_eq!(mp4_language_atoms(&path), [three]);
+    }
+
+    // ------------------------------------------------------------------
+    // Several `Language` entries in one call (stand-in review of
+    // revision 5): each used to replace the one before, keeping the last.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn several_language_entries_in_one_call_are_all_written_in_order() {
+        let entries = [
+            (CommonTag::Language, "pt-BR".to_string()),
+            (CommonTag::Title, "Fixture Title".to_string()),
+            (CommonTag::Language, "ger\0fr-CA".to_string()),
+            (CommonTag::Language, "zh-Hant".to_string()),
+        ];
+        let fixtures: [(&str, Vec<u8>, &[&str]); 5] = [
+            (
+                "a.mp3",
+                minimal_untagged_mp3(),
+                &["por", "deu", "fra", "zho"],
+            ),
+            (
+                "b.flac",
+                minimal_untagged_flac(),
+                &["pt-BR", "de", "fr-CA", "zh-Hant"],
+            ),
+            (
+                "c.opus",
+                minimal_untagged_opus(),
+                &["pt-BR", "de", "fr-CA", "zh-Hant"],
+            ),
+            (
+                "d.m4a",
+                minimal_untagged_m4a(),
+                &["pt-BR", "de", "fr-CA", "zh-Hant"],
+            ),
+            (
+                "e.wv",
+                minimal_untagged_wavpack(),
+                &["pt-BR\0de\0fr-CA\0zh-Hant"],
+            ),
+        ];
+        for (name, fixture, expected) in fixtures {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join(name);
+            std::fs::write(&path, fixture).expect("write fixture");
+            write_tags(&path, &entries).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let read_back = read_tags(&path).expect("read");
+            assert_eq!(
+                read_back.get(&CommonTag::Language).map(Vec::as_slice),
+                Some(
+                    expected
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>()
+                        .as_slice()
+                ),
+                "{name}"
+            );
+            assert_eq!(
+                read_back.get(&CommonTag::Title),
+                Some(&vec!["Fixture Title".to_string()]),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_unrecognised_entry_among_several_refuses_the_whole_call() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.flac");
+        let fixture = minimal_untagged_flac();
+        std::fs::write(&path, &fixture).expect("write fixture");
+        let result = write_tags(
+            &path,
+            &[
+                (CommonTag::Language, "eng".into()),
+                (CommonTag::Title, "Must Not Be Written".into()),
+                (CommonTag::Language, "fra\0zzz".into()),
+            ],
+        );
+        let message = match result {
+            Err(e @ MetadataError::UnrecognisedLanguage { .. }) => e.to_string(),
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(
+            message.contains("in language entry 2 of the 2 given together, value 2 of 2, \"zzz\","),
+            "{message}"
+        );
+        assert_eq!(std::fs::read(&path).expect("read"), fixture);
+    }
+
+    // ------------------------------------------------------------------
+    // An unchanged value is left alone (stand-in review of revision 5;
+    // the rule MeedyaManager adopted, COMPAT-030): reading a file,
+    // changing its title and writing every field back must not be refused
+    // because another tool wrote a language this crate would not.
+    // ------------------------------------------------------------------
+
+    /// A FLAC file whose `LANGUAGE` another tool set to `English` (a
+    /// language NAME, which this crate refuses when given as a new value),
+    /// written with lofty directly so nothing here checks it.
+    fn flac_with_language_english(dir: &Path) -> std::path::PathBuf {
+        let path = dir.join("english.flac");
+        std::fs::write(&path, minimal_untagged_flac()).expect("write fixture");
+        let mut tag = Tag::new(TagType::VorbisComments);
+        tag.set_title("Old Title".into());
+        tag.push(TagItem::new(
+            ItemKey::Language,
+            ItemValue::Text("English".into()),
+        ));
+        tag.save_to_path(&path, WriteOptions::default())
+            .expect("save");
+        path
+    }
+
+    #[test]
+    fn an_unchanged_unrecognised_language_does_not_block_the_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = flac_with_language_english(dir.path());
+        let read_back = read_tags(&path).expect("read");
+        let language = read_back[&CommonTag::Language].join("\0");
+        assert_eq!(language, "English");
+
+        // Read, change the title, write every field back.
+        write_tags(
+            &path,
+            &[
+                (CommonTag::Title, "New Title".into()),
+                (CommonTag::Language, language),
+            ],
+        )
+        .expect("an unchanged language must not refuse the write");
+        let after = read_tags(&path).expect("read");
+        assert_eq!(after[&CommonTag::Title], ["New Title"]);
+        // Left exactly as it was — not refused, not converted.
+        assert_eq!(after[&CommonTag::Language], ["English"]);
+    }
+
+    #[test]
+    fn a_changed_unrecognised_language_is_still_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = flac_with_language_english(dir.path());
+        let before = std::fs::read(&path).expect("read");
+        let result = write_tags(
+            &path,
+            &[
+                (CommonTag::Title, "New Title".into()),
+                (CommonTag::Language, "Englisch".into()),
+            ],
+        );
+        assert!(
+            matches!(result, Err(MetadataError::UnrecognisedLanguage { .. })),
+            "{result:?}"
+        );
+        assert_eq!(std::fs::read(&path).expect("read"), before);
+    }
+
+    #[test]
+    fn an_unchanged_value_is_compared_as_read_tags_joins_it() {
+        // MP3: another tool's one TLAN frame listing two languages comes
+        // back from `read_tags` as two entries; joined with a null
+        // character they are the unchanged value, which is left alone —
+        // still ONE frame, both languages.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.mp3");
+        std::fs::write(&path, minimal_untagged_mp3()).expect("write fixture");
+        let mut tag = Tag::new(TagType::Id3v2);
+        tag.insert(TagItem::new(
+            ItemKey::Language,
+            ItemValue::Text("eng\0fra".into()),
+        ));
+        tag.save_to_path(&path, WriteOptions::default())
+            .expect("save");
+
+        let joined = read_tags(&path).expect("read")[&CommonTag::Language].join("\0");
+        assert_eq!(joined, "eng\0fra");
+        write_tags(
+            &path,
+            &[
+                (CommonTag::Title, "New Title".into()),
+                (CommonTag::Language, joined),
+            ],
+        )
+        .expect("unchanged");
+        assert_eq!(
+            read_tags(&path).expect("read")[&CommonTag::Language],
+            ["eng", "fra"]
+        );
+        assert_eq!(
+            occurrences(&std::fs::read(&path).expect("read"), b"TLAN"),
+            1
+        );
+
+        // The comparison is of the text, not of what it means: FLAC
+        // holding `eng` (another tool's old three-letter code) keeps it
+        // when `eng` is written back, but `en` — the same language, in
+        // canonical form — is a change, and is written.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("e.flac");
+        std::fs::write(&path, minimal_untagged_flac()).expect("write fixture");
+        let mut tag = Tag::new(TagType::VorbisComments);
+        tag.push(TagItem::new(
+            ItemKey::Language,
+            ItemValue::Text("eng".into()),
+        ));
+        tag.save_to_path(&path, WriteOptions::default())
+            .expect("save");
+        write_tags(&path, &[(CommonTag::Language, "eng".into())]).expect("unchanged");
+        assert_eq!(
+            read_tags(&path).expect("read")[&CommonTag::Language],
+            ["eng"]
+        );
+        write_tags(&path, &[(CommonTag::Language, "en".into())]).expect("changed");
+        assert_eq!(
+            read_tags(&path).expect("read")[&CommonTag::Language],
+            ["en"]
+        );
+
+        // An empty value for a file holding no language is unchanged too.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("g.flac");
+        std::fs::write(&path, minimal_untagged_flac()).expect("write fixture");
+        write_tags(
+            &path,
+            &[
+                (CommonTag::Title, "T".into()),
+                (CommonTag::Language, String::new()),
+            ],
+        )
+        .expect("an empty value for a file with no language is unchanged");
+        assert_eq!(
+            read_tags(&path).expect("read").get(&CommonTag::Language),
+            None
+        );
     }
 }
