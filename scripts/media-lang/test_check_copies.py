@@ -231,6 +231,58 @@ class CheckCopiesTest(unittest.TestCase):
             ["--init", COMMIT, "--file", f"x/policy.md={cc.POLICY_MASTER_PATH}"]), 1)
         self.assertIn("must include every required file", self.err)
 
+    # --- a review in a consuming repository (28 Sept 2026) -------------------
+    # Deleting the lock line for the PHP conformance runner switched off the
+    # check on it (its name is not "distinctive", so no unlisted-copy search
+    # finds it): the reviewer then made the runner exit(0) and the checker
+    # still said every copy matched. The PHP files are now all-or-none.
+
+    def init_with_php_files(self):
+        """Re-initialise the consumer with the PHP implementation's three
+        files as well as the required ones."""
+        args = ["--init", COMMIT]
+        for master in cc.REQUIRED_MASTER_FILES:
+            args += ["--file", f"copies/{os.path.basename(master)}={master}"]
+        for master in cc.PHP_BINDING_MASTER_FILES:
+            args += ["--file", f"php/{master}={master}"]
+        self.assertEqual(self.run_checker(args), 0, self.err)
+
+    def test_lock_with_all_three_php_files_passes(self):
+        self.init_with_php_files()
+        self.assertEqual(self.run_checker(), 0, self.err)
+        self.assertIn(f"{len(cc.REQUIRED_MASTER_FILES) + 3} copies match", self.out)
+
+    def test_deleting_the_php_runner_lock_line_fails(self):
+        # The reviewer's exact steps: delete the runner's lock line, then
+        # neuter the runner. Both steps must not leave a passing check.
+        self.init_with_php_files()
+        runner = "bindings/php/media-language/tests/run-conformance.php"
+        self.write_lock_text("".join(l for l in self.lock_text().splitlines(True)
+                                     if not l.rstrip().endswith(" " + runner)))
+        with open(f"php/{runner}", "w") as f:
+            f.write("<?php exit(0);\n")
+        self.assertEqual(self.run_checker(["--offline"]), 1)
+        self.assertEqual(self.run_checker(), 1)
+        self.assertIn("names some of the PHP implementation's files but not all", self.err)
+        self.assertIn(runner, self.err)
+
+    def test_deleting_the_php_readme_lock_line_fails(self):
+        self.init_with_php_files()
+        readme = "bindings/php/media-language/README.md"
+        self.write_lock_text("".join(l for l in self.lock_text().splitlines(True)
+                                     if not l.rstrip().endswith(" " + readme)))
+        self.assertEqual(self.run_checker(), 1)
+        self.assertIn("but not all", self.err)
+
+    def test_init_with_some_php_files_but_not_all_fails(self):
+        args = ["--init", COMMIT, "--lock", "partial/MWBM-MEDIA-LANG.lock"]
+        for master in cc.REQUIRED_MASTER_FILES:
+            args += ["--file", f"partial/{os.path.basename(master)}={master}"]
+        args += ["--file", f"partial/MediaLanguagePolicy.php={cc.PHP_BINDING_MASTER_FILES[0]}"]
+        self.assertEqual(self.run_checker(args), 1)
+        self.assertIn("names some of the PHP implementation's files but not all", self.err)
+        self.assertFalse(os.path.exists("partial/MWBM-MEDIA-LANG.lock"))
+
     # --- second review (Codex, 28 Sept 2026) --------------------------------
 
     def test_lock_outside_the_repository_fails(self):

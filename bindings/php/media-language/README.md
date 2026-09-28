@@ -42,6 +42,8 @@ repository, from its own root:
 ```bash
 python3 scripts/media-lang/check_copies.py --init <core-commit> \
   --file bindings/php/media-language/MediaLanguagePolicy.php=bindings/php/media-language/MediaLanguagePolicy.php \
+  --file bindings/php/media-language/tests/run-conformance.php=bindings/php/media-language/tests/run-conformance.php \
+  --file bindings/php/media-language/README.md=bindings/php/media-language/README.md \
   --file docs/standards/media-language-bcp47-policy.md=docs/standards/media-language-bcp47-policy.md \
   --file docs/standards/tests/bcp47-language-policy-v1.json=tests/fixtures/bcp47-language-policy-v1.json \
   --file docs/standards/tests/bcp47-language-policy-v1.schema.json=tests/fixtures/bcp47-language-policy-v1.schema.json \
@@ -54,8 +56,12 @@ python3 scripts/media-lang/check_copies.py --init <core-commit> \
 to take the files from; the left side of each `--file local=master` pair is
 wherever the consuming repository wants to keep its local paths, which do
 not have to match MeedyaSuite-core's own layout — adjust the local paths
-above to suit.) After that, `python3 scripts/media-lang/check_copies.py`
-run in ordinary CI checks the copies have not drifted from the master.
+above to suit.) The three PHP files go together: once a lock names any of
+them it must name all three — `MediaLanguagePolicy.php`,
+`tests/run-conformance.php` and `README.md` — or the checker fails, so
+deleting the runner's lock line cannot quietly stop the runner being
+checked. After that, `python3 scripts/media-lang/check_copies.py` run in
+ordinary CI checks the copies have not drifted from the master.
 **Never hand-edit a copy** — a hand edit is exactly what `check_copies.py`
 is there to catch, and it will be overwritten the next time the repository
 takes a new version of the policy anyway.

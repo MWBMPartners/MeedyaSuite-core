@@ -40,7 +40,9 @@
 #    28 Sept 2026 showed the first version would follow a master path such
 #    as "../../../other/repo/README.md" to a file in an unrelated
 #    repository, and that deleting a lock line quietly stopped a file being
-#    checked. Both are closed here.)
+#    checked. Both are closed here.) The three PHP implementation files
+#    travel together: once the lock names any of them it must name all
+#    three (PHP_BINDING_MASTER_FILES, below, says why).
 # 3. Every local path — and the lock file's own path — stays inside this
 #    repository, is not inside .git, and is not a shortcut (symbolic link).
 #    Files are written by creating a new file beside the old one and moving
@@ -119,9 +121,23 @@ OPTIONAL_MASTER_FILES = (
     "bindings/php/media-language/README.md",
 )
 MASTER_FILES = REQUIRED_MASTER_FILES + OPTIONAL_MASTER_FILES
+# The PHP implementation's files, which a repository copies all together or
+# not at all. A repository that copies them MUST list all three: once any
+# one is in the lock, a lock that leaves out another fails the check.
+#
+# Why: two of the three (run-conformance.php and README.md) are left out of
+# DISTINCTIVE_NAMES below, so step 4 cannot spot an unlisted copy of them.
+# Before this rule, deleting the lock line for tests/run-conformance.php -
+# the file that decides whether the conformance tests pass - quietly
+# stopped it being checked: a review in a consuming repository deleted that
+# line, made the runner `exit(0)`, and this checker still reported every
+# copy as matching. Policy section 8.3 says deleting a lock line must not
+# switch a check off.
+PHP_BINDING_MASTER_FILES = OPTIONAL_MASTER_FILES
 # Names distinctive enough that a file carrying one is certainly a copy.
 # README.md and run-conformance.php are left out: other files legitimately
-# share those names.
+# share those names. (Their copies are still protected, by the all-or-none
+# rule for PHP_BINDING_MASTER_FILES above.)
 DISTINCTIVE_NAMES = tuple(sorted({os.path.basename(p) for p in MASTER_FILES}
                                  - {"README.md", "run-conformance.php"}))
 
@@ -217,6 +233,21 @@ def check_local_path(path, root):
             raise CheckFailed(f"local path {path!r} goes through a symbolic link, which is refused")
 
 
+def check_php_binding_complete(masters, where):
+    """The all-or-none rule for PHP_BINDING_MASTER_FILES: fail when `masters`
+    (the master paths a lock or an --init names) includes some of the PHP
+    implementation's files but not all of them."""
+    present = [m for m in PHP_BINDING_MASTER_FILES if m in masters]
+    missing = [m for m in PHP_BINDING_MASTER_FILES if m not in masters]
+    if present and missing:
+        raise CheckFailed(
+            f"{where} names some of the PHP implementation's files but not all: "
+            f"{', '.join(missing)} is missing. A repository that copies the PHP "
+            f"implementation must list all three files ({', '.join(PHP_BINDING_MASTER_FILES)}) "
+            "- otherwise deleting one line would quietly stop that file being checked "
+            "(policy section 8.3).")
+
+
 def parse_lock(lock_path, root):
     if not os.path.isfile(lock_path):
         raise CheckFailed(f"no lock file at {lock_path}")
@@ -253,6 +284,7 @@ def parse_lock(lock_path, root):
     missing = [m for m in REQUIRED_MASTER_FILES if m not in {e["master"] for e in files}]
     if missing:
         raise CheckFailed(f"{lock_path} leaves out files every copy must have: {', '.join(missing)}")
+    check_php_binding_complete({e["master"] for e in files}, lock_path)
     return policy_version, commit, files
 
 
@@ -447,6 +479,7 @@ def main(argv=None):
                 missing = [m for m in REQUIRED_MASTER_FILES if m not in {e["master"] for e in files}]
                 if missing:
                     raise CheckFailed(f"--init must include every required file; missing: {', '.join(missing)}")
+                check_php_binding_complete({e["master"] for e in files}, "--init")
             else:
                 _, _, files = parse_lock(args.lock, root)
             policy_version = fetch_into_place(commit, files, root)
