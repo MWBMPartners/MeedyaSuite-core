@@ -17,13 +17,14 @@ Written in Rust. Distributable to all Meedya apps via:
 | [`meedya-tags-extended`](crates/meedya-tags-extended) | Multi-format tag I/O foundation with DJ metadata support. `ExtendedTags` model, `MusicalKey` (Camelot/Open Key/traditional), `CuePoint`/`LoopPoint`/`BeatGrid`, standard BPM+key+comment read/write, **Mixed In Key reader** (`mik` module). Other proprietary readers (Serato/Rekordbox/Traktor/VDJ) pending fixture-based sessions. | Implemented | 180 |
 | [`meedya-library-import`](crates/meedya-library-import) | Ingest playback bounds + metadata from external library DBs. `itunes_xml` parses Music.app exports; `cuesheet` is a full CUE parser at CD-frame precision. | Implemented | 30 |
 | [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar + ID3v2 SYLT tag-embed, Lyricsfile YAML canonical model with Apple Music TTML import (syllable-level timing) and LRC/Enhanced-LRC/SRT/WebVTT/ASS export. | Implemented | 130 |
+| [`meedya-lang`](crates/meedya-lang) | Shared implementation of the Media Language & BCP 47 Policy (`MWBM-MEDIA-LANG`): canonical BCP 47 tags, stored order, presentation order, role ordering, preference matching, automatic audio/subtitle selection, sidecar file naming. Conformance-tested against a 268-case fixture shared with the PHP implementation. | Implemented | 72 |
 | [`meedya-providers`](crates/meedya-providers) | Metadata provider framework: traits, capabilities, registry, rate limiting, cover art helpers, match scoring, Lucene/Solr query escaping (`lucene`). | Implemented | 59 (199 with `--all-features`) |
 | [`meedya-audio-analysis`](crates/meedya-audio-analysis) | Tempo (BPM) and musical key detection from the audio itself. Refuses to answer rather than guess when it is not sure. | Implemented | 67 |
 | [`meedya-fingerprint`](crates/meedya-fingerprint) | AcoustID fingerprinting + ReplayGain/EBU R128 loudness analysis. | Implemented | 10 (15 with `--all-features`) |
 | [`meedya-db`](crates/meedya-db) | MeedyaDB API client, shared media models (Track/Album/Artist), database export trait. | Implemented | 4 |
 | [`meedya-core`](crates/meedya-core) | Unified facade crate re-exporting the implemented crates behind feature flags. | Implemented | — |
 
-**Total: 644 tests passing** (791 with `--all-features`, the CI configuration), workspace builds clean.
+**Total: 716 tests passing** (863 with `--all-features`, the CI configuration), workspace builds clean.
 
 ## Quick Start
 
@@ -31,7 +32,7 @@ Written in Rust. Distributable to all Meedya apps via:
 # Build all crates
 cargo build --workspace
 
-# Run the full test suite (644 tests; 791 with --all-features)
+# Run the full test suite (716 tests; 863 with --all-features)
 cargo test --workspace
 
 # Build a single crate
@@ -55,13 +56,14 @@ meedya-library-import = { git = "https://github.com/MWBMPartners/MeedyaSuite-cor
 meedya-lyrics        = { git = "https://github.com/MWBMPartners/MeedyaSuite-core" }
 meedya-providers     = { git = "https://github.com/MWBMPartners/MeedyaSuite-core" }
 meedya-fingerprint   = { git = "https://github.com/MWBMPartners/MeedyaSuite-core" }
+meedya-lang          = { git = "https://github.com/MWBMPartners/MeedyaSuite-core" }
 meedya-db            = { git = "https://github.com/MWBMPartners/MeedyaSuite-core" }
 
 # Or the unified facade
 meedya-core = { git = "https://github.com/MWBMPartners/MeedyaSuite-core", features = ["full"] }
 ```
 
-**MSRV**: Rust 1.82 (declared via `rust-version` on `[workspace.package]`, inherited by all 10 crates; driven by `Option::is_none_or`).
+**MSRV**: Rust 1.82 (declared via `rust-version` on `[workspace.package]`, inherited by all 11 crates; driven by `Option::is_none_or`).
 
 ## What's Shared
 
@@ -107,6 +109,24 @@ Cross-repo **identifier-types registry** (`identifier_types.toml`, #65) — the 
 - Sidecar writes + tag-embed (plain text + ID3v2 SYLT) via `meedya-metadata::CommonTag::Lyrics`
 - `.lyrics` YAML canonical model (`Lyricsfile`) with Apple Music TTML import (syllable-level timing) and export to LRC, Enhanced LRC, SRT, WebVTT, and ASS
 - `TtmlGranularity` classifier for detecting line/word/syllable timing precision in imported TTML
+
+### Language, ordering and selection (`meedya-lang`)
+
+Shared implementation of the **Media Language & BCP 47 Policy** (`MWBM-MEDIA-LANG`) — see
+[`docs/standards/media-language-bcp47-policy.md`](docs/standards/media-language-bcp47-policy.md).
+
+- Canonical BCP 47 tag parsing (`canonicalise`), reading old three-letter ISO 639-2 fields and
+  OS locale names, and writing them back out
+- Two separate ordering algorithms, on purpose: stored order (`sort_canonical`, `sort_tracks`)
+  and menu/presentation order (`sort_for_presentation`, `subtitle_menu`) — the policy forbids
+  implementing both with the same comparator, and this crate doesn't
+- Preference matching (`match_tags`) and automatic audio/subtitle selection
+  (`select_audio`/`select_subtitle`), never influenced by list order — and never guessing when
+  two tracks share an identifier: both return `Err` rather than silently picking one
+- Sidecar file naming and parsing (`build_sidecar_name`/`parse_sidecar_name`) — the builder
+  refuses an invalid clash-avoiding number (`Err`) rather than writing an unreadable name
+- Conformance-tested against `tests/fixtures/bcp47-language-policy-v1.json` — the same fixture
+  file the PHP implementation runs against, so the two can never quietly disagree
 
 ### Audio identification + loudness (`meedya-fingerprint`)
 
@@ -159,6 +179,7 @@ crates/
   meedya-core/                      # Facade with feature flags
   meedya-db/                        # MeedyaDB API client + media models
   meedya-fingerprint/               # AcoustID + ReplayGain
+  meedya-lang/                      # Media Language & BCP 47 Policy (MWBM-MEDIA-LANG)
   meedya-library-import/            # iTunes XML, CUE sheet importers
   meedya-lyrics/                    # LRCLIB client, LRC I/O, sidecar
   meedya-metadata/                  # Tag registry, mp4ameta + lofty surfaces

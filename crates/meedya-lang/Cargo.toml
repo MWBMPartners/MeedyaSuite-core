@@ -1,0 +1,23 @@
+[package]
+name = "meedya-lang"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MeedyaSuite Core — shared implementation of the Media Language & BCP 47 Policy (MWBM-MEDIA-LANG)"
+
+[dependencies]
+# Deliberately the only two dependencies. This crate is pure logic — tag
+# parsing, sorting, matching — with no I/O and no network, so it needs
+# nothing beyond parsing its own embedded reference data (serde_json) and
+# a Serialize/Deserialize derive on the public types a consumer app may
+# want to store or send over IPC (serde). See docs/standards/media-language-
+# bcp47-policy.md section 9: "Write the logic once per programming
+# language" — extra dependencies here would be extra weight every
+# consumer (MeedyaDL, MeedyaManager, ...) inherits for no reason.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]

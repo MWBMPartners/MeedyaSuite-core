@@ -6,7 +6,7 @@
 >
 > **This is not a Swagger/OpenAPI spec.** `MeedyaSuite-core` is a Rust library workspace, not a web service. There are no HTTP endpoints. If you need an HTTP-shaped contract, build one in your downstream app on top of these crates.
 >
-> **Last refreshed**: 2026-09-09 (`feature/work-in-progress`: new `meedya-audio-analysis` crate — tempo and musical key detection, issue #16 — wired into `meedya-core` behind a non-default `audio-analysis` feature; test counts re-measured). See the [maintenance section](#maintenance) for how this stays in sync with the code.
+> **Last refreshed**: 2026-09-28 (`feature/bcp47-language-policy`: new `meedya-lang` crate — shared implementation of the Media Language & BCP 47 Policy, `MWBM-MEDIA-LANG` — added to the workspace; test counts re-measured). See the [maintenance section](#maintenance) for how this stays in sync with the code.
 
 ---
 
@@ -19,6 +19,7 @@
   - [`meedya-db`](#meedya-db)
   - [`meedya-audio-analysis`](#meedya-audio-analysis)
   - [`meedya-fingerprint`](#meedya-fingerprint)
+  - [`meedya-lang`](#meedya-lang)
   - [`meedya-library-import`](#meedya-library-import)
   - [`meedya-lyrics`](#meedya-lyrics)
   - [`meedya-metadata`](#meedya-metadata)
@@ -42,19 +43,20 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-db` | `client`, `export`, `models` | 4 | Foundation stable; specific endpoints may evolve |
 | `meedya-audio-analysis` | `tempo`, `key`, `decode` (feature-gated, default-on) | 67 | Experimental |
 | `meedya-fingerprint` | `acoustid`, `chromaprint` (feature-gated, non-default), `replaygain` | 10 | Stable |
+| `meedya-lang` | `tag`, `canonical`, `roles`, `tracks`, `presentation`, `matching`, `select`, `sidecar` | 72 | Stable — fixture-conformance tested against `tests/fixtures/bcp47-language-policy-v1.json` (268 cases) |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
 | `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 130 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
 | `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `template`, `writer` | 115 | Stable (two co-existing surfaces + identifier-types registry + filename template engine) |
 | `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 59 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `ai_content`, `conflict_policy`, `genre_hierarchy`, `io`, `mik`, `model`, `play_history`, `quick_tag`, `sidecar_json`, `standard`, `stems` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 644 tests** with default features, **791** with `--all-features` (the CI configuration). All passing, 0 failing.
+**Total: 716 tests** with default features, **863** with `--all-features` (the CI configuration). All passing, 0 failing.
 
-> These are **measured** figures — `cargo test --workspace [--all-features]` run against `feature/work-in-progress` on 2026-09-02 — not carried forward from a previous edit. For reference, `main` measures 601 with `--all-features`.
+> These are **measured** figures — `cargo test --workspace [--all-features]` run against `feature/bcp47-language-policy` on 2026-09-28, after adding the new `meedya-lang` crate (72 tests, identical either way — it has no feature flags) — not carried forward from a previous edit. For reference, the previous measurement (before `meedya-lang`) was 644 / 791.
 >
 > Earlier revisions of this file accumulated a long narrative of incremental count deltas (466 → 511 → 533 → 546 → 664 …) which had drifted from reality. That narration has been removed: the only trustworthy number is one you just measured. Guarding these counts automatically in CI is tracked in issue #71.
 
-Per-crate, `--all-features` (measured): `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 115 · `meedya-providers` 199 · `meedya-tags-extended` 180.
+Per-crate, `--all-features` (measured): `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-lang` 72 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 115 · `meedya-providers` 199 · `meedya-tags-extended` 180.
 
 ---
 
@@ -339,6 +341,117 @@ FFmpeg failure, which is not.
 
 **Non-UTF-8 paths** are supported — the file path is passed to FFmpeg as an `OsStr`, so
 media under a path that is not valid UTF-8 analyses normally.
+
+---
+
+### `meedya-lang`
+
+The shared Rust implementation of policy **MWBM-MEDIA-LANG** — see
+[`docs/standards/media-language-bcp47-policy.md`](../docs/standards/media-language-bcp47-policy.md)
+for the normative rules. Identifies, orders, matches and selects languages for audio tracks,
+subtitle tracks, lyrics, translations and multilingual metadata. Synchronous, no I/O, no
+network — the only dependencies are `serde` and `serde_json`, needed to parse the reference
+data compiled into the crate (`docs/standards/data/bcp47-language-data-v1.json`, embedded
+byte-for-byte via `include_str!`).
+
+**Two orders, kept as two separate algorithms on purpose**: [`canonical::sort_canonical`] is
+Part A, the order things are *stored* in (a file, a database) — it depends only on the
+language tags, so every machine agrees. [`presentation::sort_for_presentation`] is Part B, the
+order a *menu* shows to a person — it depends on their preferences and interface language, and
+must never be written back into stored content. The policy forbids implementing both with one
+comparison function, and this crate doesn't.
+
+#### Public re-exports
+
+```rust
+pub use canonical::{sort_canonical, LanguageItem};
+pub use matching::{match_tags, MatchLevel, TagMatch};
+pub use presentation::{
+    label, sort_for_presentation, subtitle_menu, Accessibility, MenuEntry, PresentationContext,
+    PresentationItem, PresentationKind,
+};
+pub use roles::{role_rank, Role, TrackType};
+pub use select::{
+    compare_identifiers, select_audio, select_subtitle, DuplicateIdentifierError, SelectableTrack,
+    SubtitleMode,
+};
+pub use sidecar::{build_sidecar_name, parse_sidecar_name, InvalidSidecarNumber, SidecarParts};
+pub use tag::{
+    canonicalise, from_legacy_three_letter, from_posix_locale, iso639_2_code, iso639_2_write,
+    Extension, Iso639Form, Iso639Write, LanguageTag, TagKind, TagNote,
+};
+pub use tracks::{sort_tracks, TrackItem};
+pub use embedded_data_version; // the reference-data version this build was compiled against
+```
+
+#### Key modules
+
+- **`tag`** — `canonicalise(&str) -> LanguageTag` (LANG-001, never panics: anything not a
+  well-formed tag comes back `TagKind::Malformed` with its trimmed text kept, not guessed at).
+  `from_legacy_three_letter` reads an old ISO 639-2 field (LANG-002 — `eng` → `en`, `fre-ca` →
+  `fr-CA`, `XXX` → `und`, unrecognised → `None`). `from_posix_locale` converts an OS locale name
+  (LANG-004 — `en_US.UTF-8` → `en-US`). `iso639_2_code`/`iso639_2_write` produce the
+  bibliographic/terminology forms for writing an old three-letter field back out (TRACK-070). A
+  `TagNote` on `LanguageTag.notes` records anything worth telling a person about a tag — an
+  unregistered subtag, one deprecated with no replacement, one replaced during
+  canonicalisation — without ever refusing to use the tag itself.
+- **`canonical`** — Part A's comparator: `sort_canonical<T: LanguageItem>` implements LANG-010
+  to LANG-027 (original-language promotion, ordering by primary language code, specificity,
+  stability).
+- **`roles`** / **`tracks`** — `TrackType`, `Role`, and `sort_tracks<T: TrackItem>`, the
+  role-aware variant of Part A's ordering for container tracks (TRACK-050, TRACK-060).
+- **`presentation`** — Part B's comparator: `sort_for_presentation<T: PresentationItem>`
+  (UI-020 to UI-050 — preferences, then the original, then everything else by localised name,
+  which the crate never invents itself), `subtitle_menu` (UI-060, prepends a fixed "Off"), and
+  `label` (UI-070, builds a menu label from structured data).
+- **`matching`** — `match_tags(&LanguageTag, &LanguageTag) -> TagMatch` (MATCH-010 to
+  MATCH-040): exact, general, specific, related or none, with a distance count for the
+  first two. `MatchLevel` derives `Ord` so the best match sorts first.
+- **`select`** — `select_audio`/`select_subtitle` (AUTO-010 to AUTO-040): automatic selection,
+  never influenced by list order — every tie-break bottoms out in the track's own identifier
+  (compared per `compare_identifiers`: ASCII-digit-only identifiers first, as numbers, then as
+  text; everything else after, as text) or a canonical position computed from an
+  identifier-sorted copy, never a position in whatever slice the caller happened to pass. Both
+  return `Result<Option<T::Id>, DuplicateIdentifierError>` — two tracks sharing an identifier is
+  refused rather than guessed at.
+- **`sidecar`** — `build_sidecar_name`/`parse_sidecar_name` (TEXT-030): sidecar file naming
+  (`Film.en-GB.sdh.srt`) and reading one back, including the old three-letter reader so `eng`
+  in a file name is understood too. `build_sidecar_name` returns
+  `Result<String, InvalidSidecarNumber>` — a clash-avoiding number outside 2..=999,999,999 is
+  refused rather than silently written into an unreadable name.
+
+#### Typical usage
+
+```rust
+use meedya_lang::{canonicalise, sort_canonical, LanguageItem, LanguageTag};
+
+struct Track { id: String, tag: LanguageTag, original: bool }
+impl LanguageItem for Track {
+    fn language(&self) -> &LanguageTag { &self.tag }
+    fn is_original(&self) -> bool { self.original }
+}
+
+let mut tracks = vec![
+    Track { id: "a".into(), tag: canonicalise("en-US"), original: false },
+    Track { id: "b".into(), tag: canonicalise("ja"), original: true },
+];
+sort_canonical(&mut tracks); // Japanese (the original) comes first
+```
+
+#### Conformance
+
+Every rule the policy defines has a fixture-driven test in
+`crates/meedya-lang/tests/conformance.rs`, which loads
+`tests/fixtures/bcp47-language-policy-v1.json` (268 cases) — the same file the PHP
+implementation runs against — and fails loudly (collecting every mismatch, not just the first)
+rather than stopping at the first one. Besides comparing each case's answer, it also checks: a
+canonical-form **stability** property (canonicalising a `canonicalise` case's non-null answer
+again must return it completely unchanged); that no section was silently skipped (the number of
+cases actually run must equal the number the file has); that the fixture file names no section
+this harness does not know how to run, and that none of the sections it needs is empty (policy
+8.1); and that a case missing a field the schema requires is treated as a fixture-shape failure,
+not quietly defaulted. A unit test separately asserts the crate's embedded copy of the reference
+data is byte-for-byte identical to the master copy under `docs/standards/`.
 
 ---
 

@@ -11,11 +11,11 @@ MeedyaSuite-core is the **shared core library** for all MeedyaSuite applications
 - **Repository**: https://github.com/MWBMPartners/MeedyaSuite-core
 - **License**: MIT
 - **Language**: Rust, edition 2021
-- **Workspace**: 10 crates
+- **Workspace**: 11 crates
 
 ## Architecture (high-level)
 
-Rust workspace, 10 crates, 644 tests passing (791 with `--all-features`). Two co-existing tag-I/O foundations by design: `mp4ameta`-backed (sandbox/App Store safe) and `lofty`-backed (multi-format). See the full per-crate table in [CONTEXT.md](CONTEXT.md) and the public API surface in [`docs/API.md`](../docs/API.md).
+Rust workspace, 11 crates, 716 tests passing (863 with `--all-features`). Two co-existing tag-I/O foundations by design: `mp4ameta`-backed (sandbox/App Store safe) and `lofty`-backed (multi-format). See the full per-crate table in [CONTEXT.md](CONTEXT.md) and the public API surface in [`docs/API.md`](../docs/API.md).
 
 ### Consumption paths
 
@@ -231,8 +231,8 @@ Append a dated entry to [HISTORY.md](HISTORY.md) at the end of any substantial s
 
 ```bash
 cargo build --workspace
-cargo test  --workspace                       # 644 tests
-cargo test  --workspace --all-features        # 791 tests (the CI configuration)
+cargo test  --workspace                       # 716 tests
+cargo test  --workspace --all-features        # 863 tests (the CI configuration)
 cargo test  -p meedya-tags-extended           # single crate
 cargo doc   --workspace --no-deps --open      # exhaustive auto-generated docs
 ```
@@ -258,6 +258,7 @@ crates/
   meedya-core/                      # Facade with feature flags
   meedya-db/                        # MeedyaDB API client + media models
   meedya-fingerprint/               # AcoustID + ReplayGain
+  meedya-lang/                      # Media Language & BCP 47 Policy (MWBM-MEDIA-LANG)
   meedya-library-import/            # iTunes XML, CUE sheet importers
   meedya-lyrics/                    # LRCLIB client, LRC I/O, sidecar + embed
   meedya-metadata/                  # Tag registry + lofty/mp4ameta surfaces

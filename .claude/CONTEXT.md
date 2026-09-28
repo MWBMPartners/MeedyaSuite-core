@@ -1,7 +1,16 @@
 # MeedyaSuite-core — Project Context
 
 > Snapshot maintained for Claude Code sessions. Reflects the actual state of `main`, not aspirational state.
-> Last updated: 2026-09-23 — standing rules re-issued (see CLAUDE.md); no code change since 2026-09-09, when the **`meedya-audio-analysis`** crate (tempo + key, #16) landed. Earlier: 2026-09-01 branch-consolidation pass — four WIP branches merged into `feature/work-in-progress`. This file describes that branch. See [HANDOFF.md](HANDOFF.md) §0 for in-flight state and [HISTORY.md](HISTORY.md) for the narrative.
+> Last updated: 2026-09-28 — the workspace and per-crate test counts and the crate table below
+> now include the **`meedya-lang`** crate (shared implementation of the Media Language & BCP 47
+> Policy, `MWBM-MEDIA-LANG`), built on its own branch `feature/bcp47-language-policy` — not yet
+> merged into `feature/work-in-progress`, so treat the counts here as "workspace state including
+> that branch", not as `feature/work-in-progress` itself, until the two are reconciled. Previous
+> note: 2026-09-23 — standing rules re-issued (see CLAUDE.md); no code change since 2026-09-09,
+> when the **`meedya-audio-analysis`** crate (tempo + key, #16) landed. Earlier: 2026-09-01
+> branch-consolidation pass — four WIP branches merged into `feature/work-in-progress`. See
+> [HANDOFF.md](HANDOFF.md) §0 for in-flight state and [HISTORY.md](HISTORY.md) for the
+> narrative.
 
 ## What this repo is
 
@@ -15,7 +24,7 @@
 
 Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bindings (Swift/web — bindings not yet scaffolded). No app-specific logic lives in this workspace.
 
-## Workspace state (feature/work-in-progress; PR target main)
+## Workspace state (feature/work-in-progress plus `meedya-lang` from `feature/bcp47-language-policy`, not yet reconciled; PR target main)
 
 | Crate | Purpose | Status | Tests |
 |---|---|---|---|
@@ -27,14 +36,15 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | [meedya-providers](../crates/meedya-providers/) | Provider framework: traits, capabilities, rate limiting, credentials, cover art, fuzzy match scoring, Lucene/Solr query escaping (`lucene`). In-repo `MetadataProvider` impls (feature-gated): MusicBrainz, Spotify, Apple Music, Deezer, TMDB, TheTVDB, OMDb, Apple TV, iTunes Store, Apple Podcasts, ISRC, EIDR, ISWC. | **Implemented** | 59 (199 all-features) |
 | [meedya-audio-analysis](../crates/meedya-audio-analysis/) | Tempo (BPM) and musical key detection from the audio itself. Refuses to answer rather than guess when it is not sure. Shares one decode pass between the two, then takes two different frequency analyses because tempo needs fine timing and key needs fine pitch. | **Implemented** | 67 |
 | [meedya-fingerprint](../crates/meedya-fingerprint/) | AcoustID client + ReplayGain EBU R128 analyser (bounded FFmpeg subprocess). Pure-Rust Chromaprint fingerprint generation (no fpcalc) behind the non-default `chromaprint` feature. | **Implemented** | 10 (15 all-features) |
+| [meedya-lang](../crates/meedya-lang/) | Shared implementation of the Media Language & BCP 47 Policy (`MWBM-MEDIA-LANG`): canonical tag parsing, stored order, presentation order, role ordering, preference matching (never guessing which of two same-ID tracks was meant — refuses with an error instead), sidecar naming. Conformance-tested against a 268-case fixture shared with the PHP implementation. No feature flags — same test count either way. | **Implemented** | 72 |
 | [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 4 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 644 tests with default features, 791 with `--all-features`** (the CI configuration) on `feature/work-in-progress`. All passing, 0 failing. `main` measures **601** with `--all-features`.
+**Total: 716 tests with default features, 863 with `--all-features`** (the CI configuration) on `feature/bcp47-language-policy`. All passing, 0 failing.
 
-> **Measured, not carried forward.** From `cargo test --workspace [--all-features]` run on 2026-09-02. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
+> **Measured, not carried forward.** From `cargo test --workspace [--all-features]` run on 2026-09-28, after adding `meedya-lang` (72 tests). The previous measurement (before `meedya-lang`) was 644 / 791. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
 
-Per-crate, `--all-features`: `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 115 · `meedya-providers` 199 · `meedya-tags-extended` 180. `meedya-providers` measures 59 with default features (provider impls are feature-gated).
+Per-crate, `--all-features`: `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 15 · `meedya-lang` 72 · `meedya-library-import` 30 · `meedya-lyrics` 130 · `meedya-metadata` 115 · `meedya-providers` 199 · `meedya-tags-extended` 180. `meedya-providers` measures 59 with default features (provider impls are feature-gated).
 
 > **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 
@@ -94,6 +104,30 @@ The three `lucene` helpers implement **two different escaping regimes and are no
 - `chromaprint` (feature-gated, `default = []`) — pure-Rust fingerprint generation (`generate_fingerprint`), no fpcalc binary. Opt-in via the `chromaprint` Cargo feature (pulls `rusty-chromaprint` + `symphonia` + `base64`); `meedya-core` does not forward this feature.
 - `replaygain` — `ReplayGainAnalyzer`, `ReplayGainResult`, `AlbumGainResult`, `DEFAULT_REFERENCE_LEVEL` (-18 LUFS), `DEFAULT_ANALYSIS_TIMEOUT` (600s).
 
+### meedya-lang
+
+Shared implementation of policy **MWBM-MEDIA-LANG** — normative rules in
+[`docs/standards/media-language-bcp47-policy.md`](../docs/standards/media-language-bcp47-policy.md).
+Embeds a byte-for-byte copy of `docs/standards/data/bcp47-language-data-v1.json` (a unit test
+enforces this — refresh with `cp docs/standards/data/bcp47-language-data-v1.json
+crates/meedya-lang/data/`). Eight modules, kept apart on purpose (the policy's section 9): `tag`
+(`canonicalise`, `from_legacy_three_letter`, `from_posix_locale`, `iso639_2_code`/
+`iso639_2_write`, `LanguageTag`, `TagKind`, `TagNote`); `canonical` (Part A's stored-order
+comparator, `sort_canonical`, `LanguageItem`); `roles` (`TrackType`, `Role`, `role_rank`);
+`tracks` (the role-aware variant, `sort_tracks`, `TrackItem`); `presentation` (Part B's
+menu-order comparator — a genuinely different algorithm from Part A, never the same
+comparison function — `sort_for_presentation`, `subtitle_menu`, `label`, `PresentationItem`);
+`matching` (`match_tags`, `MatchLevel`, `TagMatch`); `select` (`select_audio`/`select_subtitle`,
+`SelectableTrack`, `SubtitleMode`); `sidecar` (`build_sidecar_name`/`parse_sidecar_name`,
+added in the policy's first revision, TEXT-030). Zero dependencies beyond `serde` +
+`serde_json` (needed only to parse the embedded data); no I/O, no network. Conformance-tested
+in `tests/conformance.rs` against `tests/fixtures/bcp47-language-policy-v1.json` — every case
+in every section, collecting all failures before asserting, plus a stability check (every
+`canonicalise` case's non-null answer must canonicalise to itself unchanged) and a section-skip
+guard (the number of cases run must equal the number in the file). The same fixture file is
+what the PHP implementation (`bindings/php/media-language/`) runs against, so the two can never
+quietly disagree.
+
 ### meedya-db
 
 `MeedyaDbClient` (api.meedya.tv/v1), `DbExporter` trait, `MediaRecord`/`Track`/`Album`/`Artist` models.
@@ -124,9 +158,9 @@ Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `p
 ## Build / test
 
 ```bash
-cargo build --workspace          # all 10 crates
-cargo test  --workspace          # 644 tests
-cargo test  --workspace --all-features   # 791 tests (the CI configuration)
+cargo build --workspace          # all 11 crates
+cargo test  --workspace          # 716 tests
+cargo test  --workspace --all-features   # 863 tests (the CI configuration)
 cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```
