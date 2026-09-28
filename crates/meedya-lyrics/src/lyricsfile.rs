@@ -135,9 +135,10 @@ pub struct LyricsfileMetadata {
     /// `English` kept in `language_original` (from the stand-in review of
     /// revision 6; until then `to_yaml` wrote the text as it was).
     ///
-    /// [`Lyricsfile::to_yaml`] always writes this value in quotes
-    /// (`language: 'no'`), because a YAML 1.1 reader such as PyYAML reads
-    /// an unquoted `no` — Norwegian — as the value false.
+    /// [`Lyricsfile::to_yaml`] writes this value in quotes
+    /// (`language: 'no'`), as it writes every text value, because a YAML
+    /// 1.1 reader such as PyYAML reads an unquoted `no` — Norwegian — as
+    /// the value false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 
@@ -301,66 +302,137 @@ impl Lyricsfile {
     /// review of revision 6 `to_yaml` wrote whatever the struct held — a
     /// caller who built it by hand could export `language: English`.)
     ///
-    /// `metadata.language` and `metadata.language_original` are always
-    /// written in quotes (`language: 'no'`). The YAML library this crate
-    /// uses follows YAML 1.2, where `no` is just text, so it writes `no`
-    /// bare; but YAML 1.1 readers — PyYAML, and older Ruby and JavaScript
-    /// libraries — read a bare `no`, `yes`, `on`, `off`, `y` or `n` as true
-    /// or false, so Norwegian (`no`) would come back as the value false.
-    /// Quoted, every reader reads the text. (Found by the stand-in review
-    /// of revision 5.) Other fields are written as the library writes them.
+    /// **Every text value is written in quotes** — `title: 'no'`,
+    /// `artist: 'yes'`, `language: 'no'`, and the same for the album, every
+    /// line's, word's and syllable's text, the plain lyrics and the version.
+    /// The YAML library this crate uses follows YAML 1.2, where `no` is just
+    /// text, so it writes `no` bare; but YAML 1.1 readers — PyYAML, and older
+    /// Ruby and JavaScript libraries — read a bare `no`, `yes`, `on`, `off`,
+    /// `y` or `n` as true or false (and `~` or `null` as nothing, `12:30` as
+    /// a number), so a song titled "No", or Norwegian (`no`), would come
+    /// back as the value false. Quoted, every reader reads the text. Single
+    /// quotes are used when every character may appear in them as it is,
+    /// double quotes with escapes otherwise. (The language values were
+    /// quoted after the stand-in review of revision 5; every other text
+    /// value after the stand-in review of revision 6, which found `title:
+    /// no` read as false by PyYAML.)
+    ///
+    /// One exception: text holding a line break (typically `plain`) that
+    /// the YAML library writes as a **block** (`plain: |-` followed by the
+    /// lines, indented) is left as that block. A block is never read as
+    /// anything but text, by any YAML reader — the fault above is only
+    /// about bare words — and it keeps multi-line lyrics one line per line,
+    /// readable and editable by hand, as LRCGET writes them. Text the
+    /// library would not write as a block (a line break next to a space at
+    /// the end of a line, say) is quoted like the rest.
+    ///
     /// A caller who serialises the struct with `serde_yaml` directly gets
-    /// no quoting; use this method.
+    /// none of this; use this method.
     pub fn to_yaml(&self) -> Result<String> {
-        // Each of the two values is replaced by a stand-in word that the
-        // YAML library always writes bare, on one line; each stand-in is
-        // then replaced by its value, quoted. A stand-in is used only when
-        // it occurs exactly once in the output (lyrics could, in theory,
-        // contain the same letters) — otherwise the next number is tried,
-        // so a stand-in is never mistaken for, or replaced inside, text.
-        // What `parse` would make of the language — on a copy of the
-        // metadata, so `self` is not changed.
-        let mut metadata = self.metadata.clone();
-        metadata.read_language();
-        let values = [
-            metadata.language.as_deref(),
-            metadata.language_original.as_deref(),
-        ];
+        // What `parse` would make of the language — on a copy, so `self` is
+        // not changed.
+        let mut copy = self.clone();
+        copy.metadata.read_language();
+
+        // Every text value is replaced by a numbered stand-in word that
+        // the YAML library always writes bare, on one line of its own; the
+        // output is then walked once, each stand-in replaced by its value,
+        // quoted. A block value (see above) is left in place instead. The
+        // stand-ins share a prefix that no value contains — otherwise the
+        // next prefix is tried — so a stand-in is never mistaken for, or
+        // replaced inside, text.
+        let mut values: Vec<String> = Vec::new();
+        copy.for_each_text_mut(|value| values.push(value.clone()));
         for attempt in 0..1000u32 {
-            let stand_ins = [
-                format!("meedya-lyricsfile-language-{attempt}"),
-                format!("meedya-lyricsfile-language-original-{attempt}"),
-            ];
-            let mut copy = self.clone();
-            copy.metadata.language = values[0].map(|_| stand_ins[0].clone());
-            copy.metadata.language_original = values[1].map(|_| stand_ins[1].clone());
-            let mut yaml =
-                serde_yaml::to_string(&copy).map_err(|e| Error::LyricsfileYaml(e.to_string()))?;
-            // Neither stand-in may appear anywhere but in its own place —
-            // not elsewhere in the output, and not inside either value
-            // (which would put a second copy in once the first is
-            // replaced).
-            let unique = stand_ins.iter().zip(values).all(|(stand_in, value)| {
-                yaml.matches(stand_in.as_str()).count() == usize::from(value.is_some())
-            }) && !values
-                .iter()
-                .flatten()
-                .any(|value| stand_ins.iter().any(|w| value.contains(w.as_str())));
-            if !unique {
+            let prefix = format!("meedya-lyricsfile-{attempt}-");
+            if values.iter().any(|value| value.contains(prefix.as_str())) {
                 continue;
             }
-            for (stand_in, value) in stand_ins.iter().zip(values) {
-                if let Some(value) = value {
-                    yaml = yaml.replacen(stand_in.as_str(), &yaml_quoted(value), 1);
+            let mut quoted: Vec<String> = Vec::new();
+            let mut stand_in_copy = copy.clone();
+            let mut block_error = None;
+            stand_in_copy.for_each_text_mut(|value| match is_written_as_block(value) {
+                Ok(true) => {}
+                Ok(false) => {
+                    let stand_in = format!("{prefix}{}", quoted.len());
+                    quoted.push(yaml_quoted(value));
+                    *value = stand_in;
                 }
+                Err(e) => block_error = Some(e),
+            });
+            if let Some(e) = block_error {
+                return Err(e);
             }
-            return Ok(yaml);
+            let yaml = serde_yaml::to_string(&stand_in_copy)
+                .map_err(|e| Error::LyricsfileYaml(e.to_string()))?;
+            return replace_stand_ins(&yaml, &prefix, &quoted);
         }
         Err(Error::LyricsfileYaml(
-            "could not find a stand-in word for the language that the lyrics do not already \
-             contain"
-                .to_string(),
+            "could not find a stand-in word that the lyrics do not already contain".to_string(),
         ))
+    }
+
+    /// Calls `f` on every text value of the document — the version, each
+    /// metadata text (title, artist, and the album and both language values
+    /// when present), every line's, word's and syllable's text, and the
+    /// plain lyrics — for [`to_yaml`](Self::to_yaml)'s quoting.
+    ///
+    /// The structs are taken apart field by field, with no `..`, on
+    /// purpose: a text field added to any of them later stops this from
+    /// compiling until it is listed here, so it cannot be written bare —
+    /// unquoted — by mistake.
+    fn for_each_text_mut(&mut self, mut f: impl FnMut(&mut String)) {
+        let Lyricsfile {
+            version,
+            metadata,
+            lines,
+            plain,
+        } = self;
+        let LyricsfileMetadata {
+            title,
+            artist,
+            album,
+            duration_ms: _,
+            offset_ms: _,
+            language,
+            language_original,
+            instrumental: _,
+        } = metadata;
+        f(version);
+        f(title);
+        f(artist);
+        for value in [album, language, language_original].into_iter().flatten() {
+            f(value);
+        }
+        for line in lines {
+            let LyricsfileLine {
+                text,
+                start_ms: _,
+                end_ms: _,
+                words,
+            } = line;
+            f(text);
+            for word in words {
+                let LyricsfileWord {
+                    text,
+                    start_ms: _,
+                    end_ms: _,
+                    syllables,
+                } = word;
+                f(text);
+                for syllable in syllables {
+                    let LyricsfileSyllable {
+                        text,
+                        start_ms: _,
+                        end_ms: _,
+                    } = syllable;
+                    f(text);
+                }
+            }
+        }
+        if let Some(plain) = plain {
+            f(plain);
+        }
     }
 
     /// Parse a YAML string. Unknown fields are silently ignored
@@ -468,6 +540,54 @@ fn yaml_quoted(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// `true` when the YAML library writes `value` as a block (`|-` and the
+/// lines below it) — which only text holding a line break can be; see
+/// [`Lyricsfile::to_yaml`] for why such text is left that way.
+fn is_written_as_block(value: &str) -> Result<bool> {
+    if !value.contains('\n') {
+        return Ok(false);
+    }
+    let alone = serde_yaml::to_string(value).map_err(|e| Error::LyricsfileYaml(e.to_string()))?;
+    Ok(alone.starts_with('|'))
+}
+
+/// `yaml` with every stand-in — `prefix` followed by a number — replaced by
+/// `quoted[number]`, in one pass. Each must stand bare as a whole value
+/// (after a space, before the end of its line), exactly once; anything else
+/// means the YAML library wrote a stand-in differently than
+/// [`Lyricsfile::to_yaml`] relies on, and is reported rather than guessed
+/// at.
+fn replace_stand_ins(yaml: &str, prefix: &str, quoted: &[String]) -> Result<String> {
+    let mismatch = || {
+        Error::LyricsfileYaml(
+            "the YAML library wrote a text value in an unexpected way, so it could not be quoted"
+                .to_string(),
+        )
+    };
+    let mut out = String::with_capacity(yaml.len() + quoted.iter().map(String::len).sum::<usize>());
+    let mut used = vec![false; quoted.len()];
+    let mut rest = yaml;
+    while let Some(at) = rest.find(prefix) {
+        let (before, after) = (&rest[..at], &rest[at + prefix.len()..]);
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        let index: usize = after[..digits].parse().map_err(|_| mismatch())?;
+        let bare = before.ends_with(' ') && after[digits..].starts_with('\n');
+        if !bare || used.get(index) != Some(&false) {
+            return Err(mismatch());
+        }
+        used[index] = true;
+        out.push_str(before);
+        out.push_str(&quoted[index]);
+        rest = &after[digits..];
+    }
+    out.push_str(rest);
+    if used.iter().all(|done| *done) {
+        Ok(out)
+    } else {
+        Err(mismatch())
+    }
 }
 
 // ============================================================
@@ -928,6 +1048,193 @@ lines:
         let yaml = lf.to_yaml().expect("to_yaml");
         assert!(yaml.contains("  language: 'fr'\n"), "{yaml}");
         assert_eq!(Lyricsfile::parse(&yaml).expect("parse"), lf);
+    }
+
+    // ------------------------------------------------------------
+    // Every text value quoted (the stand-in review of revision 6): only
+    // the language was, so `title: no` and `artist: yes` were read as
+    // false and true by PyYAML and Ruby.
+    // ------------------------------------------------------------
+
+    /// The awkward values the stand-in review of revision 6 checked: YAML
+    /// 1.1's true/false and null words, numbers, times and dates, YAML
+    /// punctuation, leading and trailing spaces, line breaks and the
+    /// characters YAML 1.1 counts as line breaks, control characters,
+    /// characters outside the Basic Multilingual Plane, the byte-order
+    /// mark and noncharacters — then a few more line-break cases, and the
+    /// stand-in words themselves.
+    const AWKWARD: [&str; 61] = [
+        "no",
+        "yes",
+        "on",
+        "off",
+        "y",
+        "n",
+        "NO",
+        "Yes",
+        "ON",
+        "~",
+        "null",
+        "true",
+        "1.0",
+        "0x10",
+        "12:30",
+        "0o7",
+        "1_000",
+        "en",
+        "zh-Hant",
+        "und",
+        "2024-01-01",
+        "#c",
+        "- x",
+        ": x",
+        " lead",
+        "trail ",
+        "",
+        "it's",
+        "a\nb",
+        "\t",
+        "\r",
+        "\u{85}",
+        "\u{2028}",
+        "\u{2029}",
+        "\u{E9}",
+        "\u{65E5}\u{672C}\u{8A9E}",
+        "\u{1F600}",
+        "\u{FEFF}",
+        "\u{FFFE}",
+        "\u{7F}",
+        "\0",
+        "@x",
+        "`x",
+        "%x",
+        "!x",
+        "&x",
+        "*x",
+        "|",
+        "  ",
+        "'",
+        "\"",
+        "\\",
+        "{a: 1}",
+        "[1]",
+        "meedya-lyricsfile-language-0",
+        // Added here: line breaks next to spaces and at either end, a
+        // Windows line break, and this version's stand-in words.
+        "line one\nline two\n",
+        "a\n b",
+        "a \nb",
+        "\nleading",
+        "a\r\nb",
+        "meedya-lyricsfile-0-0",
+    ];
+
+    /// A document with `value` in every text field: title, artist, album,
+    /// a line's, a word's and a syllable's text, the plain lyrics, and the
+    /// language's original text (with `und` as the language).
+    fn everywhere(value: &str) -> Lyricsfile {
+        let mut lf = syllable_sample();
+        lf.metadata.title = value.into();
+        lf.metadata.artist = value.into();
+        lf.metadata.album = Some(value.into());
+        lf.metadata.language = Some("und".into());
+        lf.metadata.language_original = Some(value.into());
+        lf.lines[0].text = value.into();
+        lf.lines[0].words[0].text = value.into();
+        lf.lines[0].words[0].syllables[0].text = value.into();
+        lf.plain = Some(value.into());
+        lf
+    }
+
+    #[test]
+    fn every_text_value_is_quoted_so_yaml_1_1_reads_it_as_text() {
+        // The six true/false words, plus the null words and a time, which
+        // YAML 1.1 reads as a number. A bare value would end a line as
+        // `key: no` (a list item too: `- text: no`).
+        for word in [
+            "no", "yes", "on", "off", "y", "n", "NO", "Yes", "~", "null", "12:30",
+        ] {
+            let yaml = everywhere(word).to_yaml().expect("to_yaml");
+            let bare = format!(": {word}");
+            assert!(
+                !yaml.lines().any(|line| line.ends_with(&bare)),
+                "{word:?} written bare: {yaml}"
+            );
+            for key in ["title", "artist", "album", "language_original", "plain"] {
+                assert!(
+                    yaml.contains(&format!("  {key}: '{word}'\n"))
+                        || yaml.contains(&format!("\n{key}: '{word}'\n")),
+                    "{key} = {word:?}: {yaml}"
+                );
+            }
+            assert_eq!(
+                yaml.matches(&format!("text: '{word}'\n")).count(),
+                3,
+                "line, word and syllable text = {word:?}: {yaml}"
+            );
+        }
+        // The version too, and a title that needs double quotes.
+        let mut lf = Lyricsfile::new("tab\there", "A");
+        lf.version = "no".into();
+        let yaml = lf.to_yaml().expect("to_yaml");
+        assert!(yaml.starts_with("version: 'no'\n"), "{yaml}");
+        assert!(yaml.contains("  title: \"tab\\x09here\"\n"), "{yaml}");
+    }
+
+    #[test]
+    fn awkward_values_round_trip_in_every_text_field() {
+        for value in AWKWARD {
+            let lf = everywhere(value);
+            let yaml = lf.to_yaml().expect("to_yaml");
+            assert_eq!(
+                Lyricsfile::parse(&yaml).expect("parse"),
+                lf,
+                "{value:?}: {yaml}"
+            );
+            // In `language` itself the value is first read as `parse`
+            // reads it (`to_yaml_writes_the_language_as_parse_reads_it`),
+            // so the round trip is to what `parse` makes of it.
+            let mut lf = Lyricsfile::new("T", "A");
+            lf.metadata.language = Some(value.into());
+            let mut expected = lf.clone();
+            expected.metadata.read_language();
+            let yaml = lf.to_yaml().expect("to_yaml");
+            assert_eq!(
+                Lyricsfile::parse(&yaml).expect("parse"),
+                expected,
+                "language {value:?}: {yaml}"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_line_text_is_kept_as_a_readable_block() {
+        // Plain lyrics, several lines: a YAML block, one lyric line per
+        // line, as the YAML library (and LRCGET) write it — never read as
+        // anything but text.
+        let mut lf = Lyricsfile::new("T", "A");
+        lf.plain = Some("Hello, it's me\nno\nI was wondering".into());
+        let yaml = lf.to_yaml().expect("to_yaml");
+        assert!(
+            yaml.contains("plain: |-\n  Hello, it's me\n  no\n  I was wondering\n"),
+            "{yaml}"
+        );
+        assert_eq!(Lyricsfile::parse(&yaml).expect("parse"), lf);
+    }
+
+    #[test]
+    fn a_stand_in_not_written_bare_is_reported_not_guessed() {
+        let quoted = ["'a'".to_string(), "'b'".to_string()];
+        let replaced = replace_stand_ins("x: p-0\ny: p-1\n", "p-", &quoted).expect("bare");
+        assert_eq!(replaced, "x: 'a'\ny: 'b'\n");
+        for yaml in [
+            "x: 'p-0'\ny: p-1\n", // quoted by the library
+            "x: p-0\ny: p-0\n",   // one used twice, one not at all
+            "x: p-0\n",           // one missing
+            "x: p-9\ny: p-1\n",   // a number with no value
+        ] {
+            assert!(replace_stand_ins(yaml, "p-", &quoted).is_err(), "{yaml:?}");
+        }
     }
 
     #[test]

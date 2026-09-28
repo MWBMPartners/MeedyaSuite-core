@@ -124,19 +124,18 @@ fn yaml_output_is_self_documenting_and_human_readable() {
         plain: Some("plain text fallback".into()),
     };
     let yaml = lf.to_yaml().unwrap();
-    // Field names should be unquoted (YAML default), values readable.
-    assert!(yaml.contains("title: Hello"));
-    assert!(yaml.contains("artist: Adele"));
-    assert!(
-        yaml.contains("album: '25'")
-            || yaml.contains("album: \"25\"")
-            || yaml.contains("album: 25")
-    );
-    assert!(yaml.contains("duration_ms: 295000"));
-    // Language values are always quoted, so a YAML 1.1 reader does not
-    // read Norwegian (`no`) as false — see `Lyricsfile::to_yaml`.
-    assert!(yaml.contains("language: 'en'"));
-    assert!(yaml.contains("instrumental: false"));
+    // Field names are unquoted (YAML default). Every text value is in
+    // quotes, so a YAML 1.1 reader does not read a title such as "No", or
+    // Norwegian (`no`), as false — see `Lyricsfile::to_yaml`. (Until the
+    // stand-in review of revision 6 only the language was quoted, and this
+    // test checked `title: Hello`.) Numbers and true/false stay bare.
+    assert!(yaml.contains("title: 'Hello'"), "{yaml}");
+    assert!(yaml.contains("artist: 'Adele'"), "{yaml}");
+    assert!(yaml.contains("album: '25'"), "{yaml}");
+    assert!(yaml.contains("duration_ms: 295000"), "{yaml}");
+    assert!(yaml.contains("language: 'en'"), "{yaml}");
+    assert!(yaml.contains("instrumental: false"), "{yaml}");
+    assert!(yaml.contains("plain: 'plain text fallback'"), "{yaml}");
 }
 
 #[test]
