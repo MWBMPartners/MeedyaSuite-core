@@ -16,3 +16,11 @@ use it as a code dependency. Its contract with those apps is [`docs/API.md`](../
 - Latest work: new crate `meedya-audio-analysis` (tempo and musical key detection, issue #16),
   built and reviewed by Claude on 2026-09-09. **A Codex review of that work is the next step.**
 - Full status board and open questions: `.claude/HANDOFF.md` §0.
+
+## Languages, tracks, subtitles and lyrics (mandatory)
+
+Work touching language tags, translations, audio or subtitle tracks, lyrics, track order or
+naming, language preferences or accessibility roles MUST follow
+[`docs/standards/media-language-bcp47-policy.md`](../docs/standards/media-language-bcp47-policy.md)
+(policy `MWBM-MEDIA-LANG`) — the master copy lives in this repository. See the matching
+section in [`.claude/CLAUDE.md`](../.claude/CLAUDE.md); the rules are not repeated here.

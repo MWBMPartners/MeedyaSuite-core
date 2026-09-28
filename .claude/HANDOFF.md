@@ -14,6 +14,26 @@
 
 ## 0. CURRENT POSITION — read this first
 
+### 0.0 Separate branch in flight: `feature/bcp47-language-policy` (from 28 Sept 2026)
+
+The owner asked (27–28 Sept) for one shared language policy, **MWBM-MEDIA-LANG 1.0.0**, across
+nine repositories, with this repository holding the master copy — issue **#99**. The owner
+decided that this work gets its OWN branch in every repository, cut from that repository's
+working branch, rather than landing on `feature/work-in-progress` directly (other sessions
+were active). So this is a deliberate, owner-approved exception to "one branch only".
+
+- Branch `feature/bcp47-language-policy`, cut from `feature/work-in-progress` at `82a45b3`.
+- **Merge it back with a merge commit, never a squash:** other repositories pin full commits of
+  this branch in their `MWBM-MEDIA-LANG.lock`, and a squash would make those commits vanish.
+- Contents: `docs/standards/` (policy, index, data + schema), `tests/fixtures/` (test cases +
+  schema), `scripts/media-lang/` (data generator, copy checker), then `crates/meedya-lang`
+  (Rust) and `bindings/php/media-language/` (PHP).
+- The coordinating notes for the whole cross-repository effort are in MeedyaDL's
+  `.github/HANDOFF.md` (branch `feature/bcp47-language-policy` there).
+- The doc test-count guard (`scripts/check-doc-test-counts.sh`) will need its numbers updated
+  when the crate's tests land — measure, never guess.
+
+
 ### 0.1 In one paragraph
 
 All work is on `feature/work-in-progress`, pushed, nothing uncommitted. The most recent

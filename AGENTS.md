@@ -18,3 +18,12 @@ this file points every other agent at the same rules so the two never drift.
 - Never write a test count you have not just measured.
 - Report back in plain English, no jargon.
 - Update `.claude/HANDOFF.md` as each piece of work lands.
+
+**Languages, tracks, subtitles and lyrics — mandatory:** any work touching BCP 47 language
+tags, languages, translations, audio or subtitle tracks, lyrics, track order or naming,
+language preferences, or accessibility roles (SDH, audio description, forced, commentary)
+MUST read and follow [`docs/standards/media-language-bcp47-policy.md`](docs/standards/media-language-bcp47-policy.md)
+(policy `MWBM-MEDIA-LANG`). It is normative and is not repeated here. Its test cases,
+[`tests/fixtures/bcp47-language-policy-v1.json`](tests/fixtures/bcp47-language-policy-v1.json),
+must pass. **This repository holds the master copy** that other repositories copy and check;
+changing it follows the policy's "Changing this policy" section.
