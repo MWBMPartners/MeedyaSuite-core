@@ -6,7 +6,7 @@
 >
 > **This is not a Swagger/OpenAPI spec.** `MeedyaSuite-core` is a Rust library workspace, not a web service. There are no HTTP endpoints. If you need an HTTP-shaped contract, build one in your downstream app on top of these crates.
 >
-> **Last refreshed**: 2026-09-28 (`feature/bcp47-language-policy`: the fixes for Codex's review r7 — `CommonTag::Language` writes every language a value lists and refuses an unrecognised one with the new `MetadataError::UnrecognisedLanguage`; an unrecognised `xml:lang` becomes `und` with the text kept in the new `LyricsfileMetadata::language_original`; `label` leaves out an empty part. Before that the same day: `meedya-lang` brought into line with policy revision 4 — a shared `RoleItem` trait under `TrackItem`/`PresentationItem`/`SelectableTrack`, serde on the public data types, `from_legacy_three_letter_all`, `SidecarParts::ignored`, `TagMatch::distance` as `usize`, `SubtitleMode`/`Role` words and defaults, and the behaviour fixes listed in its section. Before that the same day: `meedya-lyrics` and `meedya-metadata` brought into line with the Media Language & BCP 47 Policy, `MWBM-MEDIA-LANG` — `embed::DEFAULT_LANGUAGE`/`embed::id3_language`, `xml:lang` reading, and `CommonTag::Language` writing all now go through the shared `meedya-lang` crate rather than guessing or passing values through unchanged). See the [maintenance section](#maintenance) for how this stays in sync with the code.
+> **Last refreshed**: 2026-09-28 (`feature/bcp47-language-policy`: the fixes for the stand-in review of revision 5 — every write in `tag_io` keeps a file's languages whole (new `tag_io::gather_languages_before_saving`; MP4 languages are one atom with one `data` atom each), several `Language` entries in one call are all written, an unchanged language value is left alone, `MetadataError` is `#[non_exhaustive]`, `Lyricsfile::parse` reads the language through the policy reader and `to_yaml` quotes language values. Before that the same day: the fixes for Codex's review r7 — `CommonTag::Language` writes every language a value lists and refuses an unrecognised one with the new `MetadataError::UnrecognisedLanguage`; an unrecognised `xml:lang` becomes `und` with the text kept in the new `LyricsfileMetadata::language_original`; `label` leaves out an empty part. Before that the same day: `meedya-lang` brought into line with policy revision 4 — a shared `RoleItem` trait under `TrackItem`/`PresentationItem`/`SelectableTrack`, serde on the public data types, `from_legacy_three_letter_all`, `SidecarParts::ignored`, `TagMatch::distance` as `usize`, `SubtitleMode`/`Role` words and defaults, and the behaviour fixes listed in its section. Before that the same day: `meedya-lyrics` and `meedya-metadata` brought into line with the Media Language & BCP 47 Policy, `MWBM-MEDIA-LANG` — `embed::DEFAULT_LANGUAGE`/`embed::id3_language`, `xml:lang` reading, and `CommonTag::Language` writing all now go through the shared `meedya-lang` crate rather than guessing or passing values through unchanged). See the [maintenance section](#maintenance) for how this stays in sync with the code.
 
 ---
 
@@ -43,20 +43,20 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-db` | `client`, `export`, `models` | 4 | Foundation stable; specific endpoints may evolve |
 | `meedya-audio-analysis` | `tempo`, `key`, `decode` (feature-gated, default-on) | 67 | Experimental |
 | `meedya-fingerprint` | `acoustid`, `chromaprint` (feature-gated, non-default), `replaygain` | 12 | Stable |
-| `meedya-lang` | `tag`, `canonical`, `roles`, `tracks`, `presentation`, `matching`, `select`, `sidecar` | 119 | Stable — fixture-conformance tested against `tests/fixtures/bcp47-language-policy-v1.json` (290 cases) |
+| `meedya-lang` | `tag`, `canonical`, `roles`, `tracks`, `presentation`, `matching`, `select`, `sidecar` | 120 | Stable — fixture-conformance tested against `tests/fixtures/bcp47-language-policy-v1.json` (290 cases) |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
-| `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 146 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
-| `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `template`, `writer` | 132 | Stable (two co-existing surfaces + identifier-types registry + filename template engine) |
+| `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 150 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
+| `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `template`, `writer` | 143 | Stable (two co-existing surfaces + identifier-types registry + filename template engine) |
 | `meedya-providers` | `cover_art`, `credentials`, `extra_keys`, `lucene`, `match_scoring`, `providers` (feature-gated), `rate_limiter`, `traits`, `types` | 59 | Stable foundation; specific provider implementations may evolve |
 | `meedya-tags-extended` | `ai_content`, `conflict_policy`, `genre_hierarchy`, `io`, `mik`, `model`, `play_history`, `quick_tag`, `sidecar_json`, `standard`, `stems` | 180 | Foundation stable + Mixed In Key reader; other proprietary DJ readers pending |
 
-**Total: 796 tests** with default features, **943** with `--all-features` (the CI configuration). All passing, 0 failing.
+**Total: 812 tests** with default features, **959** with `--all-features` (the CI configuration). All passing, 0 failing.
 
-> These are **measured** figures — `cargo test --workspace [--all-features] --locked` run against `feature/bcp47-language-policy` on 2026-09-28, after the fixes for Codex's review r7 (`meedya-metadata` +12 tests for writing several languages and refusing an unrecognised one, including real MP3, FLAC, Opus, M4A and WavPack files; `meedya-lyrics` +1 for an unrecognised `xml:lang`; `meedya-lang` +3 — one unit test for empty label parts and two table-driven tests proving the conformance runner refuses a wrong type or a forbidden null) — not carried forward from a previous edit. Every per-crate figure was also measured on its own (`cargo test -p <crate> [--all-features] --locked`), and the per-crate figures add up to the totals. For reference, the previous measurements were 780 / 927 (after policy revision 4), 736 / 883 (after bringing `meedya-lyrics` and `meedya-metadata` into line with the policy), 716 / 863 (after `meedya-lang` was added), and 644 / 791 (before `meedya-lang`).
+> These are **measured** figures — `cargo test --workspace [--all-features] --locked` run against `feature/bcp47-language-policy` on 2026-09-28, after the fixes for the stand-in review of revision 5 (`meedya-metadata` +11 tests: several languages survive every later write on real MP3, WAV and AIFF files and in one MP4 atom, several `Language` entries in one call, an unchanged value left alone; `meedya-lyrics` +4: `embed_synced` keeps every language, `Lyricsfile::parse` reads the language through the policy reader, language values are quoted; `meedya-lang` +1: a table-driven test proving the conformance runner refuses a list where an object belongs) — not carried forward from a previous edit. Every per-crate figure was also measured on its own (`cargo test -p <crate> [--all-features] --locked`), and the per-crate figures add up to the totals. For reference, the previous measurements were 796 / 943 (after the fixes for Codex's review r7), 780 / 927 (after policy revision 4), 736 / 883 (after bringing `meedya-lyrics` and `meedya-metadata` into line with the policy), 716 / 863 (after `meedya-lang` was added), and 644 / 791 (before `meedya-lang`).
 >
 > Earlier revisions of this file accumulated a long narrative of incremental count deltas (466 → 511 → 533 → 546 → 664 …) which had drifted from reality. That narration has been removed: the only trustworthy number is one you just measured. Guarding these counts automatically in CI is tracked in issue #71.
 
-Per-crate, `--all-features` (measured): `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 17 · `meedya-lang` 119 · `meedya-library-import` 30 · `meedya-lyrics` 146 · `meedya-metadata` 132 · `meedya-providers` 201 · `meedya-tags-extended` 180 (sum 943). The table above gives default-features figures, which sum to 796.
+Per-crate, `--all-features` (measured): `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 17 · `meedya-lang` 120 · `meedya-library-import` 30 · `meedya-lyrics` 150 · `meedya-metadata` 143 · `meedya-providers` 201 · `meedya-tags-extended` 180 (sum 959). The table above gives default-features figures, which sum to 812.
 
 ---
 
@@ -531,12 +531,15 @@ three dot-separated numbers, a `data_version` matching the embedded data, a stri
 that every case matches the schema's shape — a missing required field (including inside a nested
 `expected` object and in every item and track), a field the schema does not allow (so an
 `error: true` flag in a section with no refusal cases), a value of the wrong type (including `null`
-where the schema allows none, such as an optional `description` or a track's `original`), or an
+where the schema allows none, such as an optional `description` or a track's `original`, and a
+JSON list where the schema wants an object: serde would otherwise read a struct from a list, so
+`accessibility: []` passed as "no preferences" until the stand-in review of revision 5), or an
 `error` flag that is not `true` or sits on a case that does not expect `null` fails the run, naming
-the case, rather than being quietly defaulted or ignored. Twenty `harness_refuses::*` tests prove
-that by running the harness on damaged copies of the real case file — eighteen with one damage
-each, and two that each run a table of damaged copies (ten to the top-level fields, thirty-one to
-field types and nulls). The harness's stand-in collation compares names only, so the
+the case, rather than being quietly defaulted or ignored. Twenty-one `harness_refuses::*` tests
+prove that by running the harness on damaged copies of the real case file — eighteen with one
+damage each, and three that each run a table of damaged copies (ten to the top-level fields,
+thirty-one to field types and nulls, fourteen with a list where an object belongs or the other way
+round). The harness's stand-in collation compares names only, so the
 crate's own tie-break by language code (UI-040) is what the tied-name case checks. A unit test separately asserts the crate's embedded copy of the reference
 data is byte-for-byte identical to the master copy under `docs/standards/`.
 
@@ -651,7 +654,7 @@ Implementation: `LrclibProvider` (calls lrclib.net).
 
 - **`sidecar::write(media: &Path, lyrics: &Lyrics) -> Result<Option<PathBuf>>`** — writes a `.lrc` file next to `media`. Returns `Ok(None)` (not an error) when `lyrics` has no synced lines to write; `Ok(Some(path))` with the sidecar path on success.
 - **`embed::embed(media: &Path, lyrics: &Lyrics) -> Result<bool>`** — plain-text tag-embed via `meedya-metadata` (USLT for ID3v2, `LYRICS` for Vorbis, `©lyr` for MP4).
-- **`embed::embed_synced(media: &Path, lyrics: &Lyrics, lang: [u8; 3]) -> Result<()>`** — synchronised ID3v2 SYLT frame. ID3v2-only by design; errors with `Error::UnsupportedForSync` on other formats. Encoding: UTF-16 with BOM; timestamp format: milliseconds. Recommended pattern: call both `embed()` and `embed_synced()` — the former handles cross-format plain text, the latter adds SYLT where applicable.
+- **`embed::embed_synced(media: &Path, lyrics: &Lyrics, lang: [u8; 3]) -> Result<()>`** — synchronised ID3v2 SYLT frame. ID3v2-only by design; errors with `Error::UnsupportedForSync` on other formats. Encoding: UTF-16 with BOM; timestamp format: milliseconds. Recommended pattern: call both `embed()` and `embed_synced()` — the former handles cross-format plain text, the latter adds SYLT where applicable. Saves through `meedya_metadata::tag_io::gather_languages_before_saving`, so a file listing several languages keeps them all in one `TLAN` frame (before the stand-in review of revision 5, adding lyrics cut them down to the last one).
 - **`embed::DEFAULT_LANGUAGE`** — `*b"XXX"`, ID3's own "language not known" marker (policy MWBM-MEDIA-LANG's LANG-003: an unknown language is never guessed). Changed from `*b"eng"` — the old value silently claimed English.
 - **`embed::id3_language(value: &str) -> [u8; 3]`** — turns a BCP 47 tag or an old three-letter code into the ISO 639-2 terminology code the SYLT frame's language field wants, via the shared `meedya-lang` reader; falls back to `DEFAULT_LANGUAGE` when `value` does not resolve to a real language. Use this to build `embed_synced`'s `lang` argument instead of hand-writing three bytes.
 
@@ -688,17 +691,30 @@ known granularity," i.e. it still needs upgrading if a syllable-capable source i
 Consumers matching on `TtmlGranularity` must handle all four variants.
 
 **Language (policy MWBM-MEDIA-LANG).** `LyricsfileMetadata::language` is always a canonical
-BCP 47 tag or `None`, never free text. `Lyricsfile::from_ttml` reads `xml:lang` through the
-LANG-002 reader: a recognised value is stored canonicalised (`EN-gb` → `en-GB`, `eng` → `en`);
-an unrecognised one (`zzz`, `English`, `en_GB`, empty) is stored as `und`, with the attribute's
-text kept, exactly as found, in the new field **`LyricsfileMetadata::language_original:
-Option<String>`** (LANG-002: "the original text SHOULD be kept alongside"); an absent `xml:lang`
-leaves both `None`. `language_original` is a MeedyaSuite addition to LRCGET's schema, written
-to YAML only when present, so the usual file is unchanged; readers that ignore unknown keys (this
-module's stated forward-compatibility policy) still read it. Adding the field is a breaking
-change for code that builds `LyricsfileMetadata` with a struct literal: add
-`language_original: None`. (Changed after Codex's review r7: the unrecognised text used to be
-stored as the language itself.)
+BCP 47 tag or `None`, never free text, when it comes from this crate. Both `Lyricsfile::from_ttml`
+(reading `xml:lang`) and `Lyricsfile::parse` (reading a file's `language`) go through the LANG-002
+reader: a recognised value is stored canonicalised (`EN-gb` → `en-GB`, `eng` → `en`); an
+unrecognised one (`zzz`, `English`, `en_GB`, empty) is stored as `und`, with the text kept,
+exactly as found, in the new field **`LyricsfileMetadata::language_original: Option<String>`**
+(LANG-002: "the original text SHOULD be kept alongside"); an absent (or, in YAML, `null`) value
+leaves both `None`. One case is particular to `parse`: when the file already has a
+`language_original`, it is kept exactly as it is — so an unrecognised `language` then becomes
+`und` and its own text is not kept a second time — and `parse` never changes or removes a
+`language_original` the file gives. `language_original` is a MeedyaSuite addition to LRCGET's
+schema, written to YAML only when present; readers that ignore unknown keys (this module's stated
+forward-compatibility policy) still read it. Adding the field is a breaking change for code that
+builds `LyricsfileMetadata` with a struct literal: add `language_original: None`. (Changed after
+Codex's review r7: the unrecognised text used to be stored as the language itself; changed after
+the stand-in review of revision 5: `parse` used to store a file's `language` text as it was.)
+
+**Quoted language values.** `Lyricsfile::to_yaml` always writes `language` and
+`language_original` in quotes (`language: 'no'`). The YAML library this crate uses follows YAML
+1.2 and would write `no` bare, but a YAML 1.1 reader (PyYAML; older Ruby and JavaScript
+libraries) reads a bare `no` — Norwegian — as false, and likewise `yes`, `on`, `off`, `y` and
+`n`. Checked with PyYAML 6.0.3: all six, and values with an apostrophe, a line break or U+0085,
+read back as the text written. Every file with a language therefore reads `language: 'en'` where
+it used to read `language: en`; both are the same string to any YAML reader. Serialising the
+struct with `serde_yaml` directly bypasses this — use `to_yaml`.
 
 Modules: `lyricsfile` (model + YAML I/O), `lyricsfile_ttml` (Apple Music TTML import,
 including `lyricOffset` extraction — see #61), `lyricsfile_lrc` (LRC bridge),
@@ -739,6 +755,7 @@ For MP3 / M4A / FLAC / WAV / AIFF / OGG and downstream-app general use.
   - `write_registry_tags(path: &Path, registry: &TagRegistry, json_source: &serde_json::Value, scope: TagScope) -> Result<usize>` — returns the number of tags written
   - `write_acoustid_tags(path, result: &AcoustIdResult) -> Result<()>`
   - `write_replaygain_tags(path: &Path, result: &ReplayGainResult, album_result: Option<&AlbumGainResult>) -> Result<()>`
+  - `gather_languages_before_saving(tagged_file: &mut lofty::file::TaggedFile)` — **new (stand-in review of revision 5).** Joins every language item of the file's ID3v2 (and APE) tag into one null-separated item, so the save writes one `TLAN` frame holding every language. lofty reads such a frame as one item per language and would save one frame each, of which a reader keeps only the last. Every save in `tag_io` calls it; call it yourself before saving a lofty `TaggedFile` that may carry several languages (`meedya-lyrics`' `embed_synced` does). It cannot bring back languages a file already lost, and it does not reach `meedya-tags-extended`'s `TagFile::save`, which uses lofty 0.21 (see the note under `meedya-tags-extended`).
 - **`tag_registry`** — `TagDefinition`, `TagRegistry`, `TagScope`, `TagValueType`, `AtomTarget` for declarative tag mapping loaded from TOML.
 - **`json_path`** — Dot-path extraction (`extract_json_value`, `value_to_string`) with array indexing for API JSON → tag-value pipelines.
 
@@ -818,7 +835,17 @@ Downstream crates matching on `CommonTag` must add a `_ =>` wildcard arm (a comp
 
 `Performer` and `Translator` were deliberately **excluded**: `Performer` has no lofty 0.22 ID3v2 write mapping (ID3v2 models it as the multi-valued, instrument-qualified TMCL frame — a flat-string variant would silently no-op on MP3); `Translator` has no standard frame in any container and stays an iHymns-domain concept in its own mirror.
 
-¹ **`Language`'s write is not a plain pass-through** (policy MWBM-MEDIA-LANG, TRACK-070). `write_tags` reads the caller's value with the LANG-002 reader for several values (`meedya_lang::from_legacy_three_letter_all`) first, so a value listing several languages separated by a null character (`"eng\0fra"`) has **every** language written, in order. On ID3v2 (which has no full-tag language field — only `TLAN`) each becomes its ISO 639-2 **terminology** three-letter code (`und` for a language with no ISO 639-2 code of its own), all in one `TLAN` frame separated by null characters (ID3v2.4's multi-value form); on Vorbis and MP4 `LANGUAGE` (free-text fields) each becomes its canonical BCP 47 tag, one field per language; on APE, the canonical tags go in one item separated by null characters (APEv2's list form). **A value the reader does not recognise — `zzz`, a name such as `English`, a locale name such as `en_GB`, an empty value — is refused** with `MetadataError::UnrecognisedLanguage { value, problem }`, whose message says what was wrong and gives examples (`en`, `pt-BR`, `und` for not known); one unrecognised value among several refuses them all, and the whole `write_tags` call writes nothing to the file. `und`, `mul`, `zxx`, `mis`, local-use (`qaa`–`qtz`), private-use and grandfathered tags are recognised and written normally. (Changed after Codex's review r7: before, only the first of several languages was written, and an unrecognised value was written unchanged — or as `und` on ID3v2.) `read_tags` is unchanged — it returns whatever text the file holds, one entry per value where the format stores them separately (one entry with null characters between the values for APE) — so **a caller reading `CommonTag::Language` back MUST pass each entry through `meedya_lang::from_legacy_three_letter_all` (or `from_legacy_three_letter` for the primary language only) before treating it as a language**; the raw value could be a three-letter code, a BCP 47 tag, or text another tool wrote.
+¹ **`Language`'s write is not a plain pass-through** (policy MWBM-MEDIA-LANG, TRACK-070). `write_tags` reads the caller's value with the LANG-002 reader for several values (`meedya_lang::from_legacy_three_letter_all`) first, so a value listing several languages separated by a null character (`"eng\0fra"`) has **every** language written, in order — and so do several `Language` entries in one call (`[(Language, "eng"), (Language, "fra")]`), which are written together, once, in order (each used to replace the one before, until the stand-in review of revision 5). On ID3v2 (which has no full-tag language field — only `TLAN`) each becomes its ISO 639-2 **terminology** three-letter code (`und` for a language with no ISO 639-2 code of its own), all in one `TLAN` frame separated by null characters (ID3v2.4's multi-value form); on Vorbis `LANGUAGE` (a free-text field) each becomes its canonical BCP 47 tag, one field per language; on MP4 the canonical tags go in **one** `----:com.apple.iTunes:LANGUAGE` atom holding one `data` atom per language (the form iTunes, mutagen and mp4ameta write, and the one ffprobe takes its first value from — revision 5 wrote one atom per language, and ffprobe showed the last); on APE, the canonical tags go in one item separated by null characters (APEv2's list form). **A value the reader does not recognise — `zzz`, a name such as `English`, a locale name such as `en_GB`, an empty value — is refused** with `MetadataError::UnrecognisedLanguage { value, problem }`, whose message says what was wrong and gives examples (`en`, `pt-BR`, `und` for not known); one unrecognised value among several refuses them all, and the whole `write_tags` call writes nothing to the file. **But a value identical to what the file already holds is left alone** — `read_tags`' `Language` values joined with null characters, compared as text — not checked, converted or rewritten, exactly as if no `Language` entry had been given; so reading a file whose `LANGUAGE` another tool set to `English`, changing the title and writing every field back works (it used to refuse the whole save). Only a changed value is checked. `und`, `mul`, `zxx`, `mis`, local-use (`qaa`–`qtz`), private-use and grandfathered tags are recognised and written normally. (Changed after Codex's review r7: before, only the first of several languages was written, and an unrecognised value was written unchanged — or as `und` on ID3v2.) **Every write keeps the file's languages whole** — `write_tags`, `write_replaygain_tags`, `write_acoustid_tags` and `write_registry_tags` alike: an unrelated write used to cut several ID3v2 languages down to the last one (lofty splits the `TLAN` frame on reading and saved one frame per language) and to delete every MP4 value but the first (lofty's format-neutral tag keeps only an atom's first `data` atom); MP4 files are now read and saved through lofty's own `Mp4File`/`Ilst` for the language atom, and an MP4 file written by revision 5, with one atom per language, is mended on its next save. `read_tags` returns every language the file lists, one entry per language (one entry with null characters between the values for APE); on MP4 every `data` atom is now returned, not just the first. **A caller reading `CommonTag::Language` back MUST pass each entry through `meedya_lang::from_legacy_three_letter_all` (or `from_legacy_three_letter` for the primary language only) before treating it as a language**; the raw value could be a three-letter code, a BCP 47 tag, or text another tool wrote.
+
+#### `MetadataError` is `#[non_exhaustive]` (policy MWBM-MEDIA-LANG, this branch)
+
+**Two breaking changes for a crate that matches every `MetadataError` variant**, taken together
+on purpose: the variant `UnrecognisedLanguage { value: String, problem: String }` was added
+(after Codex's review r7 — see footnote ¹), and the enum is now `#[non_exhaustive]` (after the
+stand-in review of revision 5). A `match` on `MetadataError` in another crate needs a `_ =>` arm.
+Because the enum was already changing, callers take one break now instead of one per future
+variant: from here on, adding a variant does not break them. Matches inside `meedya-metadata`
+are not affected, and nothing else in this workspace matches every variant.
 
 ```rust
 impl CommonTag {
@@ -1161,6 +1188,8 @@ impl TagFile {
 
 Lofty preserves unrecognised frames automatically. Open → edit standard fields → save will round-trip Serato/Rekordbox/Traktor blobs untouched.
 
+**Known fault, not yet fixed: several languages on an ID3v2 file do not survive `save`.** Measured on a real MP3 (stand-in review of revision 5): a file whose one `TLAN` frame lists `por`, `deu` and `zho` comes back from `open` → `save` with three `TLAN` frames, and lofty then reads only the last (`zho`). It is the fault `meedya-metadata`'s `gather_languages_before_saving` fixes for that crate's saves, but this crate is built on lofty **0.21**, whose `TaggedFile` is a different type that helper cannot take; moving this crate to lofty 0.22 changes the lofty types its public API hands out (`inner`, `primary_tag`, …), so it is left for a separate change. Until then, a caller that needs several languages kept should not save such a file through `TagFile`.
+
 #### `model::ExtendedTags`
 
 ```rust
@@ -1446,6 +1475,8 @@ pub const SIDECAR_SCHEMA_VERSION; pub const SIDECAR_SUFFIX;
 | **Experimental** | (none currently) | — |
 
 As of **0.2.0** (#65), `CommonTag` is `#[non_exhaustive]` — downstream exhaustive matches over it stop compiling (the one deliberate breaking change this bump carries) and every variant added from here on is non-breaking. `identifier_types` is a new additive module; its types (`IdentifierScope`/`IdentifierStatus`/`IdentifierValidation`) are also `#[non_exhaustive]` from day one.
+
+On `feature/bcp47-language-policy` (policy MWBM-MEDIA-LANG), `meedya_metadata::MetadataError` gained the variant `UnrecognisedLanguage` and became `#[non_exhaustive]` — both breaking for a crate that matches every variant, taken together so that later variants are not (see "`MetadataError` is `#[non_exhaustive]`" under `meedya-metadata`). Two more changes on that branch alter what existing calls produce without changing any signature: `Lyricsfile::to_yaml` writes language values in quotes, and `Lyricsfile::parse` reads a file's language through the policy's reader (see the Lyricsfile section).
 
 All crates share workspace `version = "0.2.0"` (bumped from `0.1.0` by #65). Pre-1.0, minor-version bumps may include breaking changes; please pin to a git revision or tag in downstream apps until 1.0.
 

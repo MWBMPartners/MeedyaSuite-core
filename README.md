@@ -13,18 +13,18 @@ Written in Rust. Distributable to all Meedya apps via:
 | Crate | Purpose | Status | Tests |
 |---|---|---|---|
 | [`meedya-codecs`](crates/meedya-codecs) | Audio/video/subtitle codecs, container formats, HDR, spatial audio, media classification, FFprobe + MediaInfo integration | Implemented | 47 |
-| [`meedya-metadata`](crates/meedya-metadata) | Two coexisting tag-I/O surfaces: lofty-backed multi-format (`CommonTag`, `tag_io`, `tag_registry`) and `mp4ameta`-backed sandbox-safe registry for the Apple Music tagging flow. Includes `playback_bounds` (soft start/stop atoms), codec ID tags, the cross-repo `identifier_types` registry (scope→slug→validation vocabulary, #65), and a filename `template` engine. | Implemented | 132 |
+| [`meedya-metadata`](crates/meedya-metadata) | Two coexisting tag-I/O surfaces: lofty-backed multi-format (`CommonTag`, `tag_io`, `tag_registry`) and `mp4ameta`-backed sandbox-safe registry for the Apple Music tagging flow. Includes `playback_bounds` (soft start/stop atoms), codec ID tags, the cross-repo `identifier_types` registry (scope→slug→validation vocabulary, #65), and a filename `template` engine. | Implemented | 143 |
 | [`meedya-tags-extended`](crates/meedya-tags-extended) | Multi-format tag I/O foundation with DJ metadata support. `ExtendedTags` model, `MusicalKey` (Camelot/Open Key/traditional), `CuePoint`/`LoopPoint`/`BeatGrid`, standard BPM+key+comment read/write, **Mixed In Key reader** (`mik` module). Other proprietary readers (Serato/Rekordbox/Traktor/VDJ) pending fixture-based sessions. | Implemented | 180 |
 | [`meedya-library-import`](crates/meedya-library-import) | Ingest playback bounds + metadata from external library DBs. `itunes_xml` parses Music.app exports; `cuesheet` is a full CUE parser at CD-frame precision. | Implemented | 30 |
-| [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar + ID3v2 SYLT tag-embed, Lyricsfile YAML canonical model with Apple Music TTML import (syllable-level timing) and LRC/Enhanced-LRC/SRT/WebVTT/ASS export. | Implemented | 146 |
-| [`meedya-lang`](crates/meedya-lang) | Shared implementation of the Media Language & BCP 47 Policy (`MWBM-MEDIA-LANG`): canonical BCP 47 tags, stored order, presentation order, role ordering, preference matching, automatic audio/subtitle selection, sidecar file naming. Conformance-tested against a 290-case fixture shared with the PHP implementation. | Implemented | 119 |
+| [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar + ID3v2 SYLT tag-embed, Lyricsfile YAML canonical model with Apple Music TTML import (syllable-level timing) and LRC/Enhanced-LRC/SRT/WebVTT/ASS export. | Implemented | 150 |
+| [`meedya-lang`](crates/meedya-lang) | Shared implementation of the Media Language & BCP 47 Policy (`MWBM-MEDIA-LANG`): canonical BCP 47 tags, stored order, presentation order, role ordering, preference matching, automatic audio/subtitle selection, sidecar file naming. Conformance-tested against a 290-case fixture shared with the PHP implementation. | Implemented | 120 |
 | [`meedya-providers`](crates/meedya-providers) | Metadata provider framework: traits, capabilities, registry, rate limiting, cover art helpers, match scoring, Lucene/Solr query escaping (`lucene`). | Implemented | 59 (201 with `--all-features`) |
 | [`meedya-audio-analysis`](crates/meedya-audio-analysis) | Tempo (BPM) and musical key detection from the audio itself. Refuses to answer rather than guess when it is not sure. | Implemented | 67 |
 | [`meedya-fingerprint`](crates/meedya-fingerprint) | AcoustID fingerprinting + ReplayGain/EBU R128 loudness analysis. | Implemented | 12 (17 with `--all-features`) |
 | [`meedya-db`](crates/meedya-db) | MeedyaDB API client, shared media models (Track/Album/Artist), database export trait. | Implemented | 4 |
 | [`meedya-core`](crates/meedya-core) | Unified facade crate re-exporting the implemented crates behind feature flags. | Implemented | — |
 
-**Total: 796 tests passing** (943 with `--all-features`, the CI configuration), workspace builds clean.
+**Total: 812 tests passing** (959 with `--all-features`, the CI configuration), workspace builds clean.
 
 ## Quick Start
 
@@ -32,7 +32,7 @@ Written in Rust. Distributable to all Meedya apps via:
 # Build all crates
 cargo build --workspace
 
-# Run the full test suite (796 tests; 943 with --all-features)
+# Run the full test suite (812 tests; 959 with --all-features)
 cargo test --workspace
 
 # Build a single crate
