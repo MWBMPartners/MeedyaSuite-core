@@ -1285,7 +1285,14 @@ final class Policy
      * $roles is a list of raw role identifiers (see the Role enum); only
      * roles present in $roleNames are actually shown (a role with no
      * localised word supplied is silently skipped, rather than showing a
-     * raw internal identifier to a user). $languageName and every value in
+     * raw internal identifier to a user).
+     *
+     * An empty part adds nothing, not even a separator: an empty
+     * $languageName, an empty word in $roleNames or an empty $channels is
+     * left out, so ('English', no roles, channels '') gives "English", not
+     * "English — ". The Rust crate's label() does the same since Codex's
+     * review r7 found it did not; the case file's label-06 and label-07
+     * check both. $languageName and every value in
      * $roleNames are expected to already be localised - this function only
      * orders and joins them, per its one job (see the class doc comment:
      * this is not where names come from).

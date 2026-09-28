@@ -3811,6 +3811,36 @@
       },
       "channels": null,
       "expected": "English — SDH — Forced"
+    },
+    {
+      "id": "label-06",
+      "rules": [
+        "UI-070"
+      ],
+      "description": "An empty channel layout adds nothing to the label, not even a separator.",
+      "type": "audio",
+      "language_name": "English",
+      "roles": [],
+      "role_names": {},
+      "channels": "",
+      "expected": "English"
+    },
+    {
+      "id": "label-07",
+      "rules": [
+        "UI-070"
+      ],
+      "description": "A role whose localised name is empty adds nothing to the label, not even a separator; the parts after it still follow.",
+      "type": "audio",
+      "language_name": "English",
+      "roles": [
+        "commentary"
+      ],
+      "role_names": {
+        "commentary": ""
+      },
+      "channels": "2.0",
+      "expected": "English — 2.0"
     }
   ],
   "match": [

@@ -189,7 +189,7 @@ it implements and what it deliberately does not do.
 ## Running the conformance tests
 
 `tests/run-conformance.php` runs every case in
-`tests/fixtures/bcp47-language-policy-v1.json` (288 cases). A case that
+`tests/fixtures/bcp47-language-policy-v1.json` (290 cases). A case that
 carries `"error": true` (a handful of them: two clearly-wrong sidecar
 numbers, a negative one, one over nine digits, and two pairs of tracks
 sharing an identifier) means the implementation MUST refuse the input
@@ -217,7 +217,7 @@ its first entry always what `fromLegacyThreeLetter()` returns); and one
 for the `'ignored'` parts `parseSidecarName()` reports; and six for the
 text a malformed value keeps — the value after the whitespace trim, so a
 value of only whitespace keeps `''` (the case file records only that such a
-value is malformed, not its text). 383 checks in total. Plain PHP, no PHPUnit, so it runs the same
+value is malformed, not its text). 385 checks in total. Plain PHP, no PHPUnit, so it runs the same
 way in every consumer:
 
 ```bash

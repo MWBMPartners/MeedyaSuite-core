@@ -394,6 +394,13 @@ pub fn subtitle_menu<'a, T: PresentationItem>(
 /// `language_name` is a localised name resolved by the caller (this
 /// crate holds no name data); an embedded track title is never used here
 /// in its place — UI-070 forbids that when language data exists.
+///
+/// An empty part adds nothing — not even a separator: an empty
+/// `language_name`, a role whose `role_name` is empty, or `Some("")` for
+/// `channels` is left out, so `channels: Some("")` gives `English`, not
+/// `English — `. (Until Codex's review r7 an empty part was joined like any
+/// other, which disagreed with the PHP implementation; the case file's
+/// `label-06` and `label-07` now pin it.)
 pub fn label(
     track_type: TrackType,
     language_name: &str,
@@ -412,12 +419,19 @@ pub fn label(
     }
     ordered_roles.sort_by_key(|&r| roles::individual_rank(track_type, r));
 
+    // Only non-empty parts are joined (see the doc comment): an empty one
+    // would otherwise leave a separator with nothing after it.
     let mut parts: Vec<String> = Vec::with_capacity(2 + ordered_roles.len());
-    parts.push(language_name.to_string());
-    for role in ordered_roles {
-        parts.push(role_name(role));
+    if !language_name.is_empty() {
+        parts.push(language_name.to_string());
     }
-    if let Some(ch) = channels {
+    for role in ordered_roles {
+        let name = role_name(role);
+        if !name.is_empty() {
+            parts.push(name);
+        }
+    }
+    if let Some(ch) = channels.filter(|ch| !ch.is_empty()) {
         parts.push(ch.to_string());
     }
     parts.join(" — ")
@@ -602,6 +616,37 @@ mod tests {
             ),
             "English — sdh — other — 5.1"
         );
+    }
+
+    #[test]
+    fn an_empty_label_part_adds_nothing() {
+        // Codex's review r7: `Some("")` channels gave "English — ", an
+        // empty role name gave a doubled separator, and PHP gave neither.
+        // Every empty part is left out, separator included. (The case
+        // file's label-06 and label-07 check the first two in both
+        // implementations; the empty language name is checked here, and
+        // matches what PHP's buildLabel does.)
+        let name = |r: Role| r.as_str().to_string();
+        let no_name = |_: Role| String::new();
+        assert_eq!(
+            label(TrackType::Audio, "English", &[], name, Some("")),
+            "English"
+        );
+        assert_eq!(
+            label(
+                TrackType::Audio,
+                "English",
+                &[Role::Commentary],
+                no_name,
+                Some("2.0")
+            ),
+            "English — 2.0"
+        );
+        assert_eq!(
+            label(TrackType::Audio, "", &[Role::Commentary], name, Some("2.0")),
+            "commentary — 2.0"
+        );
+        assert_eq!(label(TrackType::Subtitle, "", &[], no_name, Some("")), "");
     }
 
     #[test]

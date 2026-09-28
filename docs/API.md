@@ -43,7 +43,7 @@ All crates are workspace members at `crates/<name>/`. Edition 2021, MIT licensed
 | `meedya-db` | `client`, `export`, `models` | 4 | Foundation stable; specific endpoints may evolve |
 | `meedya-audio-analysis` | `tempo`, `key`, `decode` (feature-gated, default-on) | 67 | Experimental |
 | `meedya-fingerprint` | `acoustid`, `chromaprint` (feature-gated, non-default), `replaygain` | 12 | Stable |
-| `meedya-lang` | `tag`, `canonical`, `roles`, `tracks`, `presentation`, `matching`, `select`, `sidecar` | 116 | Stable — fixture-conformance tested against `tests/fixtures/bcp47-language-policy-v1.json` (288 cases) |
+| `meedya-lang` | `tag`, `canonical`, `roles`, `tracks`, `presentation`, `matching`, `select`, `sidecar` | 116 | Stable — fixture-conformance tested against `tests/fixtures/bcp47-language-policy-v1.json` (290 cases) |
 | `meedya-library-import` | `cuesheet`, `itunes_xml` | 30 | Stable |
 | `meedya-lyrics` | `embed`, `error`, `lrc`, `lyrics`, `lyricsfile`, `lyricsfile_export`, `lyricsfile_lrc`, `lyricsfile_ttml`, `lyricsfile_ttml_classify`, `provider`, `sidecar` | 145 | Stable (plain + synced via SYLT for ID3v2; Lyricsfile YAML model + TTML import/export) |
 | `meedya-metadata` | `codec_tags`, `common_tags`, `identifier_types`, `json_path`, `playback_bounds`, `registry`, `tag_io`, `tag_registry`, `template`, `writer` | 120 | Stable (two co-existing surfaces + identifier-types registry + filename template engine) |
@@ -441,7 +441,8 @@ impls.
   which the crate never invents itself; the caller's closure compares names only, and the crate
   itself breaks a tie by primary language code), `subtitle_menu` (UI-060, prepends a fixed
   "Off"; `MenuEntry` is always `Clone`/`Copy`, and `PartialEq`/`Eq` when the item type is), and
-  `label` (UI-070, builds a menu label from structured data, each role once).
+  `label` (UI-070, builds a menu label from structured data, each role once; an empty part —
+  empty channels, an empty role name, an empty language name — adds nothing, not even a separator).
 - **`matching`** — `match_tags(&LanguageTag, &LanguageTag) -> TagMatch` (MATCH-010 to
   MATCH-040): exact, general, specific, related or none, with a distance count for the
   first two (`TagMatch::distance` is a `usize` — it was a `u8`, which wrapped past 255). A
@@ -518,7 +519,7 @@ assert_eq!(chosen, Ok(Some("a".to_string())));
 
 Every rule the policy defines has a fixture-driven test in
 `crates/meedya-lang/tests/conformance.rs`, which loads
-`tests/fixtures/bcp47-language-policy-v1.json` (288 cases) — the same file the PHP
+`tests/fixtures/bcp47-language-policy-v1.json` (290 cases) — the same file the PHP
 implementation runs against — and fails loudly (collecting every mismatch, not just the first)
 rather than stopping at the first one. Besides comparing each case's answer, it also checks: a
 canonical-form **stability** property (canonicalising a `canonicalise` case's non-null answer
