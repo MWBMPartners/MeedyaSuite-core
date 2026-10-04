@@ -2,7 +2,7 @@
 
 > Codex-side mirror. The **canonical** long-form facts are in [`../.claude/MEMORY.md`](../.claude/MEMORY.md) —
 > read that; this file only adds what matters specifically when Codex is doing the work.
-> Last updated: 2026-10-04.
+> Last updated: 2026-10-05.
 
 ## Role of Codex in this project
 
@@ -19,7 +19,10 @@
 - CI runs only for `main`, so the working branch has **no CI**. Run fmt, clippy (`-D warnings`)
   and the full test suite locally before every push.
 - Doc test counts are guarded by `scripts/check-doc-test-counts.sh` and must match what cargo
-  measures, in README.md, docs/API.md, .claude/CLAUDE.md and .claude/CONTEXT.md.
+  measures, in README.md, docs/API.md, .claude/CLAUDE.md and .claude/CONTEXT.md. Since
+  revision 11 it reads only totals stated as totals ("Total: N tests", "N with
+  --all-features" beside one, the `cargo test` comments…); `scripts/test-check-doc-test-counts.sh`
+  proves it fails where it must.
 - Some code looks wrong but is deliberate — do not "fix" it without reading `.claude/MEMORY.md`:
   rate limiters keyed by host not provider; MusicBrainz `per_second(1)`; ISRC compact vs ISWC
   dotted query forms; `primary_tag_type()` as the lofty fallback; `kill_on_drop` on every subprocess;
@@ -34,7 +37,10 @@
   the whole file — audio, chunk offsets, every other atom — in `mp4_file_check`) would change
   anything not asked for or not store exactly what the caller gave (#102, #103). Fragmented
   M4A files, a `meta` with no tag list, and fields with no M4A atom are refused before anything
-  is written. That refuses most iTunes / Apple Music files (and any whose disc number mutagen
+  is written — and since revision 11 also a `meta` too short for its version, bytes left over
+  at the end of a tag list, and containers nested where no M4A file has them (lofty's own save
+  overflows its stack on deep nesting, so that refusal must come before the save). Reading
+  ID3 language frames holds at most 1 MiB (revision 11). That refuses most iTunes / Apple Music files (and any whose disc number mutagen
   wrote) today; it is the interim guard, not a bug. The two public language steps
   must be taken in order —
   `recover_languages_after_reading` right after reading, `gather_languages_before_saving` right

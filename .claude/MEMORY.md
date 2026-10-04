@@ -218,6 +218,31 @@ These refusals are deliberate. Do not "fix" them by letting the save go ahead.
   file. The copy is written through the `create_new` handle (`save_by_copy`), flushed, and both
   names checked (device+inode; Windows file index via `winapi-util`) before the rename; it no
   longer keeps extended attributes on macOS. The comparisons count their steps and are linear.
+- **M4A, revision 11 (Codex's catch-up review of revisions 8–10).** The copy is created
+  owner-only (0600) — it was 0644, readable by every account while checked — and gets the
+  original's permissions only just before the rename (Windows: the folder's access rules,
+  written down). Refused before saving: a `meta` holding fewer than 4 bytes (it crashed the
+  comparison), 1–7 bytes left over at the end of an `ilst` (lofty dropped them unseen), and a
+  container lofty follows (`moov`, `udta`, `moof`, `trak`, `mdia`, `minf`, `stbl`) sitting
+  where no M4A file has one. **lofty's own SAVE recurses into those containers with no depth
+  limit and overflowed the stack at 1,000 nested `minf`** — so that refusal must stay in
+  `refuse_what_a_save_would_damage`, BEFORE the save; a fix in the comparison alone cannot
+  protect `write_tags`. The comparison follows only the fixed path `moov → trak → mdia → minf
+  → stbl`, numbers each container's atoms once (a `Place` chain, words made only for a
+  difference), and reads the files without a buffered reader (it threw its buffer away at every
+  jump). Every error path deletes the copy (`TempCopy::discard`) and names it when it cannot.
+  Two test-only aids: `WHILE_THE_COPY_EXISTS` (look at the copy mid-save) and
+  `permissions_are_ignored_here` (a permission test may only skip when this is shown).
+- **ID3 language frames, revision 11: at most 1 MiB held.** Tags are found by their headers,
+  looked at a block at a time (a 3-byte carry, so a name across a block join counts once), and
+  only language frames' contents are read, within a 1 MiB budget for the whole file. lofty's own
+  read comes FIRST (it holds each frame whole, up to its 16 MiB allocation limit) and its save
+  of an MP3/WAV/AIFF reads the whole file — this guard cannot bound either.
+- **The documented-test-count check reads labelled totals only** (revision 11): "Total: N
+  tests", "N tests passing", "(N tests;", "sum to N", "M with --all-features" on such a line,
+  "(sum M)", and `cargo test --workspace [--all-features]  # N tests` comments. Reword a total
+  out of those forms and the check FAILS ("states no total") — on purpose.
+  `scripts/test-check-doc-test-counts.sh` proves it fails where it must; CI runs it.
 
 ## tokio: `timeout` alone does not kill a child process
 

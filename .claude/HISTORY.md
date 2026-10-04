@@ -790,3 +790,60 @@ re-run.)
   file, two chapter files (moov before and after mdat), a fragmented file and a mutagen-cleared
   file; new `testdata/id3/` with the review's ID3 shapes; both scripts re-create every file byte
   for byte. 913 / 1060 tests (`meedya-metadata` 201 → 237). Not yet reviewed; not pushed.
+
+## 2026-10-05 — Language policy, revision 11: Codex's catch-up review of revisions 8–10
+
+On `feature/bcp47-language-policy` (issue #99). Codex, back with allowance, reviewed revisions
+8–10 (`7f944a7..cd3ca07`) as one body of work. Its sandbox could not build, so it ran no Rust
+test; every finding was therefore reproduced here BEFORE it was fixed, with a test or a probe,
+and every fix proved by a planted fault. The five protected paths were not touched.
+
+- **The temporary copy is private from the moment it exists** (finding 1). It was made 0644, so
+  a 0600 recording could be read by every other account while the save was checked — and after
+  a refusal, until the copy was deleted. Now created 0600 by the call that makes it, before a
+  byte is copied in; the original's permissions only just before the rename. A test seam
+  (`WHILE_THE_COPY_EXISTS`) lets a test look at the copy while it exists. Windows has no such
+  bits: the copy gets its folder's access rules — written down, not changed.
+- **A short `meta` box is refused, never a crash** (finding 2). One holding 0–3 bytes was taken
+  to have its four bytes of version and flags; the comparison read past it and subtracted the
+  ends of a turned-round stretch — "attempt to subtract with overflow" in a debug build, through
+  `write_tags` too. Now refused as "cannot be checked", and every compared stretch is checked
+  before its ends are subtracted.
+- **Bytes left over in a tag list refuse the save** (finding 3). 1–7 bytes after the last atom
+  of an `ilst` were passed over by the reader and dropped by lofty's save, unseen by both
+  comparisons; a title-only write was accepted and the bytes were gone.
+- **Containers nested without limit are refused, before lofty saves** (finding 5). The
+  comparison followed a `mdia`/`minf`/`stbl` inside any of them, with no limit (10,000 nested:
+  stack overflow). Reproducing it showed lofty's OWN save overflows at 1,000, so the refusal had
+  to come before the save: the check before saving now walks every container lofty follows
+  (with a list, not by calling itself) and refuses one out of place; the comparison follows only
+  the fixed path `moov → trak → mdia → minf → stbl`.
+- **The whole-file comparison is linear** (finding 4). Each atom's place was written out and
+  numbered by searching all the atoms beside it: 12,500 / 25,000 / 50,000 sibling atoms took 7 /
+  31 / 109 seconds. Now places are a borrowed chain made into words only for a difference, names
+  are counted once per container, the files are read through their own handles (a buffered
+  reader threw its 64 KiB buffer away at every jump), and the walk counts its steps: 100,000
+  atoms, 800,025 steps, 0.4 s.
+- **An error names a copy that could not be deleted** (finding 7). Every error path now deletes
+  the copy explicitly (`TempCopy::discard`); if that fails — reproduced with the folder made
+  read-only after the copy was made — the error names it. `Drop` stays as a silent last resort.
+- **Tests that cannot pass by skipping, and a real `co64` case** (finding 8). Both permission
+  tests passed with their guards broken (reproduced); now they require the refusal unless the
+  environment is shown, by trying, to ignore permissions.
+- **The documented-test-count check compares the stated totals** (finding 9).
+  `check-doc-test-counts.sh 1 4` passed; now only labelled totals count, every one must match,
+  and each document must state one of each kind. New `scripts/test-check-doc-test-counts.sh`
+  proves it fails where it must; CI runs it before measuring.
+- **Reading ID3 language frames holds at most 1 MiB** (finding 10). Every tag, and every
+  WAV/AIFF ID3 chunk whole, was read into memory: a small tag in a 400 MiB chunk, or four
+  100 MiB MP3 tags, took the program to 410 MiB (measured with `/usr/bin/time`). Now tags are
+  found by headers, looked at a block at a time, and only language frames are read, within a
+  1 MiB budget for the file — the same files under 8 MiB. lofty's own first read, and its save,
+  are written down as beyond this guard.
+- **Windows named streams** (finding 6): a save by copy drops a file's NTFS named streams; now
+  in the list of what a save by copy loses. An issue is drafted (not posted) for detecting them
+  and refusing; not tried on Windows.
+- **Docs**: the exceptions to "unchanged" stated (top-level `free`/`skip` may change; atoms of
+  different names may be reordered); counts, `docs/API.md`, the notes and the handoff updated.
+
+931 / 1078 tests (`meedya-metadata` 237 → 255). Not yet reviewed.

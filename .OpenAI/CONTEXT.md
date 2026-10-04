@@ -2,7 +2,7 @@
 
 > Codex-side mirror. The **canonical** architecture snapshot is [`../.claude/CONTEXT.md`](../.claude/CONTEXT.md),
 > and the live state of work is [`../.claude/HANDOFF.md`](../.claude/HANDOFF.md) §0. This file is a short
-> orientation so Codex can start without reading everything. Last updated: 2026-10-04.
+> orientation so Codex can start without reading everything. Last updated: 2026-10-05.
 
 ## What this is
 
@@ -16,9 +16,9 @@ use it as a code dependency. Its contract with those apps is [`docs/API.md`](../
 - Latest work: new crate `meedya-audio-analysis` (tempo and musical key detection, issue #16),
   built and reviewed by Claude on 2026-09-09. **A Codex review of that work is the next step.**
 - Separate branch in flight (from 2026-09-28): `feature/bcp47-language-policy`, the shared
-  language policy MWBM-MEDIA-LANG (issue #99). Its latest round is revision 10, acting on the
-  stand-in review of revision 9 (a fresh Opus agent standing in for Codex, which was out of
-  allowance) — not yet reviewed itself. See `.claude/HANDOFF.md` §0.0.
+  language policy MWBM-MEDIA-LANG (issue #99). Its latest round is revision 11, acting on
+  Codex's catch-up review of revisions 8–10 (`7f944a7..cd3ca07`); commits after `cd3ca07` are
+  not yet reviewed. See `.claude/HANDOFF.md` §0.0.
 - Full status board and open questions: `.claude/HANDOFF.md` §0.
 
 ## Languages, tracks, subtitles and lyrics (mandatory)
