@@ -85,11 +85,19 @@
 //     file's is the time of the save;
 //   - and it needs the folder to be writable, not just the file.
 //   The permission bits (read, write, run) ARE copied.
-// - Avoid leaving a file behind if the program is killed mid-save. The copy
-//   is deleted on every refusal and error, but a program stopped by force
-//   cannot delete it: it stays, hidden, beside the file, named
-//   `.meedya-tag-save-<process id>-<number>.tmp`, and can be deleted by
-//   hand. The original is untouched in that case.
+// - Promise the copy is always deleted. On every refusal and error it is
+//   deleted, explicitly, before the error is returned (`TempCopy::discard`)
+//   — and when that fails (its folder made read-only since the copy was
+//   made, say), the error says so and names it, so whoever called can
+//   delete it. (Until Codex's catch-up review of revisions 8-10, finding 7,
+//   a failed deletion was ignored without a word, and this comment said
+//   the copy was deleted on every refusal and error.) A program stopped by
+//   force, or one that crashes mid-save, cannot delete it at all: it stays,
+//   hidden, beside the file. In every one of these cases the copy is named
+//   `.meedya-tag-save-<process id>-<number>.tmp` and can be deleted by
+//   hand, and the original is untouched. (Dropping a copy that was neither
+//   put in place nor discarded — a save interrupted by a crash that still
+//   unwinds — tries once more to delete it, silently, as a last resort.)
 // - Be cheap for a large file: every save copies the whole file, and lofty
 //   reads the whole file into memory to save it.
 
@@ -235,7 +243,10 @@ pub(crate) struct TempCopy {
     path: PathBuf,
     file: File,
     identity: FileIdentity,
-    kept: bool,
+    /// Whether the copy is finished with — put in the original's place, or
+    /// discarded (deleted, or reported as not deletable) — so that dropping
+    /// it does nothing more.
+    done: bool,
 }
 
 /// Numbers the temporary copies this process makes, so two saves at once
@@ -300,26 +311,44 @@ impl TempCopy {
                     )))
                 }
             };
-            // From here on `copy` exists, so any failure deletes it again.
+            // From here on the copy exists, so every failure deletes it
+            // again — and says so, naming it, when it cannot.
+            let identity = match identity_of_handle(&file) {
+                Ok(identity) => identity,
+                Err(e) => {
+                    // Which file it is cannot be read, so it cannot be
+                    // checked before deleting; it was made by the call
+                    // above an instant ago, so it is deleted by name.
+                    drop(file);
+                    let removed = std::fs::remove_file(&candidate);
+                    return Err(with_copy_not_deleted(e.into(), &candidate, removed));
+                }
+            };
             let mut copy = TempCopy {
                 path: candidate,
                 file,
-                identity: FileIdentity { device: 0, file: 0 },
-                kept: false,
+                identity,
+                done: false,
             };
-            copy.identity = identity_of_handle(&copy.file)?;
-            // The contents, through the handle `create_new` returned: the
-            // name is never opened a second time.
-            original.file.seek(SeekFrom::Start(0))?;
-            io::copy(&mut original.file, &mut copy.file)?;
-            copy.file.seek(SeekFrom::Start(0))?;
-            return Ok(copy);
+            return match copy.fill_from(original) {
+                Ok(()) => Ok(copy),
+                Err(e) => Err(copy.discard(e.into())),
+            };
         }
         Err(MetadataError::WriteError(format!(
             "could not find a free name for the temporary copy an M4A save is checked on (the \
              {NAMES_TRIED} names tried in {} were all taken). Nothing was written.",
             folder.display()
         )))
+    }
+
+    /// Writes `original`'s whole contents into the copy, through the handle
+    /// `create_new` returned: the name is never opened a second time.
+    fn fill_from(&mut self, original: &mut Original) -> io::Result<()> {
+        original.file.seek(SeekFrom::Start(0))?;
+        io::copy(&mut original.file, &mut self.file)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        Ok(())
     }
 
     /// The copy's open file, for saving into and reading back.
@@ -349,9 +378,21 @@ impl TempCopy {
     /// Puts this copy in `original`'s place (steps 4 and 5 at the top of
     /// this file): the original's permissions, a flush to the disk, the
     /// check that both names still name the two open files, then one
-    /// rename. On any failure the copy is deleted and the original is left
-    /// as it was.
+    /// rename. On any failure the original is left as it was, and the copy
+    /// is deleted — or, when it cannot be, named in the error
+    /// ([`TempCopy::discard`]).
     pub(crate) fn replace(mut self, original: Original) -> Result<(), MetadataError> {
+        match self.put_in_place(original) {
+            Ok(()) => {
+                self.done = true;
+                Ok(())
+            }
+            Err(error) => Err(self.discard(error)),
+        }
+    }
+
+    /// The steps of [`TempCopy::replace`], stopping at the first that fails.
+    fn put_in_place(&mut self, original: Original) -> Result<(), MetadataError> {
         self.file
             .set_permissions(original.file.metadata()?.permissions())?;
         self.file.sync_all()?;
@@ -401,9 +442,55 @@ impl TempCopy {
         let Original { path, file, .. } = original;
         drop(file);
         std::fs::rename(&self.path, &path)?;
-        self.kept = true;
         Ok(())
     }
+
+    /// Deletes this copy, because the save it was made for will not go
+    /// ahead, and returns `error` — the reason — for the caller to pass on.
+    /// When the copy cannot be deleted (its folder no longer writable, say),
+    /// the error instead says so as well and names the copy, so it can be
+    /// deleted by hand (see the top of this file). A copy whose name now
+    /// names some other file is not deleted — that file is left alone
+    /// (step 4) — and needs no word.
+    pub(crate) fn discard(mut self, error: MetadataError) -> MetadataError {
+        self.done = true;
+        let removed = self.remove();
+        with_copy_not_deleted(error, &self.path, removed)
+    }
+
+    /// Deletes the copy, if its name still names it (if the name is gone,
+    /// so is the copy; if it names another file, that is left alone).
+    fn remove(&self) -> io::Result<()> {
+        match identity_of_name(&self.path) {
+            Ok(identity) if identity == self.identity => std::fs::remove_file(&self.path),
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// `error`, as it is when `removed` says the temporary copy at `path` was
+/// deleted; otherwise a [`MetadataError::WriteError`] whose message is
+/// `error`'s, followed by a sentence saying the copy could not be deleted,
+/// why, and where it is.
+fn with_copy_not_deleted(
+    error: MetadataError,
+    path: &Path,
+    removed: io::Result<()>,
+) -> MetadataError {
+    let Err(why) = removed else {
+        return error;
+    };
+    let first = match error {
+        MetadataError::WriteError(message) => message,
+        other => other.to_string(),
+    };
+    MetadataError::WriteError(format!(
+        "{first} The temporary copy the save was made on could not be deleted afterwards ({why}): \
+         it is {}, beside the file, and can be deleted by hand. The file itself was not changed.",
+        path.display()
+    ))
 }
 
 /// Tests only: what a test hands [`WHILE_THE_COPY_EXISTS`] — called with
@@ -422,17 +509,41 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// Tests only: whether this environment lets a program write where
+/// permissions say it may not — as the superuser does — shown by trying
+/// it, in `dir`, on a file and in a folder made read-only for the purpose
+/// (both removed again). A test that needs permissions to hold says so and
+/// stops when they do not, rather than passing without testing anything.
+#[cfg(all(test, unix))]
+pub(crate) fn permissions_are_ignored_here(dir: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let read_only = |path: &Path, mode| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("mode");
+    };
+    let file = dir.join("read-only-file-probe");
+    std::fs::write(&file, b"probe").expect("probe file");
+    read_only(&file, 0o444);
+    let file_ignored = OpenOptions::new().write(true).open(&file).is_ok();
+    read_only(&file, 0o644);
+    std::fs::remove_file(&file).expect("remove the probe file");
+    let folder = dir.join("read-only-folder-probe");
+    std::fs::create_dir(&folder).expect("probe folder");
+    read_only(&folder, 0o555);
+    let folder_ignored = File::create(folder.join("probe")).is_ok();
+    read_only(&folder, 0o755);
+    std::fs::remove_dir_all(&folder).expect("remove the probe folder");
+    file_ignored || folder_ignored
+}
+
 impl Drop for TempCopy {
+    /// The last resort, for a copy neither put in place nor discarded — a
+    /// save interrupted by a crash that still unwinds, say: deleted if it
+    /// can be (only the copy itself: a file now at its name is left alone),
+    /// silently, since there is no error left to say so in. Every ordinary
+    /// way out goes through [`TempCopy::discard`] instead.
     fn drop(&mut self) {
-        if self.kept {
-            return;
-        }
-        // Only the copy itself is deleted: if its name now names something
-        // else (step 4 found it swapped), that is left alone. Nothing more
-        // can be done if deleting fails; the copy is a hidden file beside
-        // the original, never the original itself.
-        if matches!(identity_of_name(&self.path), Ok(identity) if identity == self.identity) {
-            let _ = std::fs::remove_file(&self.path);
+        if !self.done {
+            let _ = self.remove();
         }
     }
 }
@@ -593,6 +704,72 @@ mod tests {
         assert!(refusal.contains("the file ("), "{refusal}");
         assert_eq!(std::fs::read(&path).expect("read"), b"a newer file");
         assert!(!copy_path.exists(), "the copy is deleted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_that_cannot_be_deleted_is_named_in_the_error() {
+        // Codex's catch-up review of revisions 8-10, finding 7: the folder
+        // made read-only after the copy was made, so the rename fails and
+        // so does deleting the copy. That second failure used to be
+        // ignored, leaving a hidden copy of the whole recording with
+        // nothing to say so; now the error names it.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        if permissions_are_ignored_here(dir.path()) {
+            eprintln!(
+                "skipped: this environment ignores file permissions (running as the \
+                 superuser?), so a folder cannot be made read-only to test this"
+            );
+            return;
+        }
+        let mode = |mode| std::fs::Permissions::from_mode(mode);
+        let (path, mut original) = original_in(dir.path(), b"original");
+        // Replacing: the rename fails, then deleting the copy does.
+        let copy = TempCopy::of(&mut original).expect("copy");
+        let copy_path = copy.path().to_path_buf();
+        std::fs::set_permissions(dir.path(), mode(0o555)).expect("read-only folder");
+        let replaced = copy.replace(original);
+        std::fs::set_permissions(dir.path(), mode(0o755)).expect("writable again");
+        let message = match replaced {
+            Err(MetadataError::WriteError(message)) => message,
+            other => panic!("expected the copy to be named, got {other:?}"),
+        };
+        assert!(message.contains("Permission denied"), "{message}");
+        assert!(
+            message.contains(&format!(
+                "could not be deleted afterwards (Permission denied (os error 13)): it is {}",
+                copy_path.display()
+            )),
+            "{message}"
+        );
+        assert!(copy_path.exists(), "the copy is where the error says");
+        assert_eq!(std::fs::read(&path).expect("read"), b"original");
+        // Discarding, as a refused save does: the same.
+        let mut original = Original::open(&path).expect("open");
+        let copy = TempCopy::of(&mut original).expect("copy");
+        let other_path = copy.path().to_path_buf();
+        std::fs::set_permissions(dir.path(), mode(0o555)).expect("read-only folder");
+        let error = copy.discard(MetadataError::WriteError("refused.".to_string()));
+        std::fs::set_permissions(dir.path(), mode(0o755)).expect("writable again");
+        let message = error.to_string();
+        assert!(
+            message.contains("refused. The temporary copy the save was made on could not be"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&other_path.display().to_string()),
+            "{message}"
+        );
+        assert!(other_path.exists());
+        // And when deleting works, the error is passed on as it was.
+        let copy = TempCopy::of(&mut original).expect("copy");
+        let third = copy.path().to_path_buf();
+        match copy.discard(MetadataError::ReadError("as it was".to_string())) {
+            MetadataError::ReadError(message) => assert_eq!(message, "as it was"),
+            other => panic!("changed: {other:?}"),
+        }
+        assert!(!third.exists(), "deleted");
     }
 
     #[cfg(unix)]

@@ -1181,7 +1181,8 @@ fn atoms_asked_for(
 /// tag save may change — the audio, the chunk offsets, everything else in
 /// `moov` and at the top of the file (see `mp4_file_check`). Otherwise the
 /// copy is deleted, the file is not touched, and the error names
-/// everything that would have changed.
+/// everything that would have changed - and, if the copy could not be
+/// deleted, the copy too, so it can be deleted by hand.
 fn save_mp4_checked(
     mut source: Original,
     ilst: &Ilst,
@@ -1191,6 +1192,27 @@ fn save_mp4_checked(
     let mut copy = TempCopy::of(&mut source)?;
     #[cfg(test)]
     copy.let_tests_look();
+    // From here on, a refusal or an error deletes the copy before it is
+    // returned - and names it when it cannot be deleted (`TempCopy::discard`;
+    // until Codex's catch-up review of revisions 8-10, finding 7, a failed
+    // deletion went unreported).
+    match save_into_and_check(&mut source, &mut copy, ilst, original, expected) {
+        Ok(()) => copy.replace(source),
+        Err(error) => Err(copy.discard(error)),
+    }
+}
+
+/// Saves `ilst` into `copy` and compares the result with `source` (see
+/// [`save_mp4_checked`]): `Ok` when the copy may replace the file, or else
+/// the refusal naming everything that would have changed - or the error
+/// that stopped the check.
+fn save_into_and_check(
+    source: &mut Original,
+    copy: &mut TempCopy,
+    ilst: &Ilst,
+    original: &[RawAtom],
+    expected: &Expected,
+) -> Result<(), MetadataError> {
     ilst.save_to(copy.file(), WriteOptions::default())?;
     #[cfg(test)]
     copy.let_tests_look();
@@ -1215,7 +1237,7 @@ fn save_mp4_checked(
              refused.)"
         )));
     }
-    copy.replace(source)
+    Ok(())
 }
 
 /// The item keys `write_common_tag_to_lofty` writes for `common_tag` and
@@ -4337,6 +4359,72 @@ mod tests {
                 assert_eq!(mode(&path), original_mode, "{name}");
                 assert_only_the_file_is_there(dir.path(), name);
             }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_a_failed_save_cannot_delete_is_named_in_the_error() {
+        // Codex's catch-up review of revisions 8-10, finding 7, through
+        // write_tags: the folder is made read-only just after the copy is
+        // made (through the test seam), so neither the rename nor deleting
+        // the copy can work. Before the fix the copy was left there with
+        // nothing to say so; now the error names it, the file is as it was,
+        // and the copy is where the error says - for a save that would have
+        // been accepted (the rename fails) and one refused by the checks.
+        use std::cell::RefCell;
+        use std::os::unix::fs::PermissionsExt;
+        use std::rc::Rc;
+        for (name, first_part) in [
+            ("plain-tone.m4a", "Permission denied"),
+            (
+                "flags-and-freeform.m4a",
+                "could not be saved exactly as asked",
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            if crate::save_by_copy::permissions_are_ignored_here(dir.path()) {
+                eprintln!(
+                    "skipped: this environment ignores file permissions (running as the \
+                     superuser?), so a folder cannot be made read-only to test this"
+                );
+                return;
+            }
+            let path = real_m4a(dir.path(), name);
+            let before = std::fs::read(&path).expect("read");
+            let folder = dir.path().to_path_buf();
+            let copy = Rc::new(RefCell::new(None));
+            let named = Rc::clone(&copy);
+            let result = while_the_copy_exists(
+                move |at| {
+                    named.borrow_mut().get_or_insert_with(|| at.to_path_buf());
+                    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555))
+                        .expect("read-only folder");
+                },
+                || title_only(&path),
+            );
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+                .expect("writable again");
+            let copy = copy.borrow().clone().expect("the save made a copy");
+            let message = match result {
+                Err(MetadataError::WriteError(message)) => message,
+                other => panic!("{name}: expected a refusal, got {other:?}"),
+            };
+            assert!(message.contains(first_part), "{name}: {message}");
+            assert!(
+                message.contains("could not be deleted afterwards"),
+                "{name}: {message}"
+            );
+            assert!(
+                message.contains(&copy.display().to_string()),
+                "{name}: the copy is named: {message}"
+            );
+            assert!(
+                message.contains("The file itself was not changed"),
+                "{message}"
+            );
+            assert!(copy.exists(), "{name}: the copy is where the error says");
+            assert_eq!(std::fs::read(&path).expect("read"), before, "{name}");
         }
     }
 
