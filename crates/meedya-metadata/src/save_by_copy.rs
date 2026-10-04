@@ -83,6 +83,14 @@
 //     is the step L3 removed);
 //   - the creation ("birth") time, where the system keeps one: the new
 //     file's is the time of the save;
+//   - on Windows, any named alternate data stream: NTFS can keep further
+//     named streams of data beside a file's main contents (`song.m4a:notes`
+//     — some programs keep notes, or where a download came from, there).
+//     Only the main stream is copied (`io::copy` reads that alone), so after
+//     the rename they are gone — and nothing checks for them first, so the
+//     save goes ahead without a word (Codex's catch-up review of revisions
+//     8-10, finding 6; worked out from the calls used, not tried on
+//     Windows);
 //   - and it needs the folder to be writable, not just the file.
 //   The permission bits (read, write, run) ARE copied.
 // - Promise the copy is always deleted. On every refusal and error it is
