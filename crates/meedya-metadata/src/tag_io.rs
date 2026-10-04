@@ -1189,7 +1189,11 @@ fn save_mp4_checked(
     expected: &Expected,
 ) -> Result<(), MetadataError> {
     let mut copy = TempCopy::of(&mut source)?;
+    #[cfg(test)]
+    copy.let_tests_look();
     ilst.save_to(copy.file(), WriteOptions::default())?;
+    #[cfg(test)]
+    copy.let_tests_look();
     let saved = mp4_save_check::read_ilst_atoms_from(copy.file())?;
     let mut problems = mp4_save_check::differences(original, &saved, expected);
     problems.extend(mp4_file_check::differences_outside_the_tags(
@@ -4281,6 +4285,58 @@ mod tests {
         ] {
             let message = refused_variant(&bytes, title_only);
             assert!(message.contains(said), "{message}");
+        }
+    }
+
+    /// Runs `f` with `look` called on the temporary copy's name at each
+    /// moment a save pauses with the copy in existence (just after it is
+    /// made, and just after lofty has saved into it).
+    fn while_the_copy_exists<T>(look: impl FnMut(&Path) + 'static, f: impl FnOnce() -> T) -> T {
+        use crate::save_by_copy::WHILE_THE_COPY_EXISTS;
+        WHILE_THE_COPY_EXISTS.with(|hook| *hook.borrow_mut() = Some(Box::new(look)));
+        let out = f();
+        WHILE_THE_COPY_EXISTS.with(|hook| *hook.borrow_mut() = None);
+        out
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_copy_of_a_private_file_is_never_readable_by_anyone_else() {
+        // Codex's catch-up review of revisions 8-10, finding 1: the copy a
+        // save is checked on was made with the usual permissions (0644),
+        // so a private recording (0600) could be read by every other
+        // account while the save was checked - also when it was then
+        // refused. Looked at WHILE the copy exists: owner-only both times,
+        // for a save that is accepted and one that is refused after lofty
+        // has saved into the copy; afterwards the file keeps exactly its
+        // own permissions.
+        use std::cell::RefCell;
+        use std::os::unix::fs::PermissionsExt;
+        use std::rc::Rc;
+        let mode =
+            |path: &Path| std::fs::metadata(path).expect("stat").permissions().mode() & 0o777;
+        for (name, accepted) in [("plain-tone.m4a", true), ("flags-and-freeform.m4a", false)] {
+            for original_mode in [0o600, 0o644] {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let path = real_m4a(dir.path(), name);
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(original_mode))
+                    .expect("mode");
+                let seen = Rc::new(RefCell::new(Vec::new()));
+                let looked = Rc::clone(&seen);
+                let result = while_the_copy_exists(
+                    move |copy| looked.borrow_mut().push(mode(copy)),
+                    || title_only(&path),
+                );
+                assert_eq!(result.is_ok(), accepted, "{name}: {result:?}");
+                assert_eq!(
+                    *seen.borrow(),
+                    [0o600, 0o600],
+                    "{name}, {original_mode:o}: the copy, after it was made and after lofty saved \
+                     into it"
+                );
+                assert_eq!(mode(&path), original_mode, "{name}");
+                assert_only_the_file_is_there(dir.path(), name);
+            }
         }
     }
 

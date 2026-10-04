@@ -30,9 +30,25 @@
 //    folder could have put a link there between the two steps, and the
 //    copy — the whole audio file — would have been written wherever the
 //    link pointed.)
+//    **And it is private from the moment it exists**: on Unix it is made
+//    readable and writable by its owner only (permissions 0600 — the
+//    program's file-creation mask can only take more away), before a
+//    single byte is copied into it, and it keeps that until step 4. (Until
+//    Codex's catch-up review of revisions 8-10, finding 1, it was made with
+//    the usual permissions, normally 0644: the whole of a private
+//    recording, kept 0600, could be read by every other account on the
+//    machine for as long as the save was being checked — and still could
+//    when the save was then refused, until the copy was deleted.) Windows
+//    has no such permission bits: there the copy gets whatever access
+//    rules its folder gives every new file in it, which may let others
+//    read it where the original's own rules did not, for as long as it
+//    exists — and, since a file's own rules are not copied, the saved file
+//    keeps the folder's rules afterwards too (see the losses below).
 // 3. **lofty saves into that same handle**, and the checks read the copy
 //    back through it (see `tag_io::save_mp4_checked`).
-// 4. **Before the rename**, the copy is given the original's permissions,
+// 4. **Before the rename**, the copy is given the original's permissions
+//    (only now, once it has passed every check and is about to take the
+//    original's place — never wider than the original's at any moment),
 //    flushed to the disk (`sync_all`), and both names are checked to still
 //    name the files the two handles hold: device and inode number on
 //    Unix, volume serial number and file index on Windows. A name that
@@ -263,12 +279,16 @@ impl TempCopy {
             // `create_new`: fails if the name is taken at all — a file or
             // a symbolic link, which is never followed — so nothing that
             // was already there is opened or written through.
-            let file = match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create_new(true);
+            // Private from the moment it exists, before anything is copied
+            // into it (step 2 at the top of this file): owner only.
+            #[cfg(unix)]
             {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let file = match options.open(&candidate) {
                 Ok(file) => file,
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => {
@@ -311,6 +331,19 @@ impl TempCopy {
     #[cfg(test)]
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Tests only: hands the copy's name to [`WHILE_THE_COPY_EXISTS`], when
+    /// a test has set it. `tag_io` calls this at the two moments a save
+    /// holds the whole recording in the copy before any check has run:
+    /// just after the copy is made, and just after lofty has saved into it.
+    #[cfg(test)]
+    pub(crate) fn let_tests_look(&self) {
+        WHILE_THE_COPY_EXISTS.with(|hook| {
+            if let Some(look) = hook.borrow_mut().as_mut() {
+                look(&self.path);
+            }
+        });
     }
 
     /// Puts this copy in `original`'s place (steps 4 and 5 at the top of
@@ -371,6 +404,22 @@ impl TempCopy {
         self.kept = true;
         Ok(())
     }
+}
+
+/// Tests only: what a test hands [`WHILE_THE_COPY_EXISTS`] — called with
+/// the copy's name.
+#[cfg(test)]
+pub(crate) type LookAtTheCopy = Box<dyn FnMut(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: called with the copy's name at the moments a save
+    /// pauses with the copy in existence ([`TempCopy::let_tests_look`]), so
+    /// a test can look at the copy — or change the folder around it — while
+    /// it exists. Set per thread, so tests running side by side never see
+    /// each other's.
+    pub(crate) static WHILE_THE_COPY_EXISTS: std::cell::RefCell<Option<LookAtTheCopy>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 impl Drop for TempCopy {
@@ -584,6 +633,36 @@ mod tests {
             assert!(message.contains("Nothing was written"), "{message}");
         }
         assert_eq!(names_in(dir.path()), ["f.m4a"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_copy_is_private_from_the_moment_it_exists() {
+        // Codex's catch-up review of revisions 8-10, finding 1: the copy
+        // was made with the usual permissions (0644 under the usual
+        // creation mask), so a private file's whole contents were readable
+        // by others while the save was checked. Now owner-only from the
+        // start, whatever the original's - and the original's permissions
+        // only once it replaces the original.
+        use std::os::unix::fs::PermissionsExt;
+        let mode =
+            |path: &Path| std::fs::metadata(path).expect("stat").permissions().mode() & 0o777;
+        for original_mode in [0o600, 0o644, 0o666] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("f.m4a");
+            std::fs::write(&path, b"a private recording").expect("write");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(original_mode))
+                .expect("mode");
+            let mut original = Original::open(&path).expect("open");
+            let copy = TempCopy::of(&mut original).expect("copy");
+            assert_eq!(
+                mode(copy.path()),
+                0o600,
+                "the copy of a {original_mode:o} file"
+            );
+            copy.replace(original).expect("replace");
+            assert_eq!(mode(&path), original_mode, "after replacing");
+        }
     }
 
     #[cfg(unix)]
