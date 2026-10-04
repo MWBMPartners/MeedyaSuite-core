@@ -374,6 +374,34 @@ fn collect_common_tags(tag: &Tag, result: &mut TagMap) {
 /// the `pgap`/`hdvd`/`shwm` flags as text, freeform names in its own
 /// spelling), so a write to a file holding any of those — as iTunes and
 /// Apple Music files typically do — is refused until the real fix in #102.
+/// The rest of the file is checked too — the audio, where each piece of it
+/// starts, and every atom outside the tags must be as they were — and a
+/// fragmented file, or one whose metadata box has no tag list, is refused
+/// before anything is written.
+///
+/// **On an M4A file, what is stored is measured against what the CALLER
+/// gave**, not against the library's own conversion of it (the stand-in
+/// review of revision 9, M4), and a value the file would not store exactly
+/// as given refuses the call before anything is written, whatever the file
+/// already holds:
+///
+/// - a track or disc number, or a total of tracks or discs, must be a whole
+///   number from 1 to 65535 written with digits only (`70000` and `abc`
+///   used to be dropped without a word, and on a file holding track 3 of
+///   12 the track number was lost);
+/// - a year must be four digits, 1000 to 9999 (lofty puts the year in front
+///   of an existing full date's month and day, so `2021` over `2019-03-01`
+///   stores `2021-03-01`; anything shorter or longer would break that date,
+///   and anything else was dropped — a full date can be written as
+///   `ReleaseDate` instead);
+/// - the compilation flag must be `1` or `0`;
+/// - every other field is stored as the text given, and that is checked;
+/// - a field an M4A file has no atom for — `Arranger`, `AcoustId` (the
+///   `Acoustid Id` item) and `ReplayGainReferenceLoudness` (the
+///   `REPLAYGAIN_REFERENCE_LOUDNESS` item) — is refused, naming it, instead
+///   of being left out without a word. So [`write_acoustid_tags`] and
+///   [`write_replaygain_tags`], which always write one of those, are
+///   refused on every M4A file.
 pub fn write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<(), MetadataError> {
     if !path.exists() {
         return Err(MetadataError::FileNotFound(path.display().to_string()));
@@ -390,10 +418,14 @@ pub fn write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<(), Metad
     edit_and_save(path, |tag, languages, asked| {
         // Every value is applied to the in-memory tag first; the file is
         // only saved once all of them have been accepted. A refused value
-        // (only a language can be refused) therefore returns here with
+        // (a language; or, on an M4A file, a value it would not store as
+        // given, or a field it has no atom for) therefore returns here with
         // the file untouched.
         for (common_tag, value) in tags {
             if *common_tag != CommonTag::Language {
+                if tag.tag_type() == TagType::Mp4Ilst {
+                    refuse_what_an_m4a_would_not_store(*common_tag, value)?;
+                }
                 // Recorded even when the value is the one already there:
                 // writing it is still asking for it (see `edit_and_save`).
                 asked.extend(keys_written(tag.tag_type(), *common_tag, value));
@@ -424,8 +456,13 @@ pub fn write_tags(path: &Path, tags: &[(CommonTag, String)]) -> Result<(), Metad
 
 /// Write ReplayGain analysis results to a media file.
 ///
-/// Writes track-level gain and peak. Optionally writes album-level values
-/// and reference loudness if `album_result` is provided.
+/// Writes track-level gain and peak, and the reference loudness; with
+/// `album_result`, the album-level gain and peak too.
+///
+/// **On an M4A file this is refused** before anything is written: an M4A
+/// file has no atom for the reference loudness, and a field that would be
+/// left out is now refused rather than dropped without a word (see
+/// [`write_tags`]). Write the gains and peaks with [`write_tags`] instead.
 pub fn write_replaygain_tags(
     path: &Path,
     result: &meedya_fingerprint::ReplayGainResult,
@@ -451,6 +488,12 @@ pub fn write_replaygain_tags(
 /// Write AcoustID fingerprint results to a media file.
 ///
 /// Writes the AcoustID UUID and optionally the first MusicBrainz recording ID.
+///
+/// **On an M4A file this is refused** before anything is written: an M4A
+/// file has no atom for the AcoustID item this writes (`Acoustid Id`), and a
+/// field that would be left out is now refused rather than dropped without
+/// a word (see [`write_tags`]). The MusicBrainz recording ID alone can be
+/// written with [`write_tags`].
 pub fn write_acoustid_tags(
     path: &Path,
     result: &meedya_fingerprint::AcoustIdResult,
@@ -938,12 +981,13 @@ fn values_by_key<'a>(tag: &'a Tag, steps: &mut u64) -> HashMap<&'a ItemKey, Vec<
 /// beside it (a second ISRC atom), or put back over it (a registry write
 /// aimed at the language atom), shows up in the comparison.
 ///
-/// **Not checked**: a key that has no MP4 atom at all. lofty leaves such a
-/// key out of an M4A file without a word, as it always has — `Arranger`,
-/// `Producer` and `Engineer`, and the `Acoustid Id` and
-/// `REPLAYGAIN_REFERENCE_LOUDNESS` items `write_acoustid_tags` and
-/// `write_replaygain_tags` write — and there is no atom to compare.
-/// (`write_registry_tags` refuses such a key itself, #103.)
+/// **A key that has no MP4 atom at all** never gets here from `write_tags`:
+/// it refuses such a field first, naming it
+/// (`refuse_what_an_m4a_would_not_store` — `Arranger`, and the
+/// `Acoustid Id` and `REPLAYGAIN_REFERENCE_LOUDNESS` items). This comment
+/// used to list `Producer` and `Engineer` among them too; lofty 0.22.4 does
+/// store both, as `----:com.apple.iTunes:PRODUCER` and `…:ENGINEER`.
+/// (`write_registry_tags` refuses a key it cannot store itself, #103.)
 ///
 /// Fails, so the save is refused before anything is written, when a value
 /// asked for would not be stored at all (lofty drops a compilation flag of
@@ -1175,6 +1219,105 @@ fn keys_written(tag_type: TagType, common_tag: CommonTag, value: &str) -> Vec<It
         return Vec::new();
     }
     scratch.items().map(|item| item.key().clone()).collect()
+}
+
+/// On an M4A file, refuses — before anything is written — a value the file
+/// would not store exactly as the caller gave it, or a field it has no atom
+/// for (see [`write_tags`] for the rules and why; the stand-in review of
+/// revision 9, M4 and "keys with no M4A atom"). The answer depends on
+/// `common_tag` and `value` only, never on what the file holds.
+///
+/// The field's written form is found by making the very write into an empty
+/// tag and letting lofty convert it (`merge_tag`), as it will when saving —
+/// so the check follows lofty, not a list kept by hand.
+fn refuse_what_an_m4a_would_not_store(
+    common_tag: CommonTag,
+    value: &str,
+) -> Result<(), MetadataError> {
+    let refusal = |why: String| {
+        MetadataError::WriteError(format!(
+            "cannot write {common_tag:?} {value:?} to this M4A file: {why}. Nothing was written. \
+             (Issue #102: an M4A write must store exactly what was given.)"
+        ))
+    };
+    let digits = !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+    match common_tag {
+        CommonTag::TrackNumber
+        | CommonTag::DiscNumber
+        | CommonTag::TotalTracks
+        | CommonTag::TotalDiscs => {
+            let in_range = digits && matches!(value.parse::<u32>(), Ok(1..=65535));
+            if !in_range {
+                return Err(refusal(
+                    "an M4A file stores it as a whole number from 1 to 65535, so it must be \
+                     given as one, in digits only; the library this crate saves M4A files with \
+                     would otherwise drop it, or change it, without a word"
+                        .to_string(),
+                ));
+            }
+        }
+        CommonTag::Year if !(digits && value.len() == 4 && !value.starts_with('0')) => {
+            return Err(refusal(
+                "an M4A file keeps the year at the start of its date, so it must be four \
+                 digits, as in 2019 (anything else would be dropped, or would break a full \
+                 date already there); a full date can be written as the release date \
+                 instead"
+                    .to_string(),
+            ));
+        }
+        CommonTag::Compilation if !matches!(value, "1" | "0") => {
+            return Err(refusal(
+                "an M4A file stores it as a number, 1 (yes) or 0 (no), so it must be given as 1 \
+                 or 0"
+                    .to_string(),
+            ));
+        }
+        _ => {}
+    }
+
+    // What lofty writes for it, alone, in an empty tag.
+    let mut scratch = Tag::new(TagType::Mp4Ilst);
+    write_common_tag_to_lofty(&mut scratch, common_tag, value)?;
+    let keys: Vec<ItemKey> = scratch.items().map(|item| item.key().clone()).collect();
+    if let Some(key) = keys
+        .iter()
+        .find(|key| AtomIdent::try_from((*key).clone()).is_err())
+    {
+        return Err(refusal(format!(
+            "the library this crate saves M4A files with has no M4A atom for it (it would be \
+             the item {key:?}), so saving would leave it out without a word"
+        )));
+    }
+    if keys.is_empty() {
+        return Err(refusal(
+            "the library this crate saves M4A files with would store nothing for it".to_string(),
+        ));
+    }
+    let numbers = matches!(
+        common_tag,
+        CommonTag::TrackNumber
+            | CommonTag::DiscNumber
+            | CommonTag::TotalTracks
+            | CommonTag::TotalDiscs
+            | CommonTag::Compilation
+    );
+    if !numbers {
+        // Stored as the text given, every atom of it, and nothing else.
+        let (nothing, _) = Ilst::default().split_tag();
+        let stored = nothing.merge_tag(scratch);
+        let as_given = (&stored)
+            .into_iter()
+            .flat_map(Atom::data)
+            .all(|data| matches!(data, AtomData::UTF8(text) if text == value));
+        if !as_given || (&stored).into_iter().next().is_none() {
+            return Err(refusal(
+                "the library this crate saves M4A files with would not store it as the text \
+                 given"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Takes every language atom out of `ilst` (a file written before the
@@ -2834,7 +2977,20 @@ mod tests {
         // The registry write in `unrelated_writes` uses a `MeedyaMeta:`
         // key, which an M4A file cannot store and which is therefore
         // refused there (#103); an M4A file gets a registry write with a
-        // proper freeform key instead.
+        // proper freeform key instead. And `write_replaygain_tags` always
+        // writes the reference loudness, which an M4A file has no atom for,
+        // so it is refused there (the stand-in review of revision 9); an
+        // M4A file gets the gain and peak written with `write_tags`.
+        fn gain_and_peak(path: &Path) {
+            write_tags(
+                path,
+                &[
+                    (CommonTag::ReplayGainTrackGain, "-3.80 dB".into()),
+                    (CommonTag::ReplayGainTrackPeak, "0.933000".into()),
+                ],
+            )
+            .expect("gain and peak");
+        }
         fn freeform_registry(path: &Path) {
             let written = write_registry_tags(
                 path,
@@ -2845,12 +3001,10 @@ mod tests {
             .expect("registry write");
             assert_eq!(written, 1);
         }
-        let writes = unrelated_writes().map(|(name, write)| {
-            if name == "write_registry_tags" {
-                (name, freeform_registry as FileWrite)
-            } else {
-                (name, write)
-            }
+        let writes = unrelated_writes().map(|(name, write)| match name {
+            "write_registry_tags" => (name, freeform_registry as FileWrite),
+            "write_replaygain_tags" => (name, gain_and_peak as FileWrite),
+            _ => (name, write),
         });
         for (write_name, unrelated_write) in writes {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -3435,6 +3589,9 @@ mod tests {
     fn a_value_lofty_would_leave_out_is_refused_not_reported_written() {
         // lofty stores the compilation flag only as 0 or 1; "yes" would
         // be dropped, and the write used to succeed without storing it.
+        // Refused since revision 9 - by the comparison then ("the value
+        // given for cpil cannot be stored"), and since the stand-in review
+        // of revision 9 (M4) before the save, by the value itself.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = real_m4a(dir.path(), "one-value-each.m4a");
         let before = std::fs::read(&path).expect("read");
@@ -3442,13 +3599,179 @@ mod tests {
             Err(MetadataError::WriteError(message)) => message,
             other => panic!("expected a refusal, got {other:?}"),
         };
-        assert!(
-            message.contains("the value given for cpil cannot be stored in an M4A file"),
-            "{message}"
-        );
+        assert!(message.contains("must be given as 1 or 0"), "{message}");
         assert_eq!(std::fs::read(&path).expect("read"), before);
         // "1" is stored.
         write_tags(&path, &[(CommonTag::Compilation, "1".into())]).expect("a flag");
+    }
+
+    /// A sample value an M4A file stores exactly as given, for `common_tag`.
+    fn storable_value(common_tag: CommonTag) -> &'static str {
+        match common_tag {
+            CommonTag::TrackNumber
+            | CommonTag::DiscNumber
+            | CommonTag::TotalTracks
+            | CommonTag::TotalDiscs => "7",
+            CommonTag::Year => "2021",
+            CommonTag::Compilation => "1",
+            _ => "a value",
+        }
+    }
+
+    #[test]
+    fn a_value_an_m4a_would_not_store_as_given_is_refused_whatever_the_file_holds() {
+        // The stand-in review of revision 9 (M4): "exactly what was asked"
+        // is measured against what the CALLER gave, not lofty's conversion
+        // of it. On a file holding track 3 of 12, the track number 70000
+        // used to be accepted and the track number lost (lofty's `u16`
+        // could not hold it, so it wrote track 0 of 12), and the total
+        // "abc" likewise lost the total; on a file with no track atom the
+        // same writes were refused by the comparison. Now the same answer
+        // for both: refused before anything is written.
+        let cases: &[(CommonTag, &str)] = &[
+            (CommonTag::TrackNumber, "70000"),
+            (CommonTag::TotalTracks, "abc"),
+            (CommonTag::DiscNumber, "70000"),
+            (CommonTag::TotalDiscs, "0"),
+            (CommonTag::TrackNumber, "+5"),
+            (CommonTag::TrackNumber, " 5"),
+            (CommonTag::TrackNumber, ""),
+            (CommonTag::Year, "2019-03-01"),
+            (CommonTag::Year, "02019"),
+            (CommonTag::Year, "0999"),
+            (CommonTag::Year, "999"),
+            (CommonTag::Compilation, "yes"),
+            (CommonTag::Compilation, "true"),
+        ];
+        for &(common_tag, value) in cases {
+            let mut messages = Vec::new();
+            // Track 3 of 12; then no track atom at all.
+            for name in ["plain-tone.m4a", "chapters.m4a"] {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let path = real_m4a(dir.path(), name);
+                let before = std::fs::read(&path).expect("read");
+                let message = match write_tags(&path, &[(common_tag, value.to_string())]) {
+                    Err(MetadataError::WriteError(message)) => message,
+                    other => panic!("{common_tag:?} {value:?} on {name}: got {other:?}"),
+                };
+                assert!(
+                    message.starts_with(&format!("cannot write {common_tag:?} {value:?}")),
+                    "{message}"
+                );
+                assert!(message.contains("Nothing was written"), "{message}");
+                assert_eq!(std::fs::read(&path).expect("read"), before, "{name}");
+                assert_only_the_file_is_there(dir.path(), name);
+                messages.push(message);
+            }
+            assert_eq!(messages[0], messages[1], "the same answer for both files");
+        }
+    }
+
+    #[test]
+    fn values_an_m4a_stores_as_given_are_written() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "plain-tone.m4a");
+        write_tags(&path, &[(CommonTag::TrackNumber, "7".into())]).expect("track");
+        let read = read_tags(&path).expect("read");
+        assert_eq!(read[&CommonTag::TrackNumber], ["7"]);
+        assert_eq!(read[&CommonTag::TotalTracks], ["12"], "the total kept");
+        write_tags(&path, &[(CommonTag::TotalTracks, "65535".into())]).expect("total");
+        assert_eq!(
+            read_tags(&path).expect("read")[&CommonTag::TotalTracks],
+            ["65535"]
+        );
+        write_tags(&path, &[(CommonTag::Compilation, "0".into())]).expect("flag");
+        // A year over a full date: lofty keeps the month and day.
+        let path = real_m4a(dir.path(), "one-value-each.m4a");
+        write_tags(&path, &[(CommonTag::Year, "2021".into())]).expect("year");
+        assert_eq!(read_tags(&path).expect("read")[&CommonTag::Year], ["2021"]);
+        let day: Vec<RawAtom> = raw_atoms(&path)
+            .into_iter()
+            .filter(|atom| atom.key == fourcc(b"\xa9day"))
+            .collect();
+        assert_eq!(day[0].values[0].value, b"2021-05-01");
+    }
+
+    #[test]
+    fn a_field_an_m4a_has_no_atom_for_is_refused_by_name() {
+        // Found from lofty's own conversion, never from a list: every
+        // `CommonTag` but the language (written its own way) is tried.
+        // lofty 0.22.4 has an M4A atom for every field but these three
+        // (`Producer` and `Engineer`, once thought missing too, are stored
+        // as `----:com.apple.iTunes:PRODUCER` and `…:ENGINEER`).
+        use strum::IntoEnumIterator;
+        let without_an_atom: Vec<CommonTag> = CommonTag::iter()
+            .filter(|tag| *tag != CommonTag::Language)
+            .filter(
+                |tag| match refuse_what_an_m4a_would_not_store(*tag, storable_value(*tag)) {
+                    Ok(()) => false,
+                    Err(MetadataError::WriteError(message)) => {
+                        assert!(message.contains("has no M4A atom for it"), "{message}");
+                        true
+                    }
+                    Err(other) => panic!("{tag:?}: {other:?}"),
+                },
+            )
+            .collect();
+        assert_eq!(
+            without_an_atom,
+            [
+                CommonTag::AcoustId,
+                CommonTag::ReplayGainReferenceLoudness,
+                CommonTag::Arranger
+            ]
+        );
+        // Each refused on a real file, named, the file untouched.
+        for (tag, item) in [
+            (CommonTag::AcoustId, "Acoustid Id"),
+            (
+                CommonTag::ReplayGainReferenceLoudness,
+                "REPLAYGAIN_REFERENCE_LOUDNESS",
+            ),
+            (CommonTag::Arranger, "Arranger"),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = real_m4a(dir.path(), "plain-tone.m4a");
+            let before = std::fs::read(&path).expect("read");
+            let message = match write_tags(&path, &[(tag, "x".into())]) {
+                Err(MetadataError::WriteError(message)) => message,
+                other => panic!("{tag:?}: got {other:?}"),
+            };
+            assert!(
+                message.contains(&format!("cannot write {tag:?}")),
+                "{message}"
+            );
+            assert!(message.contains(item), "{message}");
+            assert_eq!(std::fs::read(&path).expect("read"), before, "{tag:?}");
+        }
+        // So the two helpers that always write one of them are refused.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "plain-tone.m4a");
+        let before = std::fs::read(&path).expect("read");
+        let gain = meedya_fingerprint::ReplayGainResult {
+            integrated_loudness: -14.2,
+            true_peak: 0.933,
+            gain_db: -3.8,
+            reference_level: -18.0,
+        };
+        assert!(write_replaygain_tags(&path, &gain, None).is_err());
+        let acoustid = meedya_fingerprint::AcoustIdResult {
+            acoustid: "0123".into(),
+            score: 1.0,
+            recording_ids: vec!["abcd".into()],
+            fingerprint: String::new(),
+            duration_secs: 1,
+        };
+        assert!(write_acoustid_tags(&path, &acoustid).is_err());
+        assert_eq!(std::fs::read(&path).expect("read"), before);
+        // Every other field is written on a real file.
+        for tag in CommonTag::iter()
+            .filter(|tag| *tag != CommonTag::Language && !without_an_atom.contains(tag))
+        {
+            let path = real_m4a(dir.path(), "plain-tone.m4a");
+            write_tags(&path, &[(tag, storable_value(tag).to_string())])
+                .unwrap_or_else(|e| panic!("{tag:?}: {e}"));
+        }
     }
 
     #[cfg(unix)]
