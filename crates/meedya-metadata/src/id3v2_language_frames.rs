@@ -34,6 +34,20 @@
 // mutagen read `eng`, then `fra, eng` after one save. Such a file is now
 // refused before anything is written (see `tlan_frames_in_tags`).
 //
+// And not only when BOTH tags hold languages (the stand-in review of
+// revision 9, M2). Revision 9 refused only a file whose language frames
+// were in two or more of its tags; a file with two tags and its language
+// frames in just ONE of them still went through, and still lost: lofty
+// reads and rewrites only one of the tags, so on an MP3 whose only
+// language frame sat in its SECOND tag, a write of the language `deu`
+// reported success while the file kept `eng` (the frame lofty never
+// touched), and on one whose second tag held `eng` and `fra` in two
+// frames, a title-only write left mutagen reading `fra` alone. So a file
+// with two or more ID3v2 tags (MP3), or two or more ID3 chunks (WAV,
+// AIFF), is refused whenever ANY of them holds a language frame. One tag
+// followed by an ID3v1 tail or an APE tag at the end of the file, and a
+// tag with padding, are still one tag.
+//
 // It is deliberately small, and deliberately cautious:
 //
 // - **Every name lofty reads as the language frame counts**: `TLAN`; in an
@@ -69,8 +83,8 @@
 //   compressed or encrypted, an unknown text encoding, text that does not
 //   decode, a frame that runs past the end of its tag, a frame whose name
 //   lofty would not accept (it must be three or four capital letters or
-//   digits), an ID3v2.4 frame named `TLA` and a zero, language frames in
-//   more than one ID3v2 tag (above). Refusing leaves the
+//   digits), an ID3v2.4 frame named `TLA` and a zero, a language frame in
+//   a file with more than one ID3v2 tag (above). Refusing leaves the
 //   file exactly as it was; saving would have lost languages. (A file
 //   split the way this crate split them before revision 6, and
 //   `TagFile::save` still does — lofty's format-neutral save — has none of
@@ -123,10 +137,11 @@ pub(crate) enum TlanFrames {
 ///
 /// Fails with [`MetadataError::WriteError`] when the file seems to hold two
 /// or more language frames but one of them cannot be read (see the top of this
-/// file for which cases), or when they are in more than one ID3v2 tag (an
+/// file for which cases), or when the file has more than one ID3v2 tag (an
 /// MP3 file's tags one after another, or several ID3 chunks of a WAV or AIFF
-/// file); the message says what, in plain words. A file that cannot be read
-/// at all gives [`MetadataError::IoError`].
+/// file) and any of them holds a language frame; the message says what, in
+/// plain words. A file that cannot be read at all gives
+/// [`MetadataError::IoError`].
 pub(crate) fn read_tlan_frames(
     path: &Path,
     file_type: FileType,
@@ -374,10 +389,14 @@ fn may_hold_old_name_in_v2_4(tag: &[u8]) -> bool {
 fn tlan_frames_in_tags(tags: &[Vec<u8>]) -> Result<TlanFrames, MetadataError> {
     // The cheap look (top of this file): every form of the name, counted
     // in each tag's body. One old-named frame in an ID3v2.4 tag is enough
-    // on its own to need a look, since it refuses the save by itself.
+    // on its own to need a look, since it refuses the save by itself; so is
+    // one language name anywhere in a file with more than one tag, since a
+    // single language frame there refuses the save too (M2 at the top of
+    // this file).
     let named_total: usize = tags.iter().map(|tag| language_names_in(tag)).sum();
     let old_name = tags.iter().any(|tag| may_hold_old_name_in_v2_4(tag));
-    if named_total < 2 && !old_name {
+    let several_tags = tags.len() > 1;
+    if named_total < 2 && !old_name && !(several_tags && named_total > 0) {
         return Ok(TlanFrames::AtMostOne);
     }
 
@@ -403,17 +422,20 @@ fn tlan_frames_in_tags(tags: &[Vec<u8>]) -> Result<TlanFrames, MetadataError> {
         }
         frames.extend(found);
     }
-    if tags_holding_frames > 1 {
-        // See the top of this file: lofty's save rewrites only one of the
-        // tags, so merging would leave the languages in two places.
+    if several_tags && tags_holding_frames > 0 {
+        // See the top of this file: lofty reads and rewrites only one of
+        // the tags, so a language in another is not seen, not changed and
+        // not merged - wherever it is.
+        let tag_count = tags.len();
         return Err(MetadataError::WriteError(format!(
-            "this file holds language frames (TLAN) in {tags_holding_frames} separate ID3v2 \
-             tags - an MP3 file with tags one after another, or a WAV or AIFF file with more \
-             than one ID3 chunk. lofty, the library this crate saves files with, rewrites only \
-             one of them and leaves the others as they are, so a save would leave the \
-             languages in more than one place, in an order that can change from one save to \
-             the next. Nothing was written. (Such a file needs its tags merged into one by \
-             another tool before this library can write to it.)"
+            "this file has {tag_count} separate ID3v2 tags - an MP3 file with tags one after \
+             another, or a WAV or AIFF file with more than one ID3 chunk - and language frames \
+             (TLAN) in {tags_holding_frames} of them. lofty, the library this crate saves files \
+             with, reads and rewrites only one of those tags and leaves the others as they are, \
+             so a save could change the language in one tag while another still holds the old \
+             one, or leave the languages in more than one place, in an order that can change \
+             from one save to the next. Nothing was written. (Such a file needs its tags merged \
+             into one by another tool before this library can write to it.)"
         )));
     }
     if frames.len() < 2 {
@@ -827,9 +849,17 @@ mod tests {
         let first = tag(3, 0, &[text_frame(3, b"TLAN", 0, b"eng")], 0);
         let second = tag(4, 0, &[text_frame(4, b"TLAN", 3, b"fra")], 0);
         let message = refusal(&[first.clone(), second]);
-        assert!(message.contains("in 2 separate ID3v2 tags"), "{message}");
+        assert!(message.contains("has 2 separate ID3v2 tags"), "{message}");
+        assert!(
+            message.contains("language frames (TLAN) in 2 of them"),
+            "{message}"
+        );
         assert!(message.contains("Nothing was written"), "{message}");
-        // A second tag holding no language frame is no reason to refuse.
+        // Language frames in only ONE of the tags refuse too (the stand-in
+        // review of revision 9, M2 - this test used to say "a second tag
+        // holding no language frame is no reason to refuse", and passed
+        // both of these): lofty reads and rewrites one tag only, so a
+        // language in the other is never seen.
         let no_language = tag(4, 0, &[text_frame(4, b"TIT2", 3, b"TLAN")], 0);
         let two = tag(
             3,
@@ -840,12 +870,29 @@ mod tests {
             ],
             0,
         );
+        for tags in [
+            vec![two.clone(), no_language.clone()],
+            vec![no_language.clone(), two.clone()],
+            vec![first.clone(), tag(4, 0, &[], 8)],
+            vec![tag(4, 0, &[], 8), first.clone()],
+        ] {
+            let message = refusal(&tags);
+            assert!(message.contains("in 1 of them"), "{message}");
+        }
+        // Two tags and no language frame in either: nothing to refuse
+        // (the `TLAN` inside the title's text is not a frame).
         assert_eq!(
-            tlan_frames_in_tags(&[two, no_language]).expect("read"),
+            tlan_frames_in_tags(&[no_language.clone(), tag(4, 0, &[], 8)]).expect("read"),
+            TlanFrames::AtMostOne
+        );
+        // One tag, however its languages are held: merged or passed as
+        // before.
+        assert_eq!(
+            tlan_frames_in_tags(&[two]).expect("read"),
             several(&["eng", "fra"])
         );
         assert_eq!(
-            tlan_frames_in_tags(&[first, tag(4, 0, &[], 8)]).expect("read"),
+            tlan_frames_in_tags(&[first]).expect("read"),
             TlanFrames::AtMostOne
         );
     }
@@ -1244,23 +1291,31 @@ mod tests {
 
     #[test]
     fn an_mp3_s_tags_are_found_after_leading_zero_bytes() {
-        // Zero bytes first (lofty skips them), then two tags back to back,
-        // then an MPEG frame header. With the languages in the first tag
-        // only, they are read; with a language in the second too, the
-        // second tag is found as well — so the save is refused.
-        let mp3 = |second: Vec<u8>| {
+        // Zero bytes first (lofty skips them), then the tags back to back,
+        // then an MPEG frame header. One tag holding the languages: they
+        // are read. A second tag after it - even one holding no language -
+        // is found as well, so the save is refused (a language frame in a
+        // file with two tags; the stand-in review of revision 9, M2).
+        let mp3 = |tags: Vec<Vec<u8>>| {
             let mut bytes = vec![0u8; 5];
-            bytes.extend(split_tag(4));
-            bytes.extend(second);
+            for tag in tags {
+                bytes.extend(tag);
+            }
             bytes.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
             bytes.extend(vec![0u8; 100]);
             bytes
         };
+        assert_eq!(
+            read(mp3(vec![split_tag(4)]), FileType::Mpeg),
+            several(&["eng", "fra"])
+        );
         let title = tag(3, 0, &[text_frame(3, b"TIT2", 0, b"Title")], 0);
-        assert_eq!(read(mp3(title), FileType::Mpeg), several(&["eng", "fra"]));
+        let message = read_refusal(mp3(vec![split_tag(4), title]), FileType::Mpeg);
+        assert!(message.contains("has 2 separate ID3v2 tags"), "{message}");
+        assert!(message.contains("in 1 of them"), "{message}");
         let language = tag(3, 0, &[text_frame(3, b"TLAN", 0, b"deu")], 0);
-        let message = read_refusal(mp3(language), FileType::Mpeg);
-        assert!(message.contains("in 2 separate ID3v2 tags"), "{message}");
+        let message = read_refusal(mp3(vec![split_tag(4), language]), FileType::Mpeg);
+        assert!(message.contains("in 2 of them"), "{message}");
     }
 
     #[test]
@@ -1275,7 +1330,7 @@ mod tests {
         let mut bytes = first;
         bytes.extend(tag(4, 0, &[text_frame(4, b"TLAN", 3, b"fra")], 0));
         let message = read_refusal(bytes, FileType::Aac);
-        assert!(message.contains("in 2 separate ID3v2 tags"), "{message}");
+        assert!(message.contains("has 2 separate ID3v2 tags"), "{message}");
     }
 
     /// A RIFF (`big_endian` false) or FORM file: the 12-byte header, an
@@ -1352,7 +1407,7 @@ mod tests {
             });
             let message = read_refusal(bytes, file_type);
             assert!(
-                message.contains("in 2 separate ID3v2 tags"),
+                message.contains("has 2 separate ID3v2 tags"),
                 "{file_type:?}: {message}"
             );
         }

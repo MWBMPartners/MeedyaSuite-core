@@ -131,8 +131,9 @@ const MP4_LANGUAGE: AtomIdent<'static> = AtomIdent::Freeform {
 /// one `TLAN` frame per language, the languages of every frame are
 /// returned, in file order (see the top of this file for why both needed
 /// care). In the rare case that such repeated frames cannot be read (the
-/// cases `id3v2_language_frames` lists, among them language frames in more
-/// than one ID3v2 tag or ID3 chunk), this returns what lofty reads and logs
+/// cases `id3v2_language_frames` lists, among them a language frame in a
+/// file with more than one ID3v2 tag or ID3 chunk), this returns what lofty
+/// reads and logs
 /// a warning; a write to that file is refused, so it cannot delete or
 /// scatter the others.
 pub fn read_tags(path: &Path) -> Result<TagMap, MetadataError> {
@@ -609,9 +610,10 @@ fn is_mp4_freeform_key(key_text: &str) -> bool {
 /// Fails, without changing `tagged_file`, when the file seems to hold
 /// several language frames that cannot be read (a compressed or encrypted
 /// frame, an unknown text encoding, an unsynchronised tag…), language
-/// frames in more than one ID3v2 tag (an MP3 file's tags one after another,
-/// or several ID3 chunks of a WAV or AIFF file: lofty's save rewrites only
-/// one of them, so merging would leave languages in two places), or an old
+/// frames in a file with more than one ID3v2 tag (an MP3 file's tags one
+/// after another, or several ID3 chunks of a WAV or AIFF file: lofty reads
+/// and rewrites only one of them, so a language in another is never seen,
+/// changed or merged), or an old
 /// `TLA` frame inside an ID3v2.4 tag (a language to other programs, which
 /// lofty's save would turn into an ordinary text frame): saving would lose
 /// languages, so do not save. The error ([`MetadataError::WriteError`])
@@ -4060,6 +4062,71 @@ mod tests {
         tag
     }
 
+    /// A copy of the real test file `name` from `testdata/id3/`
+    /// (`make_id3_fixtures.py` there makes them), in `dir`.
+    fn real_id3_file(dir: &Path, name: &str) -> std::path::PathBuf {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata/id3")
+            .join(name);
+        let path = dir.join(name);
+        std::fs::copy(&source, &path).expect("copy the test file");
+        path
+    }
+
+    #[test]
+    fn a_language_frame_in_just_one_of_two_id3_tags_or_chunks_refuses_the_write() {
+        // The stand-in review of revision 9's three files (M2), on real
+        // audio: a language frame only in the SECOND of two tags (a write of
+        // `deu` used to report success while the file kept `eng`); the
+        // languages split over two frames in the second tag (a title-only
+        // write used to leave mutagen reading `fra` alone); and a WAV file
+        // whose language is only in its second ID3 chunk. Each refused, the
+        // file byte for byte as it was - a language write and a title-only
+        // write alike.
+        for name in [
+            "two-tags-lang-in-second.mp3",
+            "two-tags-split-in-second.mp3",
+            "two-chunks-lang-in-second.wav",
+        ] {
+            for tags in [
+                vec![(CommonTag::Language, "deu".to_string())],
+                vec![(CommonTag::Title, "T".to_string())],
+            ] {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let path = real_id3_file(dir.path(), name);
+                let before = std::fs::read(&path).expect("read");
+                let message = match write_tags(&path, &tags) {
+                    Err(MetadataError::WriteError(message)) => message,
+                    other => panic!("{name} {tags:?}: expected a refusal, got {other:?}"),
+                };
+                assert!(message.contains("has 2 separate ID3v2 tags"), "{message}");
+                assert!(message.contains("in 1 of them"), "{message}");
+                assert!(message.contains("Nothing was written"), "{message}");
+                assert_eq!(std::fs::read(&path).expect("read"), before, "{name}");
+                assert_only_the_file_is_there(dir.path(), name);
+            }
+        }
+    }
+
+    #[test]
+    fn one_id3_tag_with_a_v1_tail_an_ape_tag_or_padding_is_still_written() {
+        // Still ONE ID3v2 tag: an ID3v1 tail or an APE tag at the end of the
+        // file, and padding inside the tag, are not a second tag.
+        for (name, languages) in [
+            ("one-tag-split-v1.mp3", &["eng", "fra"][..]),
+            ("one-tag-split-ape.mp3", &["eng", "fra"][..]),
+            ("one-tag-padded.mp3", &["eng"][..]),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = real_id3_file(dir.path(), name);
+            write_tags(&path, &[(CommonTag::Title, "T".into())])
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let read = read_tags(&path).expect("read");
+            assert_eq!(read[&CommonTag::Title], ["T"], "{name}");
+            assert_eq!(read[&CommonTag::Language], languages, "{name}");
+        }
+    }
+
     #[test]
     fn language_frames_in_two_id3_tags_or_chunks_refuse_every_write() {
         // The stand-in review of revision 8: a WAV file with an `id3 `
@@ -4094,7 +4161,7 @@ mod tests {
                     Err(MetadataError::WriteError(message)) => message,
                     other => panic!("{name}, {write}: expected a refusal, got {other:?}"),
                 };
-                assert!(message.contains("in 2 separate ID3v2 tags"), "{message}");
+                assert!(message.contains("has 2 separate ID3v2 tags"), "{message}");
                 assert!(message.contains("Nothing was written"), "{message}");
                 assert_eq!(
                     std::fs::read(&path).expect("read"),
