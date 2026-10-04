@@ -772,6 +772,15 @@ mod tests {
         assert!(!third.exists(), "deleted");
     }
 
+    // The next two need permissions to hold. They used to look at the
+    // refusal only IF there was one, so a guard that stopped refusing
+    // passed them just the same (Codex's catch-up review of revisions
+    // 8-10, finding 8 - shown with both guards broken: the read-only file
+    // opened for writing, the copy made in another folder; both passed).
+    // Now a missing refusal fails them, unless the environment is shown -
+    // by trying - to ignore permissions, as the superuser does; then they
+    // say so and stop.
+
     #[cfg(unix)]
     #[test]
     fn a_folder_that_cannot_be_written_gets_a_plain_message() {
@@ -783,14 +792,23 @@ mod tests {
         let result = TempCopy::of(&mut original);
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
             .expect("writable again");
-        // Running as the superuser, the folder is writable anyway.
-        if let Err(error) = result {
-            let message = error.to_string();
-            assert!(
-                message.contains("so the file's folder must be writable"),
-                "{message}"
-            );
-            assert!(message.contains("Nothing was written"), "{message}");
+        match result {
+            Err(error) => {
+                let message = error.to_string();
+                assert!(
+                    message.contains("so the file's folder must be writable"),
+                    "{message}"
+                );
+                assert!(message.contains("Nothing was written"), "{message}");
+            }
+            Ok(_) if permissions_are_ignored_here(dir.path()) => eprintln!(
+                "skipped: this environment ignores file permissions (running as the \
+                 superuser?), so a folder cannot be made read-only to test this"
+            ),
+            Ok(copy) => panic!(
+                "a copy was made ({}) although the file's folder was read-only",
+                copy.path().display()
+            ),
         }
         assert_eq!(std::fs::read(&path).expect("read"), b"original");
     }
@@ -803,11 +821,17 @@ mod tests {
         let path = dir.path().join("f.m4a");
         std::fs::write(&path, b"original").expect("write");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).expect("read-only");
-        // Running as the superuser, the file can be opened for writing.
-        if let Err(error) = Original::open(&path) {
-            let message = error.to_string();
-            assert!(message.contains("read-only"), "{message}");
-            assert!(message.contains("Nothing was written"), "{message}");
+        match Original::open(&path) {
+            Err(error) => {
+                let message = error.to_string();
+                assert!(message.contains("read-only"), "{message}");
+                assert!(message.contains("Nothing was written"), "{message}");
+            }
+            Ok(_) if permissions_are_ignored_here(dir.path()) => eprintln!(
+                "skipped: this environment ignores file permissions (running as the \
+                 superuser?), so a file cannot be made read-only to test this"
+            ),
+            Ok(_) => panic!("a read-only file was opened to be saved"),
         }
         assert_eq!(names_in(dir.path()), ["f.m4a"]);
     }

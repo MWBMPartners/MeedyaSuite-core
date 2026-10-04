@@ -1131,6 +1131,69 @@ mod tests {
     }
 
     #[test]
+    fn a_64_bit_offset_not_moved_with_the_audio_is_found_check_b() {
+        // The same damage in a `co64` table, which holds each offset in
+        // eight bytes - read and dispatched separately from `stco`, and
+        // until Codex's catch-up review of revisions 8-10 (finding 8) not
+        // exercised by any test. The file of the test above with its table
+        // turned into a `co64` (four bytes longer, so `moov` - ahead of
+        // the audio - and the offsets with it are worked out again).
+        let with_co64 = |title: &[u8], wrong: Option<u64>| {
+            let file = file(title, 0, true);
+            let table = |offset: u64| {
+                let mut content = vec![0, 0, 0, 0, 0, 0, 0, 1];
+                content.extend_from_slice(&offset.to_be_bytes());
+                atom(b"co64", &content)
+            };
+            let right = u64::from(u32::from_be_bytes(read_first_offset(&file))) + 4;
+            let stco = stco(&[u32::from_be_bytes(read_first_offset(&file))]);
+            let at = file
+                .windows(stco.len())
+                .position(|window| window == stco.as_slice())
+                .expect("stco");
+            let mut out = file[..at].to_vec();
+            out.extend(table(wrong.unwrap_or(right)));
+            out.extend_from_slice(&file[at + stco.len()..]);
+            // Every container on the way grows by the four bytes.
+            for name in [b"moov", b"trak", b"mdia", b"minf", b"stbl"] {
+                let at = out
+                    .windows(4)
+                    .position(|window| window == name)
+                    .expect("container")
+                    - 4;
+                let size = u32::from_be_bytes(out[at..at + 4].try_into().expect("4")) + 4;
+                out[at..at + 4].copy_from_slice(&size.to_be_bytes());
+            }
+            (out, right)
+        };
+        let (original, _) = with_co64(b"Old", None);
+        // Moved right, it passes; a value past 32 bits is read whole.
+        let (moved, right) = with_co64(&[b'x'; 200], None);
+        assert_eq!(outside(&original, &moved), Vec::<String>::new());
+        // Left where it was, it is found - as a co64 entry.
+        let (_, was) = with_co64(b"Old", None);
+        let (not_moved, _) = with_co64(&[b'x'; 200], Some(was));
+        assert_ne!(right, was);
+        let found = outside(&original, &not_moved);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].contains(
+                "entry 1 of moov → trak → mdia → minf → stbl → co64 would point to the wrong place"
+            ),
+            "{found:?}"
+        );
+        // An entry wrong only in its top four bytes - invisible to anything
+        // reading four-byte entries - is found too.
+        let (high, _) = with_co64(&[b'x'; 200], Some(right + (1 << 32)));
+        let found = outside(&original, &high);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].contains("co64 would point to the wrong place"),
+            "{found:?}"
+        );
+    }
+
+    #[test]
     fn an_offset_pointing_outside_the_audio_cannot_be_checked_check_b() {
         let good = file(b"Old", 64, false);
         let offset = u32::from_be_bytes(read_first_offset(&good));
