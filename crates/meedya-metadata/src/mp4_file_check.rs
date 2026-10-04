@@ -84,6 +84,7 @@
 // proves that the save changed nothing it was not asked to change; a file
 // that was already damaged is saved as damaged as it was.
 
+use std::collections::HashMap;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 
 use crate::error::MetadataError;
@@ -260,17 +261,25 @@ pub(crate) fn differences_outside_the_tags(
     original: &mut (impl Read + Seek),
     saved: &mut (impl Read + Seek),
 ) -> Result<Vec<String>, MetadataError> {
+    differences_outside_the_tags_counted(original, saved, &mut 0)
+}
+
+/// [`differences_outside_the_tags`], adding to `steps` the work the walk
+/// did - one for each atom read or numbered, each pair compared and each
+/// block of bytes compared - so a test can show it grows in step with the
+/// file, never faster (Codex's catch-up review of revisions 8-10, finding
+/// 4; see [`Place`]).
+fn differences_outside_the_tags_counted(
+    original: &mut (impl Read + Seek),
+    saved: &mut (impl Read + Seek),
+    steps: &mut u64,
+) -> Result<Vec<String>, MetadataError> {
     let len_a = original.seek(SeekFrom::End(0))?;
     let len_b = saved.seek(SeekFrom::End(0))?;
-    let mut walk = Walk {
-        a: BufReader::with_capacity(BLOCK, original),
-        b: BufReader::with_capacity(BLOCK, saved),
-        len_a,
-        len_b,
-        mdats: Vec::new(),
-        problems: Vec::new(),
-    };
-    walk.whole_file().map_err(|why| match why {
+    let mut walk = Walk::new(original, len_a, saved, len_b);
+    let walked = walk.whole_file();
+    *steps += walk.steps;
+    walked.map_err(|why| match why {
         Stop::Unreadable(why) => unreadable(why),
         Stop::Io(e) => MetadataError::IoError(e),
     })?;
@@ -313,20 +322,70 @@ fn names(atoms: &[BoxAt]) -> String {
     format!("[{}]", listed.join(", "))
 }
 
-/// Where an atom sits, as a person reads it: `moov → trak 2 → mdia`. An
-/// atom is numbered when its parent holds more than one of that name.
-fn path_to(parent: &str, atom: &BoxAt, siblings: &[BoxAt]) -> String {
-    let same: Vec<&BoxAt> = siblings.iter().filter(|s| s.name == atom.name).collect();
-    let mut name = name_of(&atom.name);
-    if same.len() > 1 {
-        let index = same.iter().position(|s| s.start == atom.start).unwrap_or(0);
-        name.push_str(&format!(" {}", index + 1));
+/// Where an atom sits: its name, its number among the atoms of that name in
+/// its parent (only when the parent holds more than one), and its parent's
+/// place. A chain of borrowed places, nothing written out: it is turned
+/// into words - `moov → trak 2 → mdia` - only when a difference is
+/// reported.
+///
+/// Until Codex's catch-up review of revisions 8-10 (finding 4) every atom's
+/// place was written out as it was met, and its number found by searching
+/// all the atoms beside it, even when nothing differed: 100,000 small atoms
+/// side by side in `moov` took some ten billion name comparisons (measured
+/// before the fix, in a debug build: 12,500 such atoms took 7 seconds,
+/// 25,000 took 31 and 50,000 took 109). Now each container's names are
+/// counted once ([`numbers`]) and the words are made only for a difference.
+struct Place<'a> {
+    parent: Option<&'a Place<'a>>,
+    name: [u8; 4],
+    number: Option<usize>,
+}
+
+impl Place<'_> {
+    /// The place as a person reads it: `moov → trak 2 → mdia`.
+    fn words(&self) -> String {
+        let mut names = Vec::new();
+        let mut at = Some(self);
+        while let Some(place) = at {
+            let mut name = name_of(&place.name);
+            if let Some(number) = place.number {
+                name.push_str(&format!(" {number}"));
+            }
+            names.push(name);
+            at = place.parent;
+        }
+        names.reverse();
+        names.join(" → ")
     }
-    if parent.is_empty() {
-        name
-    } else {
-        format!("{parent} → {name}")
+}
+
+/// The place of the container whose parts are being compared, in words for
+/// a message: `None` is the top of the file.
+fn whose(container: Option<&Place<'_>>) -> String {
+    container.map_or_else(|| "the file".to_string(), Place::words)
+}
+
+/// Each of `atoms`' number among the atoms of its name (counting from 1),
+/// when there is more than one of that name; `None` when it is the only
+/// one. Two passes over the atoms - one counting each name, one numbering
+/// them - each adding one to `steps` per atom, so the work grows in step
+/// with the number of atoms (see [`Place`] for what it replaced).
+fn numbers(atoms: &[BoxAt], steps: &mut u64) -> Vec<Option<usize>> {
+    let mut how_many: HashMap<[u8; 4], usize> = HashMap::new();
+    for atom in atoms {
+        *steps += 1;
+        *how_many.entry(atom.name).or_default() += 1;
     }
+    let mut so_far: HashMap<[u8; 4], usize> = HashMap::new();
+    atoms
+        .iter()
+        .map(|atom| {
+            *steps += 1;
+            let number = so_far.entry(atom.name).or_default();
+            *number += 1;
+            (how_many[&atom.name] > 1).then_some(*number)
+        })
+        .collect()
 }
 
 /// How an atom's own header is written: 8 bytes, or 16 with a 64-bit size.
@@ -345,18 +404,18 @@ enum Level {
 }
 
 /// Refuses (as "cannot be checked") the original's `parts` of `container`
-/// (at `path`) when one of them is a container lofty follows that may not
-/// sit there (see [`may_hold`]): the comparison refuses such a file by
-/// itself, whatever the check before saving did.
-fn refuse_nesting(container: &[u8; 4], path: &str, parts: &[BoxAt]) -> Result<(), Stop> {
+/// when one of them is a container lofty follows that may not sit there
+/// (see [`may_hold`]): the comparison refuses such a file by itself,
+/// whatever the check before saving did.
+fn refuse_nesting(container: &Place<'_>, parts: &[BoxAt]) -> Result<(), Stop> {
     match parts
         .iter()
-        .find(|part| lofty_follows(&part.name) && !may_hold(container, &part.name))
+        .find(|part| lofty_follows(&part.name) && !may_hold(&container.name, &part.name))
     {
         Some(part) => Err(Stop::Unreadable(nesting_problem(
             &part.name,
-            container,
-            &format!("{path} → {}", name_of(&part.name)),
+            &container.name,
+            &format!("{} → {}", container.words(), name_of(&part.name)),
         ))),
         None => Ok(()),
     }
@@ -371,39 +430,64 @@ struct MovedData {
 }
 
 /// The two files being compared, and what has been found.
+///
+/// The files are read straight through their own handles, not through a
+/// buffer: the walk jumps from atom to atom, and a buffered reader throws
+/// its whole buffer away at every jump, so with one in between each 8-byte
+/// atom header cost a 64 KiB read. The blocks long stretches are compared
+/// in are made once and used again.
 struct Walk<A: Read + Seek, B: Read + Seek> {
-    a: BufReader<A>,
-    b: BufReader<B>,
+    a: A,
+    b: B,
     /// How long each file is: no stretch past its end is ever read.
     len_a: u64,
     len_b: u64,
+    block_a: Vec<u8>,
+    block_b: Vec<u8>,
     mdats: Vec<MovedData>,
     problems: Vec<String>,
+    /// One for each atom read or numbered, each pair compared, and each
+    /// block of bytes compared: the work done, counted without a clock (a
+    /// test checks it grows in step with the file).
+    steps: u64,
 }
 
 impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
+    /// A walk over `a` (the original, `len_a` bytes long) and `b` (the
+    /// saved copy, `len_b`).
+    fn new(a: A, len_a: u64, b: B, len_b: u64) -> Self {
+        Walk {
+            a,
+            b,
+            len_a,
+            len_b,
+            block_a: vec![0; BLOCK],
+            block_b: vec![0; BLOCK],
+            mdats: Vec::new(),
+            problems: Vec::new(),
+            steps: 0,
+        }
+    }
+
     /// The atoms between `start` and `end` of each file — the parts of
-    /// `whose` (a path such as `moov → udta`, or empty for the top of the
-    /// file). Any bytes after the last of them (fewer than 8, too few for
-    /// an atom) are compared as they are.
+    /// `container` (`None` for the top of the file). Any bytes after the
+    /// last of them (fewer than 8, too few for an atom) are compared as
+    /// they are.
     fn parts(
         &mut self,
-        whose: &str,
+        container: Option<&Place<'_>>,
         a: (u64, u64),
         b: (u64, u64),
     ) -> Result<(Vec<BoxAt>, Vec<BoxAt>), Stop> {
         let in_a = boxes_in_file(&mut self.a, a.0, a.1)?;
         let in_b = boxes_in_file(&mut self.b, b.0, b.1)?;
+        self.steps += (in_a.len() + in_b.len()) as u64;
         let tail_a = in_a.last().map_or(a.0, |atom| atom.end);
         let tail_b = in_b.last().map_or(b.0, |atom| atom.end);
         if !self.same_bytes((tail_a, a.1), (tail_b, b.1))? {
-            let whose = if whose.is_empty() {
-                "the file".to_string()
-            } else {
-                whose.to_string()
-            };
             self.problems.push(format!(
-                "the bytes after the last atom in {whose} would change"
+                "the bytes after the last atom in {} would change",
+                whose(container)
             ));
         }
         Ok((in_a, in_b))
@@ -433,13 +517,13 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
         }
         self.a.seek(SeekFrom::Start(a.0))?;
         self.b.seek(SeekFrom::Start(b.0))?;
-        let (mut block_a, mut block_b) = (vec![0u8; BLOCK], vec![0u8; BLOCK]);
         let mut left = a.1 - a.0;
         while left > 0 {
+            self.steps += 1;
             let n = usize::try_from(left).map_or(BLOCK, |left| left.min(BLOCK));
-            self.a.read_exact(&mut block_a[..n])?;
-            self.b.read_exact(&mut block_b[..n])?;
-            if block_a[..n] != block_b[..n] {
+            self.a.read_exact(&mut self.block_a[..n])?;
+            self.b.read_exact(&mut self.block_b[..n])?;
+            if self.block_a[..n] != self.block_b[..n] {
                 return Ok(false);
             }
             left -= n as u64;
@@ -455,11 +539,11 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
 
     /// Checks (a), (b), (c) and (d): the top of the file.
     fn whole_file(&mut self) -> Result<(), Stop> {
-        let len_a = self.a.seek(SeekFrom::End(0))?;
-        let len_b = self.b.seek(SeekFrom::End(0))?;
-        let (top_a, top_b) = self.parts("", (0, len_a), (0, len_b))?;
+        let (len_a, len_b) = (self.len_a, self.len_b);
+        let (top_a, top_b) = self.parts(None, (0, len_a), (0, len_b))?;
         let top_a: Vec<BoxAt> = top_a.into_iter().filter(|x| !is_padding(&x.name)).collect();
         let top_b: Vec<BoxAt> = top_b.into_iter().filter(|x| !is_padding(&x.name)).collect();
+        self.steps += (top_a.len() + top_b.len()) as u64;
         if top_a
             .iter()
             .map(|x| x.name)
@@ -488,6 +572,7 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
         // `mdat` moved.
         let mut mdat_number = 0;
         for (x, y) in top_a.iter().zip(&top_b) {
+            self.steps += 1;
             if &x.name != b"mdat" {
                 continue;
             }
@@ -506,19 +591,26 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
         }
         // (c) and (d): lofty reads and writes the FIRST `moov` only; any
         // other is compared byte for byte, like every other atom here.
+        let numbers = numbers(&top_a, &mut self.steps);
         let mut first_moov = true;
-        for (x, y) in top_a.iter().zip(&top_b) {
+        for ((x, y), number) in top_a.iter().zip(&top_b).zip(numbers) {
+            self.steps += 1;
+            let place = Place {
+                parent: None,
+                name: x.name,
+                number,
+            };
             match &x.name {
                 b"mdat" => {}
                 b"moov" if first_moov => {
                     first_moov = false;
-                    self.moov(x, y)?;
+                    self.moov(&place, x, y)?;
                 }
                 _ => {
                     if !self.same_atom(x, y)? {
                         self.problems.push(format!(
                             "the atom {} at the top of the file would change",
-                            path_to("", x, &top_a)
+                            place.words()
                         ));
                     }
                 }
@@ -529,12 +621,13 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
 
     /// Check (c) for `moov`: its size may change, and a `udta` lofty made
     /// may have been added at its start; everything else is compared.
-    fn moov(&mut self, x: &BoxAt, y: &BoxAt) -> Result<(), Stop> {
+    fn moov(&mut self, place: &Place<'_>, x: &BoxAt, y: &BoxAt) -> Result<(), Stop> {
         if header_len(x) != header_len(y) {
             self.problems
-                .push("the header of moov would change form".to_string());
+                .push(format!("the header of {} would change form", place.words()));
         }
-        let (in_a, mut in_b) = self.parts("moov", (x.body_start, x.end), (y.body_start, y.end))?;
+        let (in_a, mut in_b) =
+            self.parts(Some(place), (x.body_start, x.end), (y.body_start, y.end))?;
         if in_a.iter().any(|atom| &atom.name == b"mvex") {
             self.problems.push(
                 "the file is fragmented (its moov has an `mvex` atom), and where each piece says \
@@ -548,44 +641,55 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
             && &in_b[0].name == b"udta"
         {
             let made = in_b.remove(0);
-            self.made_udta(&made)?;
+            self.made_udta(place, &made)?;
         }
-        refuse_nesting(b"moov", "moov", &in_a)?;
-        self.pairs("moov", &in_a, &in_b, |walk, path, x, y| match &x.name {
-            b"udta" => walk.udta(path, x, y),
-            b"trak" => walk.down_to_offsets(Level::Trak, path, x, y),
-            _ => walk.same_or_note(path, x, y),
+        refuse_nesting(place, &in_a)?;
+        self.pairs(place, &in_a, &in_b, |walk, place, x, y| match &x.name {
+            b"udta" => walk.udta(place, x, y),
+            b"trak" => walk.down_to_offsets(Level::Trak, place, x, y),
+            _ => walk.same_or_note(place, x, y),
         })
     }
 
-    /// Compares `in_a` and `in_b` pair by pair with `each`, once they are
-    /// shown to hold the same names in the same order.
+    /// Compares `in_a` and `in_b`, the parts of `container`, pair by pair
+    /// with `each`, once they are shown to hold the same names in the same
+    /// order. Each pair is given its place; the names are numbered once
+    /// ([`numbers`]), never by searching the parts again for each one.
     fn pairs(
         &mut self,
-        parent: &str,
+        container: &Place<'_>,
         in_a: &[BoxAt],
         in_b: &[BoxAt],
-        mut each: impl FnMut(&mut Self, &str, &BoxAt, &BoxAt) -> Result<(), Stop>,
+        mut each: impl FnMut(&mut Self, &Place<'_>, &BoxAt, &BoxAt) -> Result<(), Stop>,
     ) -> Result<(), Stop> {
+        self.steps += (in_a.len() + in_b.len()) as u64;
         if in_a.iter().map(|x| x.name).ne(in_b.iter().map(|y| y.name)) {
             self.problems.push(format!(
-                "the parts of {parent} would change: now {}; after saving, {}",
+                "the parts of {} would change: now {}; after saving, {}",
+                container.words(),
                 names(in_a),
                 names(in_b)
             ));
             return Ok(());
         }
-        for (x, y) in in_a.iter().zip(in_b) {
-            let path = path_to(parent, x, in_a);
-            each(self, &path, x, y)?;
+        let numbers = numbers(in_a, &mut self.steps);
+        for ((x, y), number) in in_a.iter().zip(in_b).zip(numbers) {
+            self.steps += 1;
+            let place = Place {
+                parent: Some(container),
+                name: x.name,
+                number,
+            };
+            each(self, &place, x, y)?;
         }
         Ok(())
     }
 
     /// An atom nobody may change: byte for byte, or a problem is noted.
-    fn same_or_note(&mut self, path: &str, x: &BoxAt, y: &BoxAt) -> Result<(), Stop> {
+    fn same_or_note(&mut self, place: &Place<'_>, x: &BoxAt, y: &BoxAt) -> Result<(), Stop> {
         if !self.same_atom(x, y)? {
-            self.problems.push(format!("{path} would change"));
+            self.problems
+                .push(format!("{} would change", place.words()));
         }
         Ok(())
     }
@@ -606,25 +710,27 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
     fn down_to_offsets(
         &mut self,
         level: Level,
-        path: &str,
+        place: &Place<'_>,
         x: &BoxAt,
         y: &BoxAt,
     ) -> Result<(), Stop> {
         if !self.same_bytes((x.start, x.body_start), (y.start, y.body_start))? {
-            self.problems
-                .push(format!("the size or name of {path} would change"));
+            self.problems.push(format!(
+                "the size or name of {} would change",
+                place.words()
+            ));
             return Ok(());
         }
-        let (in_a, in_b) = self.parts(path, (x.body_start, x.end), (y.body_start, y.end))?;
-        refuse_nesting(&x.name, path, &in_a)?;
-        self.pairs(path, &in_a, &in_b, |walk, path, x, y| {
+        let (in_a, in_b) = self.parts(Some(place), (x.body_start, x.end), (y.body_start, y.end))?;
+        refuse_nesting(place, &in_a)?;
+        self.pairs(place, &in_a, &in_b, |walk, place, x, y| {
             match (level, &x.name) {
-                (Level::Trak, b"mdia") => walk.down_to_offsets(Level::Mdia, path, x, y),
-                (Level::Mdia, b"minf") => walk.down_to_offsets(Level::Minf, path, x, y),
-                (Level::Minf, b"stbl") => walk.down_to_offsets(Level::Stbl, path, x, y),
-                (Level::Stbl, b"stco") => walk.offsets(path, x, y, 4),
-                (Level::Stbl, b"co64") => walk.offsets(path, x, y, 8),
-                _ => walk.same_or_note(path, x, y),
+                (Level::Trak, b"mdia") => walk.down_to_offsets(Level::Mdia, place, x, y),
+                (Level::Mdia, b"minf") => walk.down_to_offsets(Level::Minf, place, x, y),
+                (Level::Minf, b"stbl") => walk.down_to_offsets(Level::Stbl, place, x, y),
+                (Level::Stbl, b"stco") => walk.offsets(place, x, y, 4),
+                (Level::Stbl, b"co64") => walk.offsets(place, x, y, 8),
+                _ => walk.same_or_note(place, x, y),
             }
         })
     }
@@ -632,25 +738,29 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
     /// Check (b) for one chunk offset table (`width` bytes an entry: 4 in
     /// `stco`, 8 in `co64`): the header, version, flags and count byte for
     /// byte, and each entry moved exactly as far as the `mdat` it points
-    /// into. Only the first wrong entry of a table is named.
-    fn offsets(&mut self, path: &str, x: &BoxAt, y: &BoxAt, width: u64) -> Result<(), Stop> {
+    /// into. Only the first wrong entry of a table is named. The entries
+    /// are read a block at a time.
+    fn offsets(&mut self, place: &Place<'_>, x: &BoxAt, y: &BoxAt, width: u64) -> Result<(), Stop> {
         let body_len = x.end - x.body_start;
         if !self.same_bytes((x.start, x.body_start), (y.start, y.body_start))?
             || y.end - y.body_start != body_len
         {
-            self.problems
-                .push(format!("the size or name of {path} would change"));
+            self.problems.push(format!(
+                "the size or name of {} would change",
+                place.words()
+            ));
             return Ok(());
         }
         if body_len < 8 {
-            return self.same_or_note(path, x, y);
+            return self.same_or_note(place, x, y);
         }
         if !self.same_bytes(
             (x.body_start, x.body_start + 8),
             (y.body_start, y.body_start + 8),
         )? {
             self.problems.push(format!(
-                "the version, flags or number of entries of {path} would change"
+                "the version, flags or number of entries of {} would change",
+                place.words()
             ));
             return Ok(());
         }
@@ -664,39 +774,50 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
             .filter(|len| *len <= body_len)
             .ok_or_else(|| {
                 Stop::Unreadable(format!(
-                    "{path} says it holds {count} entries, more than fit in it"
+                    "{} says it holds {count} entries, more than fit in it",
+                    place.words()
                 ))
             })?;
-        let width_bytes = usize::try_from(width).unwrap_or(8);
+        let width = usize::try_from(width).unwrap_or(8);
+        let per_block = BLOCK / width;
         let mut problem = None;
         self.a.seek(SeekFrom::Start(x.body_start + 8))?;
         self.b.seek(SeekFrom::Start(y.body_start + 8))?;
-        for entry in 0..count {
-            let (mut old, mut new) = ([0u8; 8], [0u8; 8]);
-            self.a.read_exact(&mut old[8 - width_bytes..])?;
-            self.b.read_exact(&mut new[8 - width_bytes..])?;
-            let (old, new) = (u64::from_be_bytes(old), u64::from_be_bytes(new));
-            // The `mdat` whose contents hold this offset, in the original.
-            let at = self.mdats.partition_point(|data| data.end <= old);
-            let Some(data) = self.mdats.get(at).filter(|data| data.start <= old) else {
-                problem = Some(format!(
-                    "entry {} of {path} points outside the sample data (to byte {old}), so \
-                     whether it is still right after saving cannot be checked",
-                    entry + 1
-                ));
-                break;
-            };
-            let should_be = i128::from(old) + data.moved_by;
-            if i128::from(new) != should_be {
-                problem = Some(format!(
-                    "entry {} of {path} would point to the wrong place: it was {old}, the data \
-                     it points into moves by {} bytes, so it should become {should_be}, but \
-                     after saving it would be {new}",
-                    entry + 1,
-                    data.moved_by
-                ));
-                break;
+        let mut first = 0u64;
+        'blocks: while first < count {
+            let in_block = usize::try_from(count - first).map_or(per_block, |n| n.min(per_block));
+            self.a.read_exact(&mut self.block_a[..in_block * width])?;
+            self.b.read_exact(&mut self.block_b[..in_block * width])?;
+            for i in 0..in_block {
+                self.steps += 1;
+                let entry = first + i as u64;
+                let old = entry_in(&self.block_a, i, width);
+                let new = entry_in(&self.block_b, i, width);
+                // The `mdat` whose contents hold this offset, in the original.
+                let at = self.mdats.partition_point(|data| data.end <= old);
+                let Some(data) = self.mdats.get(at).filter(|data| data.start <= old) else {
+                    problem = Some(format!(
+                        "entry {} of {} points outside the sample data (to byte {old}), so \
+                         whether it is still right after saving cannot be checked",
+                        entry + 1,
+                        place.words()
+                    ));
+                    break 'blocks;
+                };
+                let should_be = i128::from(old) + data.moved_by;
+                if i128::from(new) != should_be {
+                    problem = Some(format!(
+                        "entry {} of {} would point to the wrong place: it was {old}, the data \
+                         it points into moves by {} bytes, so it should become {should_be}, but \
+                         after saving it would be {new}",
+                        entry + 1,
+                        place.words(),
+                        data.moved_by
+                    ));
+                    break 'blocks;
+                }
             }
+            first += in_block as u64;
         }
         if let Some(problem) = problem {
             self.problems.push(problem);
@@ -706,7 +827,8 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
         let rest_b = (y.body_start + entries_end, y.end);
         if !self.same_bytes(rest_a, rest_b)? {
             self.problems.push(format!(
-                "the bytes after the entries of {path} would change"
+                "the bytes after the entries of {} would change",
+                place.words()
             ));
         }
         Ok(())
@@ -715,13 +837,13 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
     /// Check (c) for a `udta` in `moov`: its size may change, padding is
     /// not compared, a `meta` lofty made may have been added at its start,
     /// and every other part is compared.
-    fn udta(&mut self, path: &str, x: &BoxAt, y: &BoxAt) -> Result<(), Stop> {
+    fn udta(&mut self, place: &Place<'_>, x: &BoxAt, y: &BoxAt) -> Result<(), Stop> {
         if header_len(x) != header_len(y) {
             self.problems
-                .push(format!("the header of {path} would change form"));
+                .push(format!("the header of {} would change form", place.words()));
         }
-        let (in_a, in_b) = self.parts(path, (x.body_start, x.end), (y.body_start, y.end))?;
-        refuse_nesting(b"udta", path, &in_a)?;
+        let (in_a, in_b) = self.parts(Some(place), (x.body_start, x.end), (y.body_start, y.end))?;
+        refuse_nesting(place, &in_a)?;
         let in_a: Vec<BoxAt> = in_a.into_iter().filter(|x| !is_padding(&x.name)).collect();
         let mut in_b: Vec<BoxAt> = in_b.into_iter().filter(|y| !is_padding(&y.name)).collect();
         if !in_a.iter().any(|atom| &atom.name == b"meta")
@@ -729,21 +851,26 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
             && &in_b[0].name == b"meta"
         {
             let made = in_b.remove(0);
-            self.made_meta(&format!("{path} → meta"), &made)?;
+            let meta = Place {
+                parent: Some(place),
+                name: *b"meta",
+                number: None,
+            };
+            self.made_meta(&meta, &made)?;
         }
-        self.pairs(path, &in_a, &in_b, |walk, path, x, y| match &x.name {
-            b"meta" => walk.meta(path, x, y),
-            _ => walk.same_or_note(path, x, y),
+        self.pairs(place, &in_a, &in_b, |walk, place, x, y| match &x.name {
+            b"meta" => walk.meta(place, x, y),
+            _ => walk.same_or_note(place, x, y),
         })
     }
 
     /// Check (c) for a `meta` in a `udta`: its size may change, its version
     /// and flags (when it has them) may not, and every part but its tag
     /// list (compared by `mp4_save_check`) and padding is compared.
-    fn meta(&mut self, path: &str, x: &BoxAt, y: &BoxAt) -> Result<(), Stop> {
+    fn meta(&mut self, place: &Place<'_>, x: &BoxAt, y: &BoxAt) -> Result<(), Stop> {
         if header_len(x) != header_len(y) {
             self.problems
-                .push(format!("the header of {path} would change form"));
+                .push(format!("the header of {} would change form", place.words()));
         }
         // A `meta` too short for its version and flags is refused here,
         // before anything below reads past its end (finding 2 of Codex's
@@ -756,12 +883,14 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
                 (y.body_start, y.body_start + version_b),
             )?
         {
-            self.problems
-                .push(format!("the version and flags of {path} would change"));
+            self.problems.push(format!(
+                "the version and flags of {} would change",
+                place.words()
+            ));
             return Ok(());
         }
         let (in_a, in_b) = self.parts(
-            path,
+            Some(place),
             (x.body_start + version_a, x.end),
             (y.body_start + version_b, y.end),
         )?;
@@ -772,23 +901,34 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
         let kept = |atom: &BoxAt| !is_padding(&atom.name) && &atom.name != b"ilst";
         let in_a: Vec<BoxAt> = in_a.into_iter().filter(kept).collect();
         let in_b: Vec<BoxAt> = in_b.into_iter().filter(kept).collect();
-        self.pairs(path, &in_a, &in_b, |walk, path, x, y| {
-            walk.same_or_note(path, x, y)
+        self.pairs(place, &in_a, &in_b, |walk, place, x, y| {
+            walk.same_or_note(place, x, y)
         })
     }
 
-    /// A `udta` lofty made (at the start of `moov`, when the file had
-    /// none): exactly one `meta` it made, nothing else.
-    fn made_udta(&mut self, y: &BoxAt) -> Result<(), Stop> {
+    /// A `udta` lofty made (at the start of `moov`, at `moov`'s place, when
+    /// the file had none): exactly one `meta` it made, nothing else.
+    fn made_udta(&mut self, moov: &Place<'_>, y: &BoxAt) -> Result<(), Stop> {
         let in_b = boxes_in_file(&mut self.b, y.body_start, y.end)?;
         match in_b.as_slice() {
             [meta] if header_len(y) == 8 && &meta.name == b"meta" && meta.end == y.end => {
-                self.made_meta("moov → udta → meta", meta)
+                let udta = Place {
+                    parent: Some(moov),
+                    name: *b"udta",
+                    number: None,
+                };
+                let place = Place {
+                    parent: Some(&udta),
+                    name: *b"meta",
+                    number: None,
+                };
+                self.made_meta(&place, meta)
             }
             _ => {
                 self.problems.push(format!(
-                    "moov would gain a udta holding {}, not the one box the library makes for \
+                    "{} would gain a udta holding {}, not the one box the library makes for \
                      new tags",
+                    moov.words(),
                     names(&in_b)
                 ));
                 Ok(())
@@ -798,10 +938,11 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
 
     /// A `meta` lofty made (when the file had none): version and flags 0,
     /// then exactly its standard handler and the tag list.
-    fn made_meta(&mut self, path: &str, y: &BoxAt) -> Result<(), Stop> {
+    fn made_meta(&mut self, place: &Place<'_>, y: &BoxAt) -> Result<(), Stop> {
         if y.end - y.body_start < 4 {
             self.problems.push(format!(
-                "{path} would be added, too short to be a metadata box"
+                "{} would be added, too short to be a metadata box",
+                place.words()
             ));
             return Ok(());
         }
@@ -810,25 +951,37 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
         self.b.read_exact(&mut version)?;
         let in_b = boxes_in_file(&mut self.b, y.body_start + 4, y.end)?;
         let standard = match in_b.as_slice() {
-            [hdlr, ilst] if version == [0; 4] && &ilst.name == b"ilst" && ilst.end == y.end => {
-                let mut bytes = Vec::new();
+            [hdlr, ilst]
+                if version == [0; 4]
+                    && hdlr.end - hdlr.start == LOFTY_HDLR.len() as u64
+                    && &ilst.name == b"ilst"
+                    && ilst.end == y.end =>
+            {
+                let mut bytes = [0u8; LOFTY_HDLR.len()];
                 self.b.seek(SeekFrom::Start(hdlr.start))?;
-                (&mut self.b)
-                    .take(hdlr.end - hdlr.start)
-                    .read_to_end(&mut bytes)?;
+                self.b.read_exact(&mut bytes)?;
                 bytes == LOFTY_HDLR
             }
             _ => false,
         };
         if !standard {
             self.problems.push(format!(
-                "{path} would be added holding {}, not the handler and tag list the library \
+                "{} would be added holding {}, not the handler and tag list the library \
                  makes for new tags",
+                place.words(),
                 names(&in_b)
             ));
         }
         Ok(())
     }
+}
+
+/// Entry `i` of a chunk offset table read into `block`, each entry `width`
+/// bytes (4 or 8), big-endian.
+fn entry_in(block: &[u8], i: usize, width: usize) -> u64 {
+    let mut bytes = [0u8; 8];
+    bytes[8 - width..].copy_from_slice(&block[i * width..(i + 1) * width]);
+    u64::from_be_bytes(bytes)
 }
 
 #[cfg(test)]
@@ -1178,14 +1331,7 @@ mod tests {
         // ends (finding 2 again: the guard behind `meta_version_len`'s).
         let file = file(b"Old", 0, false);
         let len = file.len() as u64;
-        let mut walk = Walk {
-            a: BufReader::new(Cursor::new(file.clone())),
-            b: BufReader::new(Cursor::new(file)),
-            len_a: len,
-            len_b: len,
-            mdats: Vec::new(),
-            problems: Vec::new(),
-        };
+        let mut walk = Walk::new(Cursor::new(file.clone()), len, Cursor::new(file), len);
         for (a, b) in [
             ((10, 6), (10, 14)),
             ((10, 14), (10, 6)),
@@ -1199,6 +1345,88 @@ mod tests {
             }
         }
         assert!(walk.same_bytes((0, 8), (0, 8)).unwrap_or(false));
+    }
+
+    /// A file whose `moov` holds a movie header and then `count` small
+    /// atoms side by side, all of one name (so each is numbered).
+    fn side_by_side(count: usize) -> Vec<u8> {
+        let mut moov = atom(b"mvhd", b"movie-header");
+        for _ in 0..count {
+            moov.extend(atom(b"abcd", b""));
+        }
+        [atom(b"ftyp", b"M4A \0\0\0\0"), atom(b"moov", &moov)].concat()
+    }
+
+    /// The steps the whole-file walk takes on `side_by_side(count)`
+    /// compared with itself, which must find nothing.
+    fn walk_steps(count: usize) -> u64 {
+        let file = side_by_side(count);
+        let mut steps = 0;
+        let found = differences_outside_the_tags_counted(
+            &mut Cursor::new(file.clone()),
+            &mut Cursor::new(file),
+            &mut steps,
+        )
+        .expect("readable");
+        assert_eq!(found, Vec::<String>::new());
+        steps
+    }
+
+    #[test]
+    fn the_whole_file_walk_takes_steps_in_step_with_the_atoms() {
+        // Codex's catch-up review of revisions 8-10, finding 4: 100,000
+        // small, unchanged atoms side by side in `moov` took some ten
+        // billion name comparisons, because each atom's place was worked
+        // out by searching all the atoms beside it (measured before the
+        // fix, in a debug build: 12,500 of them took 7 seconds, 25,000 took
+        // 31 and 50,000 took 109). Counted, never timed: a few steps per
+        // atom, so four times the atoms take about four times the steps,
+        // not sixteen. Each count is checked as soon as it is made, so a
+        // walk that has gone back to searching fails on the smaller file
+        // without waiting for the larger. (The time is printed only for
+        // interest.)
+        let per_atom = 12;
+        let quarter = walk_steps(25_000);
+        assert!(
+            quarter <= per_atom * 25_000,
+            "{quarter} steps for 25,000 atoms: more than {per_atom} an atom"
+        );
+        let started = std::time::Instant::now();
+        let full = walk_steps(100_000);
+        eprintln!(
+            "the whole-file walk over 100,000 atoms side by side in moov: {full} steps, {:?}",
+            started.elapsed()
+        );
+        assert!(
+            full <= per_atom * 100_000,
+            "{full} steps for 100,000 atoms: more than {per_atom} an atom"
+        );
+        let ratio = full as f64 / quarter as f64;
+        assert!(
+            (3.5..4.5).contains(&ratio),
+            "{quarter} steps for 25,000 atoms, {full} for 100,000: ratio {ratio}"
+        );
+        // And when they DO differ, every one is named, numbered: the words
+        // are made only then.
+        let mut changed = side_by_side(3);
+        let last = changed.len() - 4;
+        changed[last..].copy_from_slice(b"abce");
+        let found = outside(&side_by_side(3), &changed);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].starts_with("the parts of moov would change"),
+            "{found:?}"
+        );
+        let mut bytes = side_by_side(3);
+        bytes.extend(atom(b"uuid", b"sixteen-byte-id!"));
+        bytes.extend(atom(b"uuid", b"sixteen-byte-id!"));
+        let mut other = bytes.clone();
+        let at = other.len() - 1;
+        other[at] = b'?';
+        assert_eq!(
+            outside(&bytes, &other),
+            ["the atom uuid 2 at the top of the file would change"]
+        );
     }
 
     /// `inner`, wrapped `depth` times in atoms named `name`, each inside
