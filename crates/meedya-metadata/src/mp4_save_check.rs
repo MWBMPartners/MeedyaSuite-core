@@ -435,8 +435,28 @@ fn boxes_in(buffer: &[u8]) -> Result<Vec<BoxIn<'_>>, String> {
 }
 
 /// The atoms of one `ilst` atom's contents, added to `atoms` in order.
+///
+/// Every byte of the tag list must belong to one of its atoms: 1 to 7
+/// bytes after the last atom - too few to be one - refuse the file, as
+/// plain words. Until Codex's catch-up review of revisions 8-10 (finding 3)
+/// they were passed over without a word, and so were they by lofty, whose
+/// save then writes the tag list without them: on a copy of
+/// `plain-tone.m4a` given 1 to 7 such bytes, a title-only save was
+/// accepted and the bytes were gone, while neither comparison saw it (this
+/// one read past them, and the whole-file comparison leaves the tag list to
+/// this one). Nothing written by an ordinary program leaves such bytes;
+/// whatever they are, a save would lose them, so it is refused.
 fn atoms_in_ilst(body: &[u8], atoms: &mut Vec<RawAtom>) -> Result<(), String> {
-    for item in boxes_in(body)? {
+    let items = boxes_in(body)?;
+    let used: usize = items.iter().map(|item| item.whole.len()).sum();
+    if used != body.len() {
+        return Err(format!(
+            "its tag list (ilst) ends with {} byte(s) that belong to no tag atom, which saving \
+             would drop",
+            body.len() - used
+        ));
+    }
+    for item in items {
         if matches!(&item.name, b"free" | b"skip") {
             continue; // padding (see the top of this file)
         }
@@ -893,6 +913,29 @@ mod tests {
         let mut body = atom(b"\xa9nam", &data(1, 0, b"x"));
         body[..4].copy_from_slice(&4u32.to_be_bytes());
         assert!(atoms_in_ilst(&body, &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn bytes_after_the_last_atom_of_a_tag_list_are_refused() {
+        // Codex's catch-up review of revisions 8-10, finding 3: 1 to 7
+        // bytes after the last atom were passed over, and a save dropped
+        // them unseen. Eight or more are read as an atom (and refused when
+        // they are not one) - the case above.
+        let title = atom(b"\xa9nam", &data(1, 0, b"Title"));
+        for extra in 1..8 {
+            let body = [title.clone(), vec![0xAB; extra]].concat();
+            let problem = atoms_in_ilst(&body, &mut Vec::new()).expect_err("refused");
+            assert!(
+                problem.contains(&format!(
+                    "ends with {extra} byte(s) that belong to no tag atom"
+                )),
+                "{problem}"
+            );
+        }
+        // An empty tag list, and one ending exactly at its last atom, are
+        // read as before.
+        assert!(read(&[]).is_empty());
+        assert_eq!(read(&title).len(), 1);
     }
 
     #[test]

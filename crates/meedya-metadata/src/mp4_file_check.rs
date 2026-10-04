@@ -626,6 +626,10 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
             (x.body_start + version_a, x.end),
             (y.body_start + version_b, y.end),
         )?;
+        // The tag list is left to `mp4_save_check`, which reads every byte
+        // of it - a tag list with bytes after its last atom is refused there
+        // (Codex's catch-up review of revisions 8-10, finding 3), so nothing
+        // inside it goes unread by both comparisons.
         let kept = |atom: &BoxAt| !is_padding(&atom.name) && &atom.name != b"ilst";
         let in_a: Vec<BoxAt> = in_a.into_iter().filter(kept).collect();
         let in_b: Vec<BoxAt> = in_b.into_iter().filter(kept).collect();

@@ -4131,6 +4131,8 @@ mod tests {
         bytes: Vec<u8>,
         moov: (usize, usize, usize),
         udta: (usize, usize, usize),
+        meta: (usize, usize, usize),
+        ilst: (usize, usize, usize),
     }
 
     fn tone() -> Tone {
@@ -4140,11 +4142,19 @@ mod tests {
         .expect("read");
         let moov = only(&bytes, 0, bytes.len(), b"moov");
         let udta = only(&bytes, moov.2, moov.1, b"udta");
+        let meta = only(&bytes, udta.2, udta.1, b"meta");
+        let ilst = only(&bytes, meta.2 + 4, meta.1, b"ilst");
         // The audio comes first in this file, so putting bytes into `moov`
         // moves nothing a chunk offset points at.
         let mdat = only(&bytes, 0, bytes.len(), b"mdat");
         assert!(mdat.1 <= moov.0, "mdat before moov");
-        Tone { bytes, moov, udta }
+        Tone {
+            bytes,
+            moov,
+            udta,
+            meta,
+            ilst,
+        }
     }
 
     /// `bytes` with `extra` put at `at`, and each atom that starts at one
@@ -4204,6 +4214,27 @@ mod tests {
                     "{which} meta of {body} bytes: {message}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn bytes_left_over_in_a_tag_list_refuse_the_write_and_leave_the_file() {
+        // Codex's catch-up review of revisions 8-10, finding 3: 1 to 7
+        // bytes after the last atom of the real file's tag list (the sizes
+        // around them grown to match). Before the fix a title-only write
+        // was accepted and the bytes were gone from the saved file, unseen
+        // by either comparison. Now refused, the file as it was.
+        for extra in 1..8 {
+            let tone = tone();
+            let containers = [tone.moov.0, tone.udta.0, tone.meta.0, tone.ilst.0];
+            let bytes = grown(&tone.bytes, tone.ilst.1, &containers, &vec![0xAB; extra]);
+            let message = refused_variant(&bytes, title_only);
+            assert!(
+                message.contains(&format!(
+                    "ends with {extra} byte(s) that belong to no tag atom"
+                )),
+                "{extra}: {message}"
+            );
         }
     }
 
