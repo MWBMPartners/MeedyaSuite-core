@@ -224,8 +224,9 @@ fn read_ilst_atoms_within(
                 ilst_bytes += len;
                 if ilst_bytes > limit {
                     return Err(unreadable(format!(
-                        "its tags take more than {} MiB",
-                        limit / (1024 * 1024)
+                        "its tags take more than {limit} bytes (the most this check reads is {} \
+                         MiB)",
+                        MAX_ILST_BYTES / (1024 * 1024)
                     )));
                 }
                 reader.seek(SeekFrom::Start(ilst.body_start))?;
@@ -1061,6 +1062,155 @@ mod tests {
             found[0].contains("and after saving would read the same, but value 1 differs"),
             "{found:?}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // The reader, on whole (small, built) files: tests for faults the
+    // stand-in review of revision 9 planted and no test caught (L8).
+    // ------------------------------------------------------------------
+
+    /// A `meta` holding `parts` - with its version and flags when `full`.
+    fn meta_of(full: bool, parts: &[Vec<u8>]) -> Vec<u8> {
+        let version: &[u8] = if full { &[0, 0, 0, 0] } else { &[] };
+        atom(b"meta", &[version, &parts.concat()].concat())
+    }
+
+    fn hdlr() -> Vec<u8> {
+        atom(b"hdlr", &[0u8; 25])
+    }
+
+    fn ilst_of(atoms: &[Vec<u8>]) -> Vec<u8> {
+        atom(b"ilst", &atoms.concat())
+    }
+
+    fn title(text: &[u8]) -> Vec<u8> {
+        atom(b"\xa9nam", &data(1, 0, text))
+    }
+
+    fn artist(text: &[u8]) -> Vec<u8> {
+        atom(b"\xa9ART", &data(1, 0, text))
+    }
+
+    /// `ftyp` then a `moov` holding `udtas`.
+    fn file_with(udtas: &[Vec<u8>]) -> Vec<u8> {
+        [
+            atom(b"ftyp", b"M4A \0\0\0\0"),
+            atom(b"moov", &udtas.concat()),
+        ]
+        .concat()
+    }
+
+    fn keys_in(bytes: Vec<u8>) -> Vec<RawKey> {
+        read_ilst_atoms_from(&mut std::io::Cursor::new(bytes))
+            .expect("readable")
+            .into_iter()
+            .map(|atom| atom.key)
+            .collect()
+    }
+
+    #[test]
+    fn every_udta_every_meta_and_every_ilst_is_read() {
+        // lofty reads the first `meta` of every `udta`, and writes into the
+        // first; a save that duplicates tags across them must be seen, so
+        // this reads them all. Read only the first udta, meta or ilst
+        // (planted faults A10, A8, A9) and one of these goes red.
+        let both = [RawKey::Fourcc(*b"\xa9nam"), RawKey::Fourcc(*b"\xa9ART")];
+        let two_udtas = file_with(&[
+            atom(b"udta", &meta_of(true, &[hdlr(), ilst_of(&[title(b"T")])])),
+            atom(b"udta", &meta_of(true, &[hdlr(), ilst_of(&[artist(b"A")])])),
+        ]);
+        assert_eq!(keys_in(two_udtas), both);
+        let two_metas = file_with(&[atom(
+            b"udta",
+            &[
+                meta_of(true, &[hdlr(), ilst_of(&[title(b"T")])]),
+                meta_of(true, &[hdlr(), ilst_of(&[artist(b"A")])]),
+            ]
+            .concat(),
+        )]);
+        assert_eq!(keys_in(two_metas), both);
+        let two_ilsts = file_with(&[atom(
+            b"udta",
+            &meta_of(
+                true,
+                &[hdlr(), ilst_of(&[title(b"T")]), ilst_of(&[artist(b"A")])],
+            ),
+        )]);
+        assert_eq!(keys_in(two_ilsts), both);
+    }
+
+    #[test]
+    fn a_meta_written_without_its_version_and_flags_is_read() {
+        // Some files write `meta` as a plain atom; lofty reads it by
+        // looking at what follows (planted fault A11: always taking the
+        // four bytes as version and flags would misread it).
+        let plain = file_with(&[atom(
+            b"udta",
+            &meta_of(false, &[hdlr(), ilst_of(&[title(b"T")])]),
+        )]);
+        assert_eq!(keys_in(plain), [RawKey::Fourcc(*b"\xa9nam")]);
+    }
+
+    #[test]
+    fn an_atom_at_the_top_of_the_file_smaller_than_its_header_is_refused() {
+        // A `moov` claiming 4 bytes - fewer than its own 8-byte header.
+        // Taken at its word (planted fault A12), its contents would start
+        // after its end and the file would read as having no tags at all.
+        let mut bytes = atom(b"moov", &[0u8; 24]);
+        bytes[..4].copy_from_slice(&4u32.to_be_bytes());
+        let problem = read_ilst_atoms_from(&mut std::io::Cursor::new(bytes))
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            problem.contains("the atom moov at byte 0 has a size that does not fit"),
+            "{problem}"
+        );
+    }
+
+    #[test]
+    fn at_most_the_limit_of_tags_is_read() {
+        // The limit (64 MiB) is a parameter only so this can be shown
+        // without a 64 MiB file (planted fault A13 removed the check).
+        assert_eq!(MAX_ILST_BYTES, 64 * 1024 * 1024);
+        let bytes = file_with(&[atom(
+            b"udta",
+            &meta_of(true, &[hdlr(), ilst_of(&[title(&[b'x'; 200])])]),
+        )]);
+        let within =
+            |limit| read_ilst_atoms_within(&mut std::io::Cursor::new(bytes.clone()), limit);
+        assert_eq!(within(10_000).expect("under the limit").len(), 1);
+        let problem = within(100).expect_err("over the limit").to_string();
+        assert!(
+            problem.contains("its tags take more than 100 bytes"),
+            "{problem}"
+        );
+    }
+
+    #[test]
+    fn an_asked_for_atom_with_another_part_or_locale_is_not_as_asked() {
+        // What was asked: one value, the text "X", locale 0, and nothing
+        // else in the atom. With another part beside it (planted fault A4)
+        // or another locale (A5) ignored, these would pass.
+        let mut expected = Expected::new();
+        expected.insert(
+            RawKey::Fourcc(*b"\xa9nam"),
+            vec![vec![RawValue {
+                type_indicator: 1,
+                locale: 0,
+                value: b"X".to_vec(),
+            }]],
+        );
+        assert!(differences(&[], &read(&title(b"X")), &expected).is_empty());
+        let other_part = atom(
+            b"\xa9nam",
+            &[data(1, 0, b"X"), atom(b"xtra", b"?")].concat(),
+        );
+        let locale = atom(b"\xa9nam", &data(1, 7, b"X"));
+        for saved in [other_part, locale] {
+            let found = differences(&[], &read(&saved), &expected);
+            assert_eq!(found.len(), 1, "{found:?}");
+            assert!(found[0].starts_with("©nam was asked to hold"), "{found:?}");
+        }
     }
 
     #[test]
