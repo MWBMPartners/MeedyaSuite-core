@@ -70,7 +70,7 @@
 // symbolic link is followed first, so the file it points to is the one
 // replaced.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(test)]
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -530,33 +530,42 @@ pub(crate) fn differences(
     saved: &[RawAtom],
     expected: &Expected,
 ) -> Vec<String> {
-    let group = |atoms: &[RawAtom]| {
-        let mut groups: BTreeMap<RawKey, Vec<RawAtom>> = BTreeMap::new();
-        for atom in atoms {
-            groups
-                .entry(atom.key.clone())
-                .or_default()
-                .push(atom.clone());
-        }
-        groups
-    };
-    let before = group(original);
-    let after = group(saved);
+    differences_counted(original, saved, expected, &mut 0)
+}
+
+/// [`differences`], counting in `steps` each atom visited and each name
+/// looked up. The atoms of each file are gathered by name ONCE, and each
+/// name is then looked up, so the work grows in step with the number of
+/// atoms (the stand-in review of revision 9, M3; a test counts the steps).
+pub(crate) fn differences_counted(
+    original: &[RawAtom],
+    saved: &[RawAtom],
+    expected: &Expected,
+    steps: &mut u64,
+) -> Vec<String> {
+    let before = by_name(original, steps);
+    let after = by_name(saved, steps);
 
     // Every name, in the order a person meets it: the original's atoms,
     // then any the save adds, then any it was asked for.
     let mut seen = HashSet::new();
-    let keys: Vec<&RawKey> = original
+    let mut keys: Vec<&RawKey> = Vec::new();
+    for key in original
         .iter()
         .map(|atom| &atom.key)
         .chain(saved.iter().map(|atom| &atom.key))
         .chain(expected.keys())
-        .filter(|key| seen.insert(*key))
-        .collect();
+    {
+        *steps += 1;
+        if seen.insert(key) {
+            keys.push(key);
+        }
+    }
 
     let none = Vec::new();
     let mut out = Vec::new();
     for key in keys {
+        *steps += 1;
         let was = before.get(key).unwrap_or(&none);
         let now = after.get(key).unwrap_or(&none);
         match expected.get(key) {
@@ -592,6 +601,16 @@ pub(crate) fn differences(
     out
 }
 
+/// `atoms` gathered by name, in one pass (one step each in `steps`).
+fn by_name<'a>(atoms: &'a [RawAtom], steps: &mut u64) -> HashMap<&'a RawKey, Vec<&'a RawAtom>> {
+    let mut groups: HashMap<&RawKey, Vec<&RawAtom>> = HashMap::new();
+    for atom in atoms {
+        *steps += 1;
+        groups.entry(&atom.key).or_default().push(atom);
+    }
+    groups
+}
+
 /// The asked-for atoms, in words.
 fn describe_wanted(wanted: &[Vec<RawValue>]) -> String {
     match wanted {
@@ -610,7 +629,7 @@ fn describe_wanted(wanted: &[Vec<RawValue>]) -> String {
 }
 
 /// Some atoms of one name, in words.
-fn describe_atoms(atoms: &[RawAtom]) -> String {
+fn describe_atoms(atoms: &[&RawAtom]) -> String {
     let one = |atom: &RawAtom| {
         let mut text = describe_values(&atom.values);
         if atom.other_parts > 0 {
@@ -900,6 +919,43 @@ mod tests {
                 "{found:?}"
             );
         }
+    }
+
+    #[test]
+    fn comparing_takes_steps_in_step_with_the_atoms() {
+        // Counted, never timed (the stand-in review of revision 9, M3): four
+        // times the atoms must take four times the steps - not sixteen, as
+        // searching every atom for every name would.
+        let steps_for = |n: usize| {
+            let body: Vec<u8> = (0..n)
+                .flat_map(|i| {
+                    freeform(
+                        b"com.apple.iTunes",
+                        format!("k{i:06}").as_bytes(),
+                        &[data(1, 0, b"v")],
+                    )
+                })
+                .collect();
+            let atoms = read(&body);
+            let mut changed = atoms.clone();
+            changed[n / 2] = read(&freeform(
+                b"com.apple.iTunes",
+                b"k-new",
+                &[data(1, 0, b"w")],
+            ))
+            .remove(0);
+            let mut steps = 0;
+            let found = differences_counted(&atoms, &changed, &Expected::new(), &mut steps);
+            assert_eq!(found.len(), 2, "one atom gone, one added");
+            steps
+        };
+        let (small, large) = (steps_for(1000), steps_for(4000));
+        // No more than four times the steps (in step, not squared), and more
+        // than three times (every atom is counted).
+        assert!(
+            large <= 4 * small && large > 3 * small,
+            "{small} then {large}"
+        );
     }
 
     #[test]

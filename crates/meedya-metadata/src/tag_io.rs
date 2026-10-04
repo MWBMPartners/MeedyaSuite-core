@@ -83,7 +83,7 @@
 // The real fix — a route that keeps those atoms — is still open in #102.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use lofty::config::{ParseOptions, WriteOptions};
@@ -817,7 +817,7 @@ fn edit_and_save<T>(
             let (remainder, mut tag) = ilst.split_tag();
             let before = tag.clone();
             let out = edit(&mut tag, &mut languages, &mut asked)?;
-            let expected = atoms_asked_for(&before, &tag, &asked, &languages, &original)?;
+            let expected = atoms_asked_for(&before, &tag, &asked, &languages, &original, &mut 0)?;
 
             let mut merged = remainder.merge_tag(tag);
             let data: Vec<AtomData> = match languages.replacement {
@@ -902,6 +902,18 @@ fn edit_and_save<T>(
     }
 }
 
+/// Every item's values in `tag`, gathered by key in one pass (one step each
+/// in `steps`), in the order the tag holds them: what `atoms_asked_for`
+/// looks keys up in, instead of searching the tag once per key.
+fn values_by_key<'a>(tag: &'a Tag, steps: &mut u64) -> HashMap<&'a ItemKey, Vec<&'a ItemValue>> {
+    let mut values: HashMap<&ItemKey, Vec<&ItemValue>> = HashMap::new();
+    for item in tag.items() {
+        *steps += 1;
+        values.entry(item.key()).or_default().push(item.value());
+    }
+    values
+}
+
 /// What an M4A save must store for every atom the edit asked to change:
 /// for each such atom's name, the atoms the saved file must hold under
 /// that name, each a list of values, in order (`mp4_save_check`). Every
@@ -937,12 +949,20 @@ fn edit_and_save<T>(
 /// asked for would not be stored at all (lofty drops a compilation flag of
 /// "yes", say), or when the written form of a value cannot be reproduced
 /// here (`mp4_save_check::raw_value`).
+///
+/// **The work grows in step with the number of tags** (the stand-in review
+/// of revision 9, M3): each tag's values are gathered by key once and each
+/// key looked up, rather than the whole tag searched for every key, which
+/// took about two minutes on a file of 32,000 tags. `steps` counts the items
+/// visited and the keys looked up, so a test can show that
+/// (`working_out_what_was_asked_takes_steps_in_step_with_the_tags`).
 fn atoms_asked_for(
     before: &Tag,
     after: &Tag,
     asked: &[ItemKey],
     languages: &LanguageField,
     original: &[RawAtom],
+    steps: &mut u64,
 ) -> Result<Expected, MetadataError> {
     let refusal = |why: String| {
         MetadataError::WriteError(format!(
@@ -952,26 +972,35 @@ fn atoms_asked_for(
     };
 
     // Every key asked for, then every key the edit changed, once each.
+    // Each tag's values are gathered by key ONCE, and each key is then
+    // looked up (M3: this used to search the whole tag for every key, so a
+    // file of 32,000 tags took some two minutes to save).
+    let before_values = values_by_key(before, steps);
+    let after_values = values_by_key(after, steps);
+    let asked_keys: HashSet<&ItemKey> = asked.iter().collect();
+    let mut seen: HashSet<&ItemKey> = HashSet::new();
     let mut keys: Vec<ItemKey> = Vec::new();
-    fn values_of<'a>(tag: &'a Tag, key: &'a ItemKey) -> Vec<&'a ItemValue> {
-        tag.get_items(key).map(TagItem::value).collect()
-    }
     for key in asked
         .iter()
         .chain(before.items().chain(after.items()).map(TagItem::key))
     {
-        let changed = asked.contains(key) || values_of(before, key) != values_of(after, key);
-        if changed && !keys.contains(key) {
+        *steps += 1;
+        if !seen.insert(key) {
+            continue;
+        }
+        let changed = asked_keys.contains(key) || before_values.get(key) != after_values.get(key);
+        if changed {
             keys.push(key.clone());
         }
     }
+    let mut chosen: HashSet<ItemKey> = keys.iter().cloned().collect();
     for pair in [
         [ItemKey::TrackNumber, ItemKey::TrackTotal],
         [ItemKey::DiscNumber, ItemKey::DiscTotal],
     ] {
-        if pair.iter().any(|key| keys.contains(key)) {
+        if pair.iter().any(|key| chosen.contains(key)) {
             for key in pair {
-                if !keys.contains(&key) {
+                if chosen.insert(key.clone()) {
                     keys.push(key);
                 }
             }
@@ -981,40 +1010,55 @@ fn atoms_asked_for(
 
     // The atoms asked for, by name — and which of them were given a value.
     let mut idents: Vec<AtomIdent<'static>> = Vec::new();
-    let mut given: Vec<AtomIdent<'static>> = Vec::new();
+    let mut named: HashSet<RawKey> = HashSet::new();
+    let mut given: HashSet<RawKey> = HashSet::new();
     let mut requested = Tag::new(TagType::Mp4Ilst);
     for key in &keys {
+        *steps += 1;
         // A key with no MP4 atom: nothing to compare (see above).
         if let Ok(ident) = AtomIdent::try_from(key.clone()) {
-            if !idents.contains(&ident) {
+            if named.insert(RawKey::of(&ident)) {
                 idents.push(ident);
             }
         }
     }
-    for item in after.items().filter(|item| keys.contains(item.key())) {
+    for item in after.items().filter(|item| chosen.contains(item.key())) {
+        *steps += 1;
         if let Ok(ident) = AtomIdent::try_from(item.key().clone()) {
-            given.push(ident);
+            given.insert(RawKey::of(&ident));
         }
         requested.push_unchecked(item.clone());
     }
     if pictures_changed {
         let covr = AtomIdent::Fourcc(*b"covr");
-        idents.push(covr.clone());
+        if named.insert(RawKey::of(&covr)) {
+            idents.push(covr.clone());
+        }
         for picture in after.pictures() {
-            given.push(covr.clone());
+            given.insert(RawKey::of(&covr));
             requested.push_picture(picture.clone());
         }
     }
 
-    // lofty's own conversion of those items alone: what it writes for them.
+    // lofty's own conversion of those items alone: what it writes for them,
+    // gathered by name once.
     let (nothing, _) = Ilst::default().split_tag();
     let stored = nothing.merge_tag(requested);
+    let mut stored_by_name: HashMap<RawKey, Vec<&Atom<'static>>> = HashMap::new();
+    for atom in &stored {
+        *steps += 1;
+        stored_by_name
+            .entry(RawKey::of(atom.ident()))
+            .or_default()
+            .push(atom);
+    }
 
     let mut expected = Expected::new();
     for ident in idents {
+        *steps += 1;
         let key = RawKey::of(&ident);
         let mut atoms = Vec::new();
-        for atom in (&stored).into_iter().filter(|atom| atom.ident() == &ident) {
+        for atom in stored_by_name.get(&key).into_iter().flatten() {
             let values = atom
                 .data()
                 .map(mp4_save_check::raw_value)
@@ -1027,7 +1071,7 @@ fn atoms_asked_for(
                 })?;
             atoms.push(values);
         }
-        if atoms.is_empty() && given.contains(&ident) {
+        if atoms.is_empty() && given.contains(&key) {
             return Err(refusal(format!(
                 "the value given for {} cannot be stored in an M4A file (lofty would leave it \
                  out)",
@@ -3522,6 +3566,43 @@ mod tests {
             chpl,
             meta_parts,
         }
+    }
+
+    #[test]
+    fn working_out_what_was_asked_takes_steps_in_step_with_the_tags() {
+        // Counted, never timed (the stand-in review of revision 9, M3: a
+        // title-only save of a file with 32,000 tags took about two minutes,
+        // because every key was looked for by searching the whole tag). Four
+        // times the tags must take four times the steps, not sixteen.
+        let steps_for = |n: usize| {
+            let mut before = Tag::new(TagType::Mp4Ilst);
+            for i in 0..n {
+                before.push_unchecked(TagItem::new(
+                    ItemKey::Unknown(format!("----:com.apple.iTunes:k{i:06}")),
+                    ItemValue::Text("v".to_string()),
+                ));
+            }
+            let mut after = before.clone();
+            after.set_title("Changed".to_string());
+            let asked = [ItemKey::TrackTitle];
+            let languages = LanguageField {
+                current: Vec::new(),
+                as_read: Vec::new(),
+                replacement: None,
+            };
+            let mut steps = 0;
+            let expected =
+                atoms_asked_for(&before, &after, &asked, &languages, &[], &mut steps).expect("ok");
+            assert_eq!(expected.len(), 1, "only the title was asked for");
+            steps
+        };
+        let (small, large) = (steps_for(1000), steps_for(4000));
+        // No more than four times the steps (in step, not squared), and more
+        // than three times (every tag is counted).
+        assert!(
+            large <= 4 * small && large > 3 * small,
+            "{small} then {large}"
+        );
     }
 
     #[test]
