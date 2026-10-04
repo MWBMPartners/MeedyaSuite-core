@@ -59,18 +59,18 @@
 // `ilst` is read into memory, and anything it cannot read (a damaged size,
 // an atom running past its parent) refuses the save rather than guessing.
 //
-// What this costs: a copy of the whole file on the same disk, for as long
-// as the save takes (lofty already reads the whole file into memory to save
-// it). And because the copy REPLACES the original: the saved file is a new
-// file, so another name for the same file (a hard link) keeps the old tags;
-// and the file's folder must be writable, not just the file. A symbolic
-// link is followed first, so the file it points to is the one replaced.
+// How the copy is made and how it takes the original's place — and what
+// that costs compared with writing into the file (a hard link keeps the old
+// tags, the folder must be writable, and more) — is in `save_by_copy`. A
+// symbolic link is followed first, so the file it points to is the one
+// replaced.
 
 use std::collections::{BTreeMap, HashSet};
-use std::fs::{File, OpenOptions};
+#[cfg(test)]
+use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+use std::path::Path;
 
 use lofty::mp4::{AtomData, AtomIdent, DataType};
 use lofty::picture::MimeType;
@@ -156,22 +156,45 @@ pub(crate) type Expected = BTreeMap<RawKey, Vec<Vec<RawValue>>>;
 // ============================================================
 
 /// Every atom inside the `ilst` atoms of the MP4 file at `path` (see the top
-/// of this file for which `ilst` atoms), in file order. A file with no
-/// `moov` atom, or no tags, gives none.
+/// of this file for which `ilst` atoms), in file order: [`read_ilst_atoms_from`]
+/// on the file at `path`. Used by the tests; the save itself reads through
+/// the handles it holds.
+#[cfg(test)]
+pub(crate) fn read_ilst_atoms(path: &Path) -> Result<Vec<RawAtom>, MetadataError> {
+    read_ilst_atoms_from(&mut File::open(path)?)
+}
+
+/// Every atom inside the `ilst` atoms of the MP4 file `file` reads (see the
+/// top of this file for which `ilst` atoms), in file order. A file with no
+/// `moov` atom, or no tags, gives none. `file` may be at any position; it
+/// is read from its start.
 ///
 /// Fails with [`MetadataError::WriteError`] when the file's atoms cannot be
 /// read safely — a size that does not fit, more than `MAX_ILST_BYTES` of
 /// tags — and with [`MetadataError::IoError`] when the file cannot be read.
-pub(crate) fn read_ilst_atoms(path: &Path) -> Result<Vec<RawAtom>, MetadataError> {
-    let unreadable = |why: String| {
-        MetadataError::WriteError(format!(
-            "this M4A file's tags cannot be checked before saving, because {why}. Nothing \
-             was written. (Issue #102: every M4A save is checked atom by atom against the \
-             original before it replaces it, and a file whose tags cannot be read that way is \
-             not saved.)"
-        ))
-    };
-    let mut reader = BufReader::new(File::open(path)?);
+pub(crate) fn read_ilst_atoms_from(
+    file: &mut (impl Read + Seek),
+) -> Result<Vec<RawAtom>, MetadataError> {
+    read_ilst_atoms_within(file, MAX_ILST_BYTES)
+}
+
+/// The message for a file whose tags cannot be read safely.
+pub(crate) fn unreadable(why: String) -> MetadataError {
+    MetadataError::WriteError(format!(
+        "this M4A file's tags cannot be checked before saving, because {why}. Nothing \
+         was written. (Issue #102: every M4A save is checked against the original before it \
+         replaces it, and a file that cannot be read that way is not saved.)"
+    ))
+}
+
+/// [`read_ilst_atoms_from`], reading at most `limit` bytes of `ilst`
+/// atoms (a parameter only so a test can show the limit is kept, without
+/// making a 64 MiB file).
+fn read_ilst_atoms_within(
+    file: &mut (impl Read + Seek),
+    limit: u64,
+) -> Result<Vec<RawAtom>, MetadataError> {
+    let mut reader = BufReader::new(file);
     let file_len = reader.seek(SeekFrom::End(0))?;
 
     // lofty reads the first `moov` atom only, and so does this: the atoms
@@ -194,10 +217,10 @@ pub(crate) fn read_ilst_atoms(path: &Path) -> Result<Vec<RawAtom>, MetadataError
             for ilst in meta_children.iter().filter(|b| &b.name == b"ilst") {
                 let len = ilst.end - ilst.body_start;
                 ilst_bytes += len;
-                if ilst_bytes > MAX_ILST_BYTES {
+                if ilst_bytes > limit {
                     return Err(unreadable(format!(
                         "its tags take more than {} MiB",
-                        MAX_ILST_BYTES / (1024 * 1024)
+                        limit / (1024 * 1024)
                     )));
                 }
                 reader.seek(SeekFrom::Start(ilst.body_start))?;
@@ -212,7 +235,10 @@ pub(crate) fn read_ilst_atoms(path: &Path) -> Result<Vec<RawAtom>, MetadataError
 
 /// The first `moov` atom at the top of the file, or `None` when there is
 /// none. Only the atoms before it are read (their headers only).
-fn first_moov(reader: &mut (impl Read + Seek), file_len: u64) -> Result<Option<BoxAt>, String> {
+pub(crate) fn first_moov(
+    reader: &mut (impl Read + Seek),
+    file_len: u64,
+) -> Result<Option<BoxAt>, String> {
     let mut pos = 0;
     while pos + 8 <= file_len {
         let Some(found) = boxes_in_file_from(reader, pos, file_len, true)?.pop() else {
@@ -228,10 +254,10 @@ fn first_moov(reader: &mut (impl Read + Seek), file_len: u64) -> Result<Option<B
 
 /// Where one atom ("box") sits in the file: its name, where its contents
 /// start (just after its header), and where it ends.
-struct BoxAt {
-    name: [u8; 4],
-    body_start: u64,
-    end: u64,
+pub(crate) struct BoxAt {
+    pub(crate) name: [u8; 4],
+    pub(crate) body_start: u64,
+    pub(crate) end: u64,
 }
 
 /// Every atom between `start` and `end` of the file, reading only their
@@ -239,7 +265,7 @@ struct BoxAt {
 /// size of 1 means a larger size follows in eight more bytes, and a size of
 /// 0 means "to the end of the atom around it". A size that does not fit
 /// inside `start..end` is refused (as plain words), never guessed at.
-fn boxes_in_file(
+pub(crate) fn boxes_in_file(
     reader: &mut (impl Read + Seek),
     start: u64,
     end: u64,
@@ -303,7 +329,10 @@ fn boxes_in_file_from(
 /// ("full") form, 0 when it is written as a plain atom — decided as lofty
 /// decides it, by whether the four bytes after the first four name a child
 /// atom lofty knows (lofty 0.22.4, `mp4/read/mod.rs`, `meta_is_full`).
-fn meta_version_len(reader: &mut (impl Read + Seek), meta: &BoxAt) -> Result<u64, MetadataError> {
+pub(crate) fn meta_version_len(
+    reader: &mut (impl Read + Seek),
+    meta: &BoxAt,
+) -> Result<u64, MetadataError> {
     if meta.end - meta.body_start < 8 {
         return Ok(4);
     }
@@ -661,82 +690,6 @@ fn describe_value(value: &RawValue) -> String {
     text
 }
 
-// ============================================================
-// The temporary copy
-// ============================================================
-
-/// A temporary copy of a file, made in the same folder (so replacing the
-/// original is one rename on one disk), and deleted again unless it
-/// replaces the original.
-pub(crate) struct TempCopy {
-    path: PathBuf,
-    kept: bool,
-}
-
-/// Numbers the temporary copies this process makes, so two saves at once
-/// never pick the same name.
-static COPIES_MADE: AtomicU64 = AtomicU64::new(0);
-
-impl TempCopy {
-    /// A copy of `original` (which must be the real file, not a link to
-    /// it), with the same permissions (`std::fs::copy` copies them).
-    pub(crate) fn of(original: &Path) -> Result<Self, MetadataError> {
-        let folder = original.parent().unwrap_or_else(|| Path::new("."));
-        for _ in 0..100 {
-            let candidate = folder.join(format!(
-                ".meedya-tag-save-{}-{}.tmp",
-                std::process::id(),
-                COPIES_MADE.fetch_add(1, Ordering::Relaxed)
-            ));
-            // `create_new` fails if the name is taken, so an existing file
-            // is never overwritten.
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
-            {
-                Ok(file) => {
-                    drop(file);
-                    let copy = TempCopy {
-                        path: candidate,
-                        kept: false,
-                    };
-                    std::fs::copy(original, &copy.path)?;
-                    return Ok(copy);
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(e.into()),
-            }
-        }
-        Err(MetadataError::WriteError(
-            "could not find a free name for the temporary copy an M4A save is checked on. \
-             Nothing was written."
-                .to_string(),
-        ))
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Replaces `original` with this copy, in one step.
-    pub(crate) fn replace(mut self, original: &Path) -> Result<(), MetadataError> {
-        std::fs::rename(&self.path, original)?;
-        self.kept = true;
-        Ok(())
-    }
-}
-
-impl Drop for TempCopy {
-    fn drop(&mut self) {
-        if !self.kept {
-            // Nothing more can be done if this fails; the copy is a
-            // hidden file beside the original, never the original itself.
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -993,29 +946,5 @@ mod tests {
         // passed unchecked.
         assert_eq!(raw_value(&AtomData::UTF16("x".into())), None);
         assert_eq!(raw_value(&AtomData::UnsignedInteger(1)), None);
-    }
-
-    #[test]
-    fn a_temporary_copy_is_removed_unless_it_replaces_the_original() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let original = dir.path().join("f.m4a");
-        std::fs::write(&original, b"original").expect("write");
-        let copy = TempCopy::of(&original).expect("copy");
-        let copy_path = copy.path().to_path_buf();
-        assert_eq!(std::fs::read(&copy_path).expect("read"), b"original");
-        drop(copy);
-        assert!(!copy_path.exists(), "a copy not used is deleted");
-
-        let copy = TempCopy::of(&original).expect("copy");
-        std::fs::write(copy.path(), b"changed").expect("write");
-        let copy_path = copy.path().to_path_buf();
-        copy.replace(&original).expect("replace");
-        assert_eq!(std::fs::read(&original).expect("read"), b"changed");
-        assert!(!copy_path.exists());
-        assert_eq!(
-            std::fs::read_dir(dir.path()).expect("list").count(),
-            1,
-            "nothing is left beside the file"
-        );
     }
 }

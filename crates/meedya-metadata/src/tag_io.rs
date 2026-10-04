@@ -97,7 +97,8 @@ use crate::common_tags::CommonTag;
 use crate::error::MetadataError;
 use crate::id3v2_language_frames::{read_tlan_frames, TlanFrames};
 use crate::json_path;
-use crate::mp4_save_check::{self, Expected, RawAtom, RawKey, RawValue, TempCopy};
+use crate::mp4_save_check::{self, Expected, RawAtom, RawKey, RawValue};
+use crate::save_by_copy::{Original, TempCopy};
 use crate::tag_registry::{TagRegistry, TagScope};
 
 /// A map of common tags to their values (supports multi-value fields).
@@ -789,9 +790,14 @@ fn edit_and_save<T>(
             // The real file, not a link to it: the checked copy replaces
             // whatever this names, so a symbolic link is followed first.
             let real = std::fs::canonicalize(path)?;
+            // Opened once, for reading and writing, without being changed
+            // (a file this program may not write to is refused here): the
+            // copy is made from this handle, and the checks read it
+            // (`save_by_copy`).
+            let mut source = Original::open(&real)?;
             // What the file holds now, read from its bytes before anything
             // changes: what the saved copy is compared with.
-            let original = mp4_save_check::read_ilst_atoms(&real)?;
+            let original = mp4_save_check::read_ilst_atoms_from(source.file())?;
 
             let mut ilst = mp4.remove_ilst().unwrap_or_default();
             let held = take_mp4_languages(&mut ilst);
@@ -819,7 +825,7 @@ fn edit_and_save<T>(
                 Some(atom) => merged.replace_atom(atom),
                 None => merged.remove(&MP4_LANGUAGE).for_each(drop),
             }
-            save_mp4_checked(&real, &merged, &original, &expected)?;
+            save_mp4_checked(source, &merged, &original, &expected)?;
             Ok(out)
         }
         OpenedFile::Other(mut tagged_file) => {
@@ -1062,20 +1068,22 @@ fn atoms_asked_for(
     Ok(expected)
 }
 
-/// Saves `ilst` as the tags of the M4A file `real` (the real file, links
-/// already followed): on a temporary copy first, which replaces `real`
-/// only when every atom in it is as `expected`, or else byte for byte as in
-/// `original` (see `mp4_save_check`). Otherwise the copy is deleted, `real`
-/// is not touched, and the error names every atom that would have changed.
+/// Saves `ilst` as the tags of the M4A file `source` (the real file, links
+/// already followed, opened by [`Original::open`]): on a temporary copy
+/// first — made, saved into and read back through its own handle
+/// (`save_by_copy`) — which replaces the file only when every atom in it is
+/// as `expected`, or else byte for byte as in `original` (see
+/// `mp4_save_check`). Otherwise the copy is deleted, the file is not
+/// touched, and the error names every atom that would have changed.
 fn save_mp4_checked(
-    real: &Path,
+    mut source: Original,
     ilst: &Ilst,
     original: &[RawAtom],
     expected: &Expected,
 ) -> Result<(), MetadataError> {
-    let copy = TempCopy::of(real)?;
-    ilst.save_to_path(copy.path(), WriteOptions::default())?;
-    let saved = mp4_save_check::read_ilst_atoms(copy.path())?;
+    let mut copy = TempCopy::of(&mut source)?;
+    ilst.save_to(copy.file(), WriteOptions::default())?;
+    let saved = mp4_save_check::read_ilst_atoms_from(copy.file())?;
     let problems = mp4_save_check::differences(original, &saved, expected);
     if !problems.is_empty() {
         const LISTED: usize = 8;
@@ -1091,7 +1099,7 @@ fn save_mp4_checked(
              keeps them, such a save is refused.)"
         )));
     }
-    copy.replace(real)
+    copy.replace(source)
 }
 
 /// The item keys `write_common_tag_to_lofty` writes for `common_tag` and

@@ -22,5 +22,14 @@ meedya-codecs = { workspace = true }
 meedya-fingerprint = { workspace = true }
 meedya-lang = { workspace = true }
 
+# Windows only: which file a handle holds (volume serial number and file
+# index, `GetFileInformationByHandle`), so an M4A save can check that a name
+# still names the file it opened before replacing it (`save_by_copy`). The
+# standard library's own way to read those two numbers is not stable yet;
+# this is a small, safe wrapper (Unlicense OR MIT) that keeps `unsafe` out
+# of this workspace.
+[target.'cfg(windows)'.dependencies]
+winapi-util = "0.1"
+
 [dev-dependencies]
 tempfile = { workspace = true }
