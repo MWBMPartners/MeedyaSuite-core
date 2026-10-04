@@ -53,10 +53,21 @@
 // with none needs that box, and nothing is lost. What lofty makes is
 // checked to be exactly that, byte for byte (see `LOFTY_HDLR`).
 //
-// And two kinds of file are refused BEFORE anything is written, with a
-// plain message, because it is known that the save would damage them: a
-// fragmented file (any `moof`, `mfra` or `sidx` atom at the top, or `mvex`
-// in `moov`), and a `meta` that has parts but no `ilst`.
+// And three kinds of file are refused BEFORE anything is written, with a
+// plain message, because it is known that the save would damage them or
+// fail on them: a fragmented file (any `moof`, `mfra` or `sidx` atom at the
+// top, or `mvex` in `moov`), a `meta` that has parts but no `ilst`, and a
+// file with one of the containers lofty's save follows down (`moov`,
+// `udta`, `moof`, `trak`, `mdia`, `minf`, `stbl`) sitting inside another
+// where no M4A file has one - a `minf` inside a `minf`, say. lofty follows
+// those with no limit on how deep: 1,000 `minf` atoms, each inside the one
+// before, were enough for its save to use up the small part of memory set
+// aside for following them (the "stack"), which stops the program
+// outright - measured with lofty 0.22.4 (Codex's catch-up review of
+// revisions 8-10, finding 5). The comparison below never goes that deep
+// itself: it follows only the one fixed path to the chunk offset tables
+// (`moov` → `trak` → `mdia` → `minf` → `stbl`), so the number of steps it
+// takes down is fixed, and it refuses such nesting by itself too.
 //
 // The comparison refuses a lost handler by itself, through (c), only later
 // and less helpfully. It would NOT catch a fragmented file through (a) to
@@ -96,9 +107,11 @@ const BLOCK: usize = 64 * 1024;
 // ============================================================
 
 /// Refuses, with a plain [`MetadataError::WriteError`], an M4A file whose
-/// save is known to damage it (see the top of this file): a fragmented
-/// file, or a file whose `meta` box — the one lofty writes into, the first
-/// in the first `udta` — has parts but no tag list. Anything else passes.
+/// save is known to damage it or to fail on it (see the top of this file):
+/// a fragmented file, a file with containers nested where no M4A file has
+/// them (which lofty's save would follow with no limit), or a file whose
+/// `meta` box — the one lofty writes into, the first in the first `udta` —
+/// has parts but no tag list. Anything else passes.
 /// Fails with the "cannot be checked" refusal when the file's atoms cannot
 /// be read safely.
 pub(crate) fn refuse_what_a_save_would_damage(
@@ -122,6 +135,7 @@ pub(crate) fn refuse_what_a_save_would_damage(
     {
         return Err(fragmented(&atom.name));
     }
+    refuse_nesting_lofty_cannot_follow(&mut reader, &top)?;
     let Some(moov) = first_moov(&mut reader, file_len).map_err(unreadable)? else {
         return Ok(());
     };
@@ -152,6 +166,81 @@ pub(crate) fn refuse_what_a_save_would_damage(
              `clear()` and `save()` does. Issue #102.)",
             names(&parts)
         )));
+    }
+    Ok(())
+}
+
+/// The containers lofty's save reads all the way down, wherever they sit
+/// (lofty 0.22.4, `mp4/write.rs`, `IMPORTANT_CONTAINERS`): it follows one
+/// inside another with no limit on how deep.
+const CONTAINERS_LOFTY_FOLLOWS: [[u8; 4]; 7] = [
+    *b"moov", *b"udta", *b"moof", *b"trak", *b"mdia", *b"minf", *b"stbl",
+];
+
+/// Whether `name` is one of [`CONTAINERS_LOFTY_FOLLOWS`].
+fn lofty_follows(name: &[u8; 4]) -> bool {
+    CONTAINERS_LOFTY_FOLLOWS.contains(name)
+}
+
+/// Whether one of the containers lofty follows, `child`, may sit directly
+/// inside `parent` — the one shape an M4A file has: `moov` → `trak` →
+/// `mdia` → `minf` → `stbl`, with a `udta` in `moov` or in a `trak`. At the
+/// top of the file any of them may sit (a fragmented file's `moof` is
+/// refused on its own account). Nothing more is needed by any file this
+/// crate has met, and nothing more is safe to pass to lofty's save (see the
+/// top of this file); anything else is refused.
+fn may_hold(parent: &[u8; 4], child: &[u8; 4]) -> bool {
+    match parent {
+        b"moov" => matches!(child, b"trak" | b"udta"),
+        b"trak" => matches!(child, b"mdia" | b"udta"),
+        b"mdia" => child == b"minf",
+        b"minf" => child == b"stbl",
+        _ => false,
+    }
+}
+
+/// Why a container lofty follows that sits where no M4A file has one
+/// (`child` inside `parent`, at `path`) cannot be saved, in plain words.
+fn nesting_problem(child: &[u8; 4], parent: &[u8; 4], path: &str) -> String {
+    format!(
+        "it has a `{}` atom inside a `{}` atom ({path}), where no M4A file has one, and the \
+         library this crate saves M4A files with follows such atoms down with no limit on how \
+         deep - nested deeply enough, that stops the program",
+        name_of(child),
+        name_of(parent)
+    )
+}
+
+/// Refuses a file holding one of the containers lofty's save follows
+/// inside another where [`may_hold`] does not allow it (Codex's catch-up
+/// review of revisions 8-10, finding 5). Every container lofty follows is
+/// looked in, from the top of the file down, using a list of the ones still
+/// to look in rather than calling itself: however deep the file is nested,
+/// this takes no more of the program's memory for following them, and it
+/// stops at the first container out of place.
+fn refuse_nesting_lofty_cannot_follow(
+    reader: &mut (impl Read + Seek),
+    top: &[BoxAt],
+) -> Result<(), MetadataError> {
+    let mut to_look_in: Vec<(BoxAt, String)> = top
+        .iter()
+        .filter(|atom| lofty_follows(&atom.name))
+        .map(|atom| (atom.clone(), name_of(&atom.name)))
+        .collect();
+    while let Some((container, path)) = to_look_in.pop() {
+        let parts =
+            boxes_in_file(reader, container.body_start, container.end).map_err(unreadable)?;
+        for part in parts.into_iter().filter(|part| lofty_follows(&part.name)) {
+            let path = format!("{path} → {}", name_of(&part.name));
+            if !may_hold(&container.name, &part.name) {
+                return Err(MetadataError::WriteError(format!(
+                    "this M4A file's tags cannot be saved safely: {}. Nothing was written. (Issue \
+                     #102.)",
+                    nesting_problem(&part.name, &container.name, &path)
+                )));
+            }
+            to_look_in.push((part, path));
+        }
     }
     Ok(())
 }
@@ -243,6 +332,34 @@ fn path_to(parent: &str, atom: &BoxAt, siblings: &[BoxAt]) -> String {
 /// How an atom's own header is written: 8 bytes, or 16 with a 64-bit size.
 fn header_len(atom: &BoxAt) -> u64 {
     atom.body_start - atom.start
+}
+
+/// How far down the fixed path to the chunk offset tables the walk is: in
+/// a `trak`, its `mdia`, that one's `minf`, or that one's `stbl`.
+#[derive(Clone, Copy)]
+enum Level {
+    Trak,
+    Mdia,
+    Minf,
+    Stbl,
+}
+
+/// Refuses (as "cannot be checked") the original's `parts` of `container`
+/// (at `path`) when one of them is a container lofty follows that may not
+/// sit there (see [`may_hold`]): the comparison refuses such a file by
+/// itself, whatever the check before saving did.
+fn refuse_nesting(container: &[u8; 4], path: &str, parts: &[BoxAt]) -> Result<(), Stop> {
+    match parts
+        .iter()
+        .find(|part| lofty_follows(&part.name) && !may_hold(container, &part.name))
+    {
+        Some(part) => Err(Stop::Unreadable(nesting_problem(
+            &part.name,
+            container,
+            &format!("{path} → {}", name_of(&part.name)),
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// Where one `mdat`'s contents sit in the original, and how far they moved
@@ -433,9 +550,10 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
             let made = in_b.remove(0);
             self.made_udta(&made)?;
         }
+        refuse_nesting(b"moov", "moov", &in_a)?;
         self.pairs("moov", &in_a, &in_b, |walk, path, x, y| match &x.name {
             b"udta" => walk.udta(path, x, y),
-            b"trak" => walk.down_to_offsets(path, x, y),
+            b"trak" => walk.down_to_offsets(Level::Trak, path, x, y),
             _ => walk.same_or_note(path, x, y),
         })
     }
@@ -476,18 +594,38 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
     /// `trak`, `mdia`, `minf`, `stbl` — whose sizes never change (a table's
     /// entries change, not how many there are): header byte for byte, parts
     /// compared, and the tables checked by (b).
-    fn down_to_offsets(&mut self, path: &str, x: &BoxAt, y: &BoxAt) -> Result<(), Stop> {
+    ///
+    /// Only that one fixed path is followed — a `mdia` in a `trak`, a
+    /// `minf` in that, a `stbl` in that, the tables in that — so this goes
+    /// down at most four steps. Until Codex's catch-up review of revisions
+    /// 8-10 (finding 5) it followed a `mdia`, `minf` or `stbl` found inside
+    /// ANY of them, with no limit: 10,000 `minf` atoms, each inside the one
+    /// before, used up the memory set aside for following them and stopped
+    /// the program. Such nesting is now refused (`refuse_nesting`); any
+    /// other atom is compared byte for byte, never looked inside.
+    fn down_to_offsets(
+        &mut self,
+        level: Level,
+        path: &str,
+        x: &BoxAt,
+        y: &BoxAt,
+    ) -> Result<(), Stop> {
         if !self.same_bytes((x.start, x.body_start), (y.start, y.body_start))? {
             self.problems
                 .push(format!("the size or name of {path} would change"));
             return Ok(());
         }
         let (in_a, in_b) = self.parts(path, (x.body_start, x.end), (y.body_start, y.end))?;
-        self.pairs(path, &in_a, &in_b, |walk, path, x, y| match &x.name {
-            b"mdia" | b"minf" | b"stbl" => walk.down_to_offsets(path, x, y),
-            b"stco" => walk.offsets(path, x, y, 4),
-            b"co64" => walk.offsets(path, x, y, 8),
-            _ => walk.same_or_note(path, x, y),
+        refuse_nesting(&x.name, path, &in_a)?;
+        self.pairs(path, &in_a, &in_b, |walk, path, x, y| {
+            match (level, &x.name) {
+                (Level::Trak, b"mdia") => walk.down_to_offsets(Level::Mdia, path, x, y),
+                (Level::Mdia, b"minf") => walk.down_to_offsets(Level::Minf, path, x, y),
+                (Level::Minf, b"stbl") => walk.down_to_offsets(Level::Stbl, path, x, y),
+                (Level::Stbl, b"stco") => walk.offsets(path, x, y, 4),
+                (Level::Stbl, b"co64") => walk.offsets(path, x, y, 8),
+                _ => walk.same_or_note(path, x, y),
+            }
         })
     }
 
@@ -583,6 +721,7 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
                 .push(format!("the header of {path} would change form"));
         }
         let (in_a, in_b) = self.parts(path, (x.body_start, x.end), (y.body_start, y.end))?;
+        refuse_nesting(b"udta", path, &in_a)?;
         let in_a: Vec<BoxAt> = in_a.into_iter().filter(|x| !is_padding(&x.name)).collect();
         let mut in_b: Vec<BoxAt> = in_b.into_iter().filter(|y| !is_padding(&y.name)).collect();
         if !in_a.iter().any(|atom| &atom.name == b"meta")
@@ -1060,6 +1199,84 @@ mod tests {
             }
         }
         assert!(walk.same_bytes((0, 8), (0, 8)).unwrap_or(false));
+    }
+
+    /// `inner`, wrapped `depth` times in atoms named `name`, each inside
+    /// the one before.
+    fn nested(name: &[u8; 4], depth: usize, inner: Vec<u8>) -> Vec<u8> {
+        (0..depth).fold(inner, |inside, _| atom(name, &inside))
+    }
+
+    #[test]
+    fn containers_nested_where_no_m4a_file_has_them_are_refused_not_followed() {
+        // Codex's catch-up review of revisions 8-10, finding 5. Each file
+        // below has 10,000 atoms of one name, each inside the one before.
+        // Before the fix the comparison followed a `minf` or `stbl` found
+        // inside any of them, and on the first file it used up the memory
+        // set aside for following them and stopped the program ("has
+        // overflowed its stack"); lofty's own save did the same at 1,000.
+        // Now the check before saving refuses every one of these files, in
+        // plain words. The comparison follows only the fixed path: it
+        // refuses the nesting it meets on that path by itself too, and the
+        // last file - nesting inside a track's `udta`, which it compares
+        // byte for byte without looking inside - it simply finishes.
+        let ftyp = atom(b"ftyp", b"M4A \0\0\0\0");
+        let deep = 10_000;
+        let stbl = atom(b"stbl", &atom(b"stsd", b"sample-description"));
+        for (trak, name, on_the_path) in [
+            (
+                atom(
+                    b"trak",
+                    &atom(b"mdia", &nested(b"minf", deep, stbl.clone())),
+                ),
+                "minf",
+                true,
+            ),
+            (
+                atom(
+                    b"trak",
+                    &atom(
+                        b"mdia",
+                        &atom(b"minf", &nested(b"stbl", deep, stbl.clone())),
+                    ),
+                ),
+                "stbl",
+                true,
+            ),
+            (nested(b"trak", deep, atom(b"mdia", b"")), "trak", true),
+            (
+                atom(b"trak", &atom(b"udta", &nested(b"udta", deep, Vec::new()))),
+                "udta",
+                false,
+            ),
+        ] {
+            let file = [ftyp.clone(), atom(b"moov", &trak)].concat();
+            let said = format!("a `{name}` atom inside a `{name}` atom");
+            let before = refuse_what_a_save_would_damage(&mut Cursor::new(file.clone()));
+            let message = before.expect_err("refused before saving").to_string();
+            assert!(message.contains(&said), "{said}: {message}");
+            assert!(message.contains("Nothing was written"), "{message}");
+            let found = differences_outside_the_tags(
+                &mut Cursor::new(file.clone()),
+                &mut Cursor::new(file),
+            );
+            if on_the_path {
+                let message = found.expect_err("refused").to_string();
+                assert!(message.contains(&said), "{said}: {message}");
+                assert!(message.contains("Nothing was written"), "{message}");
+            } else {
+                assert_eq!(found.expect("finished"), Vec::<String>::new());
+            }
+        }
+        // The fixed path itself, with a `udta` in the track and at the top
+        // of `moov`, passes both.
+        let trak = atom(
+            b"trak",
+            &[atom(b"mdia", &atom(b"minf", &stbl)), atom(b"udta", b"")].concat(),
+        );
+        let file = [ftyp, atom(b"moov", &[trak, atom(b"udta", b"")].concat())].concat();
+        assert_eq!(outside(&file, &file), Vec::<String>::new());
+        assert!(refuse_what_a_save_would_damage(&mut Cursor::new(file)).is_ok());
     }
 
     #[test]

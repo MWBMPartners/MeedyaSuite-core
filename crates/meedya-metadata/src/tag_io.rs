@@ -4133,6 +4133,10 @@ mod tests {
         udta: (usize, usize, usize),
         meta: (usize, usize, usize),
         ilst: (usize, usize, usize),
+        trak: (usize, usize, usize),
+        mdia: (usize, usize, usize),
+        minf: (usize, usize, usize),
+        stbl: (usize, usize, usize),
     }
 
     fn tone() -> Tone {
@@ -4144,6 +4148,10 @@ mod tests {
         let udta = only(&bytes, moov.2, moov.1, b"udta");
         let meta = only(&bytes, udta.2, udta.1, b"meta");
         let ilst = only(&bytes, meta.2 + 4, meta.1, b"ilst");
+        let trak = only(&bytes, moov.2, moov.1, b"trak");
+        let mdia = only(&bytes, trak.2, trak.1, b"mdia");
+        let minf = only(&bytes, mdia.2, mdia.1, b"minf");
+        let stbl = only(&bytes, minf.2, minf.1, b"stbl");
         // The audio comes first in this file, so putting bytes into `moov`
         // moves nothing a chunk offset points at.
         let mdat = only(&bytes, 0, bytes.len(), b"mdat");
@@ -4154,6 +4162,10 @@ mod tests {
             udta,
             meta,
             ilst,
+            trak,
+            mdia,
+            minf,
+            stbl,
         }
     }
 
@@ -4235,6 +4247,40 @@ mod tests {
                 )),
                 "{extra}: {message}"
             );
+        }
+    }
+
+    #[test]
+    fn containers_nested_without_limit_refuse_the_write_and_leave_the_file() {
+        // Codex's catch-up review of revisions 8-10, finding 5, through the
+        // public write: 10,000 `minf` atoms, each inside the one before, put
+        // into the real file's own `minf` (and the same with `stbl`). lofty's
+        // own save follows them with no limit - measured: 1,000 were enough
+        // to stop the program - so they are refused BEFORE lofty saves, and
+        // the file is as it was.
+        let tone = tone();
+        let deep =
+            |name: &[u8; 4]| (0..10_000).fold(atom(name, b""), |inside, _| atom(name, &inside));
+        let around_minf = [tone.moov.0, tone.trak.0, tone.mdia.0, tone.minf.0];
+        let around_stbl = [
+            tone.moov.0,
+            tone.trak.0,
+            tone.mdia.0,
+            tone.minf.0,
+            tone.stbl.0,
+        ];
+        for (bytes, said) in [
+            (
+                grown(&tone.bytes, tone.minf.1, &around_minf, &deep(b"minf")),
+                "a `minf` atom inside a `minf` atom (moov → trak → mdia → minf → minf)",
+            ),
+            (
+                grown(&tone.bytes, tone.stbl.1, &around_stbl, &deep(b"stbl")),
+                "a `stbl` atom inside a `stbl` atom (moov → trak → mdia → minf → stbl → stbl)",
+            ),
+        ] {
+            let message = refused_variant(&bytes, title_only);
+            assert!(message.contains(said), "{message}");
         }
     }
 
