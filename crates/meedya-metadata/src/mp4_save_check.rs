@@ -576,24 +576,50 @@ pub(crate) fn differences_counted(
                         .zip(wanted)
                         .all(|(atom, values)| atom.other_parts == 0 && &atom.values == values);
                 if !as_asked {
-                    out.push(format!(
-                        "{} was asked to hold {}, but after saving would hold {}",
-                        key.display(),
-                        describe_wanted(wanted),
-                        describe_atoms(now)
-                    ));
+                    let (asked, found) = (describe_wanted(wanted), describe_atoms(now));
+                    out.push(if asked == found {
+                        // Never "asked for X, would hold X" (L4).
+                        let now_values: Vec<&[RawValue]> =
+                            now.iter().map(|atom| atom.values.as_slice()).collect();
+                        let wanted_values: Vec<&[RawValue]> =
+                            wanted.iter().map(Vec::as_slice).collect();
+                        format!(
+                            "{} was asked to hold {asked}, and after saving would read the same, \
+                             but {}",
+                            key.display(),
+                            unseen_difference(&wanted_values, &now_values)
+                        )
+                    } else {
+                        format!(
+                            "{} was asked to hold {asked}, but after saving would hold {found}",
+                            key.display()
+                        )
+                    });
                 }
             }
             None => {
                 let unchanged =
                     was.len() == now.len() && was.iter().zip(now).all(|(a, b)| a.bytes == b.bytes);
                 if !unchanged {
-                    out.push(format!(
-                        "{} would change: now {}; after saving, {}",
-                        key.display(),
-                        describe_atoms(was),
-                        describe_atoms(now)
-                    ));
+                    let (before, after) = (describe_atoms(was), describe_atoms(now));
+                    out.push(if before == after {
+                        // Never "now X; after saving, X" (L4).
+                        let was_values: Vec<&[RawValue]> =
+                            was.iter().map(|atom| atom.values.as_slice()).collect();
+                        let now_values: Vec<&[RawValue]> =
+                            now.iter().map(|atom| atom.values.as_slice()).collect();
+                        format!(
+                            "{} would change, though it reads the same before and after saving \
+                             ({before}): {}",
+                            key.display(),
+                            unseen_difference(&was_values, &now_values)
+                        )
+                    } else {
+                        format!(
+                            "{} would change: now {before}; after saving, {after}",
+                            key.display()
+                        )
+                    });
                 }
             }
         }
@@ -609,6 +635,36 @@ fn by_name<'a>(atoms: &'a [RawAtom], steps: &mut u64) -> HashMap<&'a RawKey, Vec
         groups.entry(&atom.key).or_default().push(atom);
     }
     groups
+}
+
+/// What differs between two sets of atoms that read the same in words
+/// (each a list of values, atom by atom), so a refusal never shows "before"
+/// and "after" as identical (the stand-in review of revision 9, L4 — a
+/// title-only save of a file whose last atom was written with the size 0,
+/// "to the end", was refused as "©alb would change: now the text "Album";
+/// after saving, the text "Album""). Either a value's bytes differ where the
+/// words do not show them (text past the 40 characters shown, an image of
+/// the same size), or the values are the same and only how the atom is
+/// stored differs.
+fn unseen_difference(a: &[&[RawValue]], b: &[&[RawValue]]) -> String {
+    for (atom, (values_a, values_b)) in a.iter().zip(b).enumerate() {
+        for (index, (x, y)) in values_a.iter().zip(values_b.iter()).enumerate() {
+            if x != y {
+                let atom = if a.len() > 1 {
+                    format!(" of atom {}", atom + 1)
+                } else {
+                    String::new()
+                };
+                return format!(
+                    "value {}{atom} differs in bytes the words above do not show",
+                    index + 1
+                );
+            }
+        }
+    }
+    "the values are the same and only how the atom is stored differs - its size fields, \
+     flag bytes or other parts"
+        .to_string()
 }
 
 /// The asked-for atoms, in words.
@@ -955,6 +1011,55 @@ mod tests {
         assert!(
             large <= 4 * small && large > 3 * small,
             "{small} then {large}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_never_shows_before_and_after_as_the_same() {
+        // The stand-in review of revision 9 (L4): the last atom written with
+        // the size 0 ("to the end of the tag list"); lofty writes its real
+        // size. The same value, stored differently - refused (compared byte
+        // for byte; compared by value, planted fault A1, it would pass), but
+        // the message used to read "now the text "Album"; after saving, the
+        // text "Album"".
+        let artist = atom(b"\xa9ART", &data(1, 0, b"Artist"));
+        let mut to_the_end = atom(b"\xa9alb", &data(1, 0, b"Album"));
+        to_the_end[..4].copy_from_slice(&0u32.to_be_bytes());
+        let before = read(&[artist.clone(), to_the_end].concat());
+        let after = read(&[artist, atom(b"\xa9alb", &data(1, 0, b"Album"))].concat());
+        assert_eq!(
+            differences(&before, &after, &Expected::new()),
+            [
+                "©alb would change, though it reads the same before and after saving (one value, \
+                 the text \"Album\"): the values are the same and only how the atom is stored \
+                 differs - its size fields, flag bytes or other parts"
+            ]
+        );
+        // Text that differs only past the 40 characters shown.
+        let long = |end: u8| {
+            atom(
+                b"\xa9cmt",
+                &data(1, 0, &[vec![b'x'; 50], vec![end]].concat()),
+            )
+        };
+        let found = differences(&read(&long(b'a')), &read(&long(b'b')), &Expected::new());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].contains("reads the same before and after saving")
+                && found[0].ends_with("value 1 differs in bytes the words above do not show"),
+            "{found:?}"
+        );
+        // The same for an atom that was asked for.
+        let mut expected = Expected::new();
+        expected.insert(
+            RawKey::Fourcc(*b"\xa9cmt"),
+            vec![read(&long(b'a')).remove(0).values],
+        );
+        let found = differences(&[], &read(&long(b'b')), &expected);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].contains("and after saving would read the same, but value 1 differs"),
+            "{found:?}"
         );
     }
 

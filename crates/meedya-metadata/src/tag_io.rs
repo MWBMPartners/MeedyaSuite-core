@@ -3929,6 +3929,41 @@ mod tests {
     }
 
     #[test]
+    fn one_language_atom_is_compared_byte_for_byte_not_value_by_value() {
+        // A file with ONE language atom keeps it byte for byte, like every
+        // other atom; only several atoms (one per language) are mended into
+        // one, checked value by value. Here the one atom's `name` part has
+        // a flag byte set - the same values, stored differently - and lofty
+        // rewrites the atom with the flags cleared: refused, and the
+        // message says the values are the same (L4). With the one atom
+        // checked by value only (the stand-in review of revision 9, planted
+        // fault B11), it would pass.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "language-en.m4a");
+        let mut bytes = std::fs::read(&path).expect("read");
+        let at = bytes
+            .windows(12)
+            .position(|window| window == b"\0\0\0\0LANGUAGE")
+            .expect("the name part");
+        bytes[at + 3] = 1;
+        std::fs::write(&path, &bytes).expect("write");
+        let message = match title_only(&path) {
+            Err(MetadataError::WriteError(message)) => message,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(
+            message.contains(
+                "----:com.apple.iTunes:LANGUAGE would change, though it reads the same before \
+                 and after saving (one value, the text \"en\"): the values are the same and only \
+                 how the atom is stored differs"
+            ),
+            "{message}"
+        );
+        assert_eq!(std::fs::read(&path).expect("read"), bytes);
+        assert_only_the_file_is_there(dir.path(), "language-en.m4a");
+    }
+
+    #[test]
     fn a_fragmented_file_is_refused_before_anything_is_written() {
         // A title-only write, and a long comment: both broke the audio on
         // the reviewer's file (the pieces moved, where each says its audio
