@@ -13,7 +13,7 @@ Written in Rust. Distributable to all Meedya apps via:
 | Crate | Purpose | Status | Tests |
 |---|---|---|---|
 | [`meedya-codecs`](crates/meedya-codecs) | Audio/video/subtitle codecs, container formats, HDR, spatial audio, media classification, FFprobe + MediaInfo integration | Implemented | 47 |
-| [`meedya-metadata`](crates/meedya-metadata) | Two coexisting tag-I/O surfaces: lofty-backed multi-format (`CommonTag`, `tag_io`, `tag_registry`) and `mp4ameta`-backed sandbox-safe registry for the Apple Music tagging flow. Includes `playback_bounds` (soft start/stop atoms), codec ID tags, the cross-repo `identifier_types` registry (scope→slug→validation vocabulary, #65), and a filename `template` engine. | Implemented | 201 |
+| [`meedya-metadata`](crates/meedya-metadata) | Two coexisting tag-I/O surfaces: lofty-backed multi-format (`CommonTag`, `tag_io`, `tag_registry`) and `mp4ameta`-backed sandbox-safe registry for the Apple Music tagging flow. Includes `playback_bounds` (soft start/stop atoms), codec ID tags, the cross-repo `identifier_types` registry (scope→slug→validation vocabulary, #65), and a filename `template` engine. | Implemented | 237 |
 | [`meedya-tags-extended`](crates/meedya-tags-extended) | Multi-format tag I/O foundation with DJ metadata support. `ExtendedTags` model, `MusicalKey` (Camelot/Open Key/traditional), `CuePoint`/`LoopPoint`/`BeatGrid`, standard BPM+key+comment read/write, **Mixed In Key reader** (`mik` module). Other proprietary readers (Serato/Rekordbox/Traktor/VDJ) pending fixture-based sessions. | Implemented | 180 |
 | [`meedya-library-import`](crates/meedya-library-import) | Ingest playback bounds + metadata from external library DBs. `itunes_xml` parses Music.app exports; `cuesheet` is a full CUE parser at CD-frame precision. | Implemented | 30 |
 | [`meedya-lyrics`](crates/meedya-lyrics) | LRCLIB client, LRC parser/writer, `.lrc` sidecar + ID3v2 SYLT tag-embed, Lyricsfile YAML canonical model with Apple Music TTML import (syllable-level timing) and LRC/Enhanced-LRC/SRT/WebVTT/ASS export. | Implemented | 157 |
@@ -24,7 +24,7 @@ Written in Rust. Distributable to all Meedya apps via:
 | [`meedya-db`](crates/meedya-db) | MeedyaDB API client, shared media models (Track/Album/Artist), database export trait. | Implemented | 4 |
 | [`meedya-core`](crates/meedya-core) | Unified facade crate re-exporting the implemented crates behind feature flags. | Implemented | — |
 
-**Total: 877 tests passing** (1024 with `--all-features`, the CI configuration), workspace builds clean.
+**Total: 913 tests passing** (1060 with `--all-features`, the CI configuration), workspace builds clean.
 
 ## Quick Start
 
@@ -32,7 +32,7 @@ Written in Rust. Distributable to all Meedya apps via:
 # Build all crates
 cargo build --workspace
 
-# Run the full test suite (877 tests; 1024 with --all-features)
+# Run the full test suite (913 tests; 1060 with --all-features)
 cargo test --workspace
 
 # Build a single crate

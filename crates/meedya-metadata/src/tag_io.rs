@@ -374,6 +374,10 @@ fn collect_common_tags(tag: &Tag, result: &mut TagMap) {
 /// the `pgap`/`hdvd`/`shwm` flags as text, freeform names in its own
 /// spelling), so a write to a file holding any of those — as iTunes and
 /// Apple Music files typically do — is refused until the real fix in #102.
+/// The 6-byte `disk` is also the form mutagen writes a disc number in, so
+/// the refusal reaches any file whose disc number mutagen wrote — GAMDL,
+/// Picard and beets all write through it — not just iTunes and Apple Music
+/// files (the stand-in review of revision 9, L6).
 /// The rest of the file is checked too — the audio, where each piece of it
 /// starts, and every atom outside the tags must be as they were — and a
 /// fragmented file, or one whose metadata box has no tag list, is refused
@@ -521,7 +525,12 @@ pub fn write_acoustid_tags(
 /// the file (see [`write_tags`]): a value that would be left beside an
 /// older atom of the same name, or put back over by the file's own
 /// languages, refuses the call too (the stand-in review of revision 8), and
-/// nothing is written. Each atom is written under
+/// nothing is written. That includes the usual case of updating an ISRC:
+/// with the key `----:com.apple.iTunes:ISRC`, on a file that already holds
+/// ONE ISRC atom, lofty keeps the old atom and adds the new one beside it,
+/// so the copy would hold two and the call is refused (the stand-in review
+/// of revision 9, L5; [`write_tags`] with `CommonTag::Isrc` replaces it).
+/// Each atom is written under
 /// the key `namespace:name` (`MeedyaMeta:ISRC`), but an MP4 freeform atom
 /// needs the form `----:mean:name`, and lofty silently leaves out any key
 /// not in that form when it saves an M4A file — so the call used to return

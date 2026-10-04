@@ -178,9 +178,11 @@ These refusals are deliberate. Do not "fix" them by letting the save go ahead.
   `recover_languages_after_reading` straight after reading (it reads the disk), then
   `gather_languages_before_saving` just before saving (it never reads the disk). A single
   helper doing both before the save undid the caller's own language edits; it was removed.
-- **Language frames in more than one ID3v2 tag** (an MP3's tags one after another, a WAV or
-  AIFF file's several ID3 chunks) refuse the save: lofty rewrites only one of them, so merging
-  left the languages in two places, swapping order save after save (revision 9).
+- **A language frame in a file with more than one ID3v2 tag** (an MP3's tags one after another,
+  a WAV or AIFF file's several ID3 chunks) refuses the save: lofty reads and rewrites only one of
+  them, so merging left the languages in two places, swapping order save after save (revision 9),
+  and a language in the OTHER tag was never seen — a write of `deu` "succeeded" while the file
+  kept `eng` (revision 10: refused whenever ANY of the tags holds a language frame).
 - **M4A (#102, #103): every save is CHECKED, not predicted (revision 9).** Every M4A write
   except the language atom goes through lofty's format-neutral `Tag`, and that route changes
   atoms nobody asked for — the first value only, flags rewritten as text, freeform names
@@ -193,10 +195,29 @@ These refusals are deliberate. Do not "fix" them by letting the save go ahead.
   keys), not guessed from which values changed — writing the artist replaces the whole `©ART`
   atom on purpose, even when the value was already first. One deliberate exception: several
   language atoms are mended into one, checked value by value. **Consequence:** a typical
-  iTunes / Apple Music file is refused even for a title-only write, until the real fix (a route
+  iTunes / Apple Music file — and any file whose disc number mutagen wrote (GAMDL, Picard,
+  beets: a 6-byte `disk`) — is refused even for a title-only write, until the real fix (a route
   that keeps those atoms) — still open in #102. `write_registry_tags` also refuses
-  `namespace:name` keys an M4A file cannot store (#103). Real test files for all of this are in
-  `crates/meedya-metadata/testdata/m4a/` (made by ffmpeg + mutagen; the script is beside them).
+  `namespace:name` keys an M4A file cannot store (#103), and an ISRC registry write on a file
+  holding one ISRC atom (the copy would hold two). Real test files for all of this are in
+  `crates/meedya-metadata/testdata/m4a/` and `testdata/id3/` (made by ffmpeg + mutagen; the
+  scripts are beside them, and re-create every file byte for byte).
+- **M4A, revision 10: the WHOLE saved file is checked, not just its tags** (`mp4_file_check`).
+  lofty does NOT correct every offset — it broke the audio of a fragmented file and wrote the
+  tag list over the handler of a `meta` with no `ilst`, both while the tag check passed. Now the
+  copy must also prove: every `mdat` byte for byte the same; every `stco`/`co64` entry moved by
+  exactly as much as the `mdat` it points into; everything else in `moov` byte for byte the same
+  (except the `ilst` contents, the size fields on `moov`→`udta`→`meta`→`ilst`, and `free`/`skip`
+  in `udta`/`meta`); every other top-level atom the same, in order. Fragmented files (`moof`,
+  `mfra`, `sidx`, `mvex`) and a `meta` with parts but no `ilst` are refused before anything is
+  written — and the comparison refuses a fragmented file by itself too, because (a)–(d) alone
+  PASS one (every `moof` is unchanged, which is exactly the damage). Values are measured against
+  what the CALLER gave (track/disc numbers 1–65535 in digits; a four-digit year; compilation `1`
+  or `0`), and a field with no M4A atom (`Arranger`, `AcoustId`, `ReplayGainReferenceLoudness`)
+  is refused by name — so `write_acoustid_tags` / `write_replaygain_tags` fail on every M4A
+  file. The copy is written through the `create_new` handle (`save_by_copy`), flushed, and both
+  names checked (device+inode; Windows file index via `winapi-util`) before the rename; it no
+  longer keeps extended attributes on macOS. The comparisons count their steps and are linear.
 
 ## tokio: `timeout` alone does not kill a child process
 

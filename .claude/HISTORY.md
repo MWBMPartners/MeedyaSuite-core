@@ -743,3 +743,50 @@ were not touched.
 Real test files — made by ffmpeg, tagged by mutagen, a few shapes edited byte by byte — are in
 `crates/meedya-metadata/testdata/m4a/`, with the script that makes them. 877 / 1024 tests. Not
 yet reviewed; not pushed.
+
+## 2026-10-04 — Language policy, revision 10: the stand-in review of revision 9
+
+On `feature/bcp47-language-policy` (issue #99). Codex was out of allowance, so a fresh Opus agent
+reviewed revision 9 in its place, with real files made by ffmpeg, Apple's AVFoundation, and
+planted faults. Acted on in `crates/meedya-metadata` only; the five protected paths were not
+touched. (Built twice: the Mac restarted on 2 October and emptied the scratch folder holding the
+first, unpushed attempt, so every commit was made again from the pushed head and every proof
+re-run.)
+
+- **The whole saved file is checked, not just its tags (#102).** Revision 9 compared only the
+  `ilst` atoms and trusted lofty with the rest. The review showed lofty does not correct every
+  offset: a title-only save broke the audio of a fragmented file (565 decode errors), and wrote
+  the tag list over the handler of a `meta` with no `ilst` (ffprobe and AVFoundation then read no
+  tags). New private module `mp4_file_check`: the copy must also prove every `mdat` byte for byte
+  the same, every `stco`/`co64` entry moved exactly as far as its `mdat`, everything else in
+  `moov` byte for byte the same (except the `ilst` contents, the sizes on the path to it, and
+  padding in `udta`/`meta`), and every other top-level atom the same, in order. Fragmented files
+  and a `meta` with no tag list are refused before anything is written. Measured: with those
+  refusals removed, the four checks alone PASSED a fragmented save (every `moof` is unchanged —
+  that is the damage), so the comparison refuses a fragmented file by itself too.
+- **What the caller gave is what must be stored.** Revision 9 compared with lofty's own
+  conversion, so track number 70000 on a file holding track 3 of 12 was accepted and the track
+  number lost. Now track/disc numbers and totals must be 1–65535 in digits, a year four digits,
+  compilation `1`/`0`; and a field with no M4A atom (`Arranger`, `AcoustId`,
+  `ReplayGainReferenceLoudness`, found from lofty's conversion of every `CommonTag`; `Producer`
+  and `Engineer` ARE stored) is refused by name — so `write_acoustid_tags` and
+  `write_replaygain_tags` now fail on every M4A file.
+- **The copy is made safely.** New private module `save_by_copy`: the copy is written through
+  the handle `create_new` returned (revision 9 reopened the name with `std::fs::copy`, which
+  follows a link put there meanwhile), lofty saves into that handle, and before the rename the
+  copy is flushed (`sync_all`) and both names checked to still be the right files (device and
+  inode; on Windows the file index, through the new Windows-only dependency `winapi-util`).
+  Read-only files and unwritable folders get plain messages. What a copy-then-rename loses is
+  written down (hard links, owner and group, access lists, extended attributes — now on macOS
+  too — creation time, a hidden copy left if the program is killed, the whole file copied).
+- **Language frames in a file with two or more ID3 tags or chunks** refuse the save whenever ANY
+  of them holds one (revision 9 needed two holding them; one in the second tag still lost).
+- **Linear work.** The comparison searched the whole tag for every key: 128.8 s for the review's
+  32,000-atom file. Now maps are built once; both comparisons count their steps and a test shows
+  linear growth; 0.19 s measured.
+- **Messages and tests.** A refusal never shows "before" and "after" as the same; every one of
+  the review's surviving planted faults (A1, A4, A5, A8–A13, A16, A17, B11) now turns a test red,
+  as does weakening each of the new checks. Real test files: `testdata/m4a/` gained a plain tone
+  file, two chapter files (moov before and after mdat), a fragmented file and a mutagen-cleared
+  file; new `testdata/id3/` with the review's ID3 shapes; both scripts re-create every file byte
+  for byte. 913 / 1060 tests (`meedya-metadata` 201 → 237). Not yet reviewed; not pushed.
