@@ -95,6 +95,29 @@
 //   so a crafted frame holding 100,000 values costs 100,000 steps, not the
 //   five billion comparisons searching the list for each value took until
 //   Codex's review of revisions 5–7.
+// - **What it holds in memory is bounded** (Codex's catch-up review of
+//   revisions 8-10, finding 10). The tags are found by their headers alone,
+//   and a tag's or a chunk's size is cut to what the file - or its chunk -
+//   really holds before anything is read; the cheap look reads a tag a
+//   block at a time and keeps only its counts; and only the language
+//   frames' contents are read into memory, at most 1 MiB of them for a
+//   whole file (`LANGUAGE_BYTES_BUDGET`) - past that the save is refused,
+//   in plain words. Until then every tag, and every ID3 chunk WHOLE, was
+//   read into memory and kept while the next was read: a WAV file whose ID3
+//   chunk held a small tag in 400 MiB of padding, and an MP3 with four
+//   100 MiB tags one after another, each took the program to 410 MiB of
+//   memory (measured).
+// - **What it cannot bound: lofty's own reading, which comes first.**
+//   `tag_io` reads the file through lofty and only then asks here, so by
+//   the time a file is refused here, lofty has already read it. lofty reads
+//   an ID3v2 tag frame by frame and throws padding away unkept, but holds
+//   each frame whole, and refuses - with its own error - a frame larger
+//   than its allocation limit, 16 MiB unless a program sets another (lofty
+//   0.22.4, `GlobalOptions::allocation_limit`): a crafted file can still
+//   make lofty hold up to that much per frame while reading it. And lofty's
+//   SAVE of an MP3, WAV or AIFF file reads the whole file into memory to
+//   rewrite it, however large it is (lofty 0.22.4, `id3/v2/write/mod.rs`
+//   and `id3/v2/write/chunk_file.rs`). Nothing here changes either.
 //
 // What it CANNOT do: see a tag lofty would find somewhere unusual — an
 // ID3v2 tag buried after junk bytes at the start of an MP3, or after an APE
@@ -131,13 +154,14 @@ pub(crate) enum TlanFrames {
 
 /// Reads every language frame of the ID3v2 tag(s) lofty reads from the file
 /// at `path`, of type `file_type` — the tags at the start of an MP3 or AAC
-/// file, and every `ID3 ` chunk of a WAV or AIFF file. Other file types
+/// file, and every `ID3 ` chunk of a WAV or AIFF file — holding at most
+/// 1 MiB of them in memory (see the top of this file). Other file types
 /// give [`TlanFrames::AtMostOne`]: lofty does not write an ID3v2 tag into
 /// them.
 ///
 /// Fails with [`MetadataError::WriteError`] when the file seems to hold two
 /// or more language frames but one of them cannot be read (see the top of this
-/// file for which cases), or when the file has more than one ID3v2 tag (an
+/// file for which cases - holding more than 1 MiB of them among them), or when the file has more than one ID3v2 tag (an
 /// MP3 file's tags one after another, or several ID3 chunks of a WAV or AIFF
 /// file) and any of them holds a language frame; the message says what, in
 /// plain words. A file that cannot be read at all gives
@@ -146,92 +170,209 @@ pub(crate) fn read_tlan_frames(
     path: &Path,
     file_type: FileType,
 ) -> Result<TlanFrames, MetadataError> {
-    let tags = match file_type {
-        FileType::Mpeg | FileType::Aac => tags_at_start(&mut open(path)?)?,
-        FileType::Wav => tags_in_chunks(&mut open(path)?, false)?,
-        FileType::Aiff => tags_in_chunks(&mut open(path)?, true)?,
+    let places = match file_type {
+        FileType::Mpeg | FileType::Aac => TagPlaces::AtStart,
+        FileType::Wav => TagPlaces::InChunks { big_endian: false },
+        FileType::Aiff => TagPlaces::InChunks { big_endian: true },
         _ => return Ok(TlanFrames::AtMostOne),
     };
-    tlan_frames_in_tags(&tags)
+    let mut reader = BufReader::new(File::open(path)?);
+    tlan_frames_in_file(
+        &mut reader,
+        &places,
+        &mut Budget::new(LANGUAGE_BYTES_BUDGET),
+    )
 }
 
-fn open(path: &Path) -> Result<BufReader<File>, MetadataError> {
-    Ok(BufReader::new(File::open(path)?))
+// ============================================================
+// How much is held in memory
+// ============================================================
+
+/// The most bytes of language frames this module holds in memory for one
+/// file, over all of its tags together: 1 MiB. A list of languages is a
+/// few bytes; a file asking for more is refused with a plain message (see
+/// the top of this file).
+const LANGUAGE_BYTES_BUDGET: u64 = 1024 * 1024;
+
+/// How many bytes of a tag the cheap look reads at a time.
+const SCAN_BLOCK: usize = 64 * 1024;
+
+/// The bytes of language frames still allowed into memory for one file,
+/// and how many have been taken (for the tests).
+struct Budget {
+    limit: u64,
+    taken: u64,
+}
+
+impl Budget {
+    fn new(limit: u64) -> Self {
+        Budget { limit, taken: 0 }
+    }
+
+    /// Takes `len` more bytes from the budget, or says - in plain words,
+    /// for the refusal - that the file asks for more than it allows.
+    fn take(&mut self, len: u64) -> Result<(), Cannot> {
+        if len > self.limit - self.taken {
+            return Err(Cannot::Read(format!(
+                "its language frames hold more than {} bytes of text in all - far more than any \
+                 list of languages needs - and this library does not read that much into memory",
+                self.limit
+            )));
+        }
+        self.taken += len;
+        Ok(())
+    }
+}
+
+/// Why the frames of a tag could not be read: as plain words, for the
+/// refusal message - or because the file could not be read at all.
+enum Cannot {
+    Read(String),
+    Io(std::io::Error),
+}
+
+impl From<std::io::Error> for Cannot {
+    fn from(e: std::io::Error) -> Self {
+        Cannot::Io(e)
+    }
+}
+
+impl From<String> for Cannot {
+    fn from(why: String) -> Self {
+        Cannot::Read(why)
+    }
 }
 
 // ============================================================
 // Finding the tags
 // ============================================================
 
-/// The ID3v2 tags at the start of an MP3 or AAC file, as lofty finds them:
-/// zero bytes at the very start are skipped, then every tag that follows
-/// directly on the one before. Each is returned from its `ID3` header to
-/// the end of its body (a footer, if any, is left out).
-fn tags_at_start(reader: &mut (impl Read + Seek)) -> Result<Vec<Vec<u8>>, MetadataError> {
-    let mut byte = [0u8];
-    loop {
-        if reader.read(&mut byte)? == 0 {
-            return Ok(Vec::new());
-        }
-        if byte[0] != 0 {
-            break;
-        }
-    }
-    reader.seek(SeekFrom::Current(-1))?;
-
-    let mut tags = Vec::new();
-    loop {
-        let mut header = [0u8; 10];
-        if !read_fully(reader, &mut header)? || !is_id3v2_header(&header) {
-            break;
-        }
-        tags.push(read_tag_body(reader, header)?);
-        if has_footer(&header) {
-            reader.seek(SeekFrom::Current(10))?;
-        }
-    }
-    Ok(tags)
+/// Where in a file its ID3v2 tags are looked for.
+enum TagPlaces {
+    /// At the start of an MP3 or AAC file: zero bytes at the very start
+    /// are skipped, then every tag that follows directly on the one before
+    /// (as lofty finds them).
+    AtStart,
+    /// In the `ID3 ` (or `id3 `) chunks of a WAV file (`big_endian` false:
+    /// chunk sizes are little-endian) or an AIFF file (`big_endian` true).
+    InChunks { big_endian: bool },
+    /// Tests only: exactly these tags.
+    #[cfg(test)]
+    Listed(Vec<TagAt>),
 }
 
-/// Every ID3v2 tag in the `ID3 ` (or `id3 `) chunks of a WAV (`big_endian`
-/// false: chunk sizes are little-endian) or AIFF (`big_endian` true) file,
-/// in file order. Chunks are walked from byte 12, just after the
-/// `RIFF`…`WAVE` or `FORM`…`AIFF` header; a chunk of odd size is followed
-/// by one padding byte.
-fn tags_in_chunks(
-    reader: &mut (impl Read + Seek),
-    big_endian: bool,
-) -> Result<Vec<Vec<u8>>, MetadataError> {
+/// One ID3v2 tag in a file: its 10-byte header, and where its body starts
+/// and ends - cut to what its container (the file, or its chunk) really
+/// holds, never taken from a size alone. A footer, if any, is left out.
+#[derive(Clone, Debug)]
+struct TagAt {
+    header: [u8; 10],
+    body_start: u64,
+    body_end: u64,
+}
+
+impl TagAt {
+    /// The tag's ID3v2 version: 2, 3 or 4.
+    fn major(&self) -> u8 {
+        self.header[3]
+    }
+}
+
+/// Calls `visit` on every ID3v2 tag at `places` in the file `reader` reads,
+/// in file order. Only headers are read to find them - a tag's size and a
+/// chunk's size are checked against the file before anything is read
+/// past them - so a tag or chunk that claims gigabytes costs nothing here.
+/// (Until Codex's catch-up review of revisions 8-10, finding 10, every
+/// tag, and every ID3 chunk WHOLE, was read into memory first and kept
+/// while the next was read: a WAV file whose ID3 chunk held a small tag in
+/// 400 MiB of padding, or an MP3 with four 100 MiB tags one after another,
+/// took the program to 410 MiB of memory - measured.)
+fn each_tag<R: Read + Seek>(
+    reader: &mut BufReader<R>,
+    places: &TagPlaces,
+    mut visit: impl FnMut(&mut BufReader<R>, &TagAt) -> Result<(), MetadataError>,
+) -> Result<(), MetadataError> {
     let file_len = reader.seek(SeekFrom::End(0))?;
-    let mut pos: u64 = 12;
-    let mut tags = Vec::new();
-    while pos + 8 <= file_len {
-        reader.seek(SeekFrom::Start(pos))?;
-        let mut chunk = [0u8; 8];
-        reader.read_exact(&mut chunk)?;
-        let size_bytes = [chunk[4], chunk[5], chunk[6], chunk[7]];
-        let size = u64::from(if big_endian {
-            u32::from_be_bytes(size_bytes)
-        } else {
-            u32::from_le_bytes(size_bytes)
-        });
-        if matches!(&chunk[..4], b"ID3 " | b"id3 ") {
-            // The chunk holds one ID3v2 tag from its first byte; the tag
-            // is read from the chunk's own bytes only, as lofty reads it.
-            let mut content = Vec::new();
-            reader.by_ref().take(size).read_to_end(&mut content)?;
-            if let Ok(header) = <[u8; 10]>::try_from(content.get(..10).unwrap_or_default()) {
-                if is_id3v2_header(&header) {
-                    let tag_len =
-                        10 + synchsafe([header[6], header[7], header[8], header[9]]) as usize;
-                    content.truncate(tag_len);
-                    tags.push(content);
+    match places {
+        TagPlaces::AtStart => {
+            reader.seek(SeekFrom::Start(0))?;
+            let mut pos = 0u64;
+            let mut byte = [0u8];
+            loop {
+                if reader.read(&mut byte)? == 0 {
+                    return Ok(());
                 }
+                if byte[0] != 0 {
+                    break;
+                }
+                pos += 1;
+            }
+            loop {
+                reader.seek(SeekFrom::Start(pos))?;
+                let mut header = [0u8; 10];
+                if !read_fully(reader, &mut header)? || !is_id3v2_header(&header) {
+                    return Ok(());
+                }
+                let size = u64::from(synchsafe([header[6], header[7], header[8], header[9]]));
+                let body_start = pos + 10;
+                visit(
+                    reader,
+                    &TagAt {
+                        header,
+                        body_start,
+                        body_end: (body_start + size).min(file_len),
+                    },
+                )?;
+                pos = body_start + size + if has_footer(&header) { 10 } else { 0 };
             }
         }
-        pos += 8 + size + (size & 1);
+        TagPlaces::InChunks { big_endian } => {
+            // Chunks are walked from byte 12, just after the `RIFF`…`WAVE`
+            // or `FORM`…`AIFF` header; a chunk of odd size is followed by
+            // one padding byte.
+            let mut pos: u64 = 12;
+            while pos + 8 <= file_len {
+                reader.seek(SeekFrom::Start(pos))?;
+                let mut chunk = [0u8; 8];
+                reader.read_exact(&mut chunk)?;
+                let size_bytes = [chunk[4], chunk[5], chunk[6], chunk[7]];
+                let size = u64::from(if *big_endian {
+                    u32::from_be_bytes(size_bytes)
+                } else {
+                    u32::from_le_bytes(size_bytes)
+                });
+                let content_start = pos + 8;
+                let content_end = (content_start + size).min(file_len);
+                // The chunk holds one ID3v2 tag from its first byte; the tag
+                // is the chunk's own bytes only, as lofty reads it.
+                if matches!(&chunk[..4], b"ID3 " | b"id3 ") && content_end - content_start >= 10 {
+                    let mut header = [0u8; 10];
+                    reader.read_exact(&mut header)?;
+                    if is_id3v2_header(&header) {
+                        let size =
+                            u64::from(synchsafe([header[6], header[7], header[8], header[9]]));
+                        visit(
+                            reader,
+                            &TagAt {
+                                header,
+                                body_start: content_start + 10,
+                                body_end: (content_start + 10 + size).min(content_end),
+                            },
+                        )?;
+                    }
+                }
+                pos = content_start + size + (size & 1);
+            }
+            Ok(())
+        }
+        #[cfg(test)]
+        TagPlaces::Listed(tags) => {
+            for tag in tags {
+                visit(reader, tag)?;
+            }
+            Ok(())
+        }
     }
-    Ok(tags)
 }
 
 /// Reads as many bytes as `buffer` holds; `false` when the file ends first.
@@ -251,16 +392,6 @@ fn is_id3v2_header(header: &[u8; 10]) -> bool {
 /// An ID3v2.3 or 2.4 tag whose header says a 10-byte footer follows it.
 fn has_footer(header: &[u8; 10]) -> bool {
     header[3] >= 3 && header[5] & 0x10 != 0
-}
-
-/// The tag whose 10-byte `header` has just been read: the header followed
-/// by the body its size names — or as much of the body as the file holds;
-/// a frame then running past the end is found when the frames are walked.
-fn read_tag_body(reader: &mut impl Read, header: [u8; 10]) -> Result<Vec<u8>, MetadataError> {
-    let size = synchsafe([header[6], header[7], header[8], header[9]]);
-    let mut tag = header.to_vec();
-    reader.take(u64::from(size)).read_to_end(&mut tag)?;
-    Ok(tag)
 }
 
 /// A "synchsafe" number, as ID3v2 stores a tag's size (and, in ID3v2.4, a
@@ -360,73 +491,130 @@ fn frame_name(major: u8, header: &[u8]) -> FrameName {
     }
 }
 
-/// How many times `needle` occurs in `haystack`.
-fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
-    haystack
+/// How many times `needle` occurs in `window` ending after its first
+/// `carried` bytes: in [`look_in`], those bytes are the end of the block
+/// before, and an occurrence ending inside them was counted with it.
+fn occurrences_ending_after(window: &[u8], needle: &[u8], carried: usize) -> usize {
+    // A block without the name's first byte - padding, nearly always - is
+    // passed over at once: the standard library's `contains` searches for
+    // one byte at full speed even in a build made without optimisations,
+    // where comparing at every position is slow (the tests read tags of
+    // tens of megabytes).
+    if !window.contains(&needle[0]) {
+        return 0;
+    }
+    window
         .windows(needle.len())
-        .filter(|window| *window == needle)
+        .enumerate()
+        .filter(|(start, bytes)| start + needle.len() > carried && *bytes == needle)
         .count()
 }
 
-/// How many times the name of a language frame — in any form lofty reads
-/// as one in a tag of this version (see [`language_frame_names`]) — occurs
-/// in one ID3v2 `tag`'s body: the cheap look at the top of this file.
-fn language_names_in(tag: &[u8]) -> usize {
-    language_frame_names(tag[3])
-        .iter()
-        .map(|name| occurrences(&tag[10..], name))
-        .sum()
+/// What the cheap look (top of this file) finds in one tag's body.
+#[derive(Default)]
+struct Look {
+    /// How many times the name of a language frame - in any form lofty
+    /// reads as one in a tag of this version (see
+    /// [`language_frame_names`]) - occurs in the body.
+    names: usize,
+    /// Whether this is an ID3v2.4 tag whose body holds the bytes of
+    /// [`OLD_NAME_IN_V2_4`] - a frame that may refuse the save on its own.
+    old_name: bool,
 }
 
-/// Whether one ID3v2 `tag` is an ID3v2.4 tag whose body holds the bytes of
-/// [`OLD_NAME_IN_V2_4`] — a frame that may refuse the save on its own.
-fn may_hold_old_name_in_v2_4(tag: &[u8]) -> bool {
-    tag[3] >= 4 && occurrences(&tag[10..], OLD_NAME_IN_V2_4) > 0
+/// The cheap look at one `tag`'s body, read a block at a time - nothing of
+/// it is kept but the counts. The last three bytes of each block are kept
+/// with the next, so a name split between two blocks is still found, once.
+fn look_in<R: Read + Seek>(reader: &mut BufReader<R>, tag: &TagAt) -> std::io::Result<Look> {
+    const CARRY: usize = 3; // one less than the longest name looked for
+    let names = language_frame_names(tag.major());
+    let mut look = Look::default();
+    reader.seek(SeekFrom::Start(tag.body_start))?;
+    let mut block = vec![0u8; CARRY + SCAN_BLOCK];
+    let (mut carried, mut left) = (0usize, tag.body_end - tag.body_start);
+    while left > 0 {
+        let n = usize::try_from(left).map_or(SCAN_BLOCK, |left| left.min(SCAN_BLOCK));
+        reader.read_exact(&mut block[carried..carried + n])?;
+        let window = &block[..carried + n];
+        for name in names {
+            look.names = look
+                .names
+                .saturating_add(occurrences_ending_after(window, name, carried));
+        }
+        if tag.major() >= 4 && occurrences_ending_after(window, OLD_NAME_IN_V2_4, carried) > 0 {
+            look.old_name = true;
+        }
+        let keep = window.len().min(CARRY);
+        let from = window.len() - keep;
+        block.copy_within(from..from + keep, 0);
+        carried = keep;
+        left -= n as u64;
+    }
+    Ok(look)
 }
 
-/// The merged result for `tags` (each an ID3v2 tag from its header on);
-/// see [`read_tlan_frames`].
-fn tlan_frames_in_tags(tags: &[Vec<u8>]) -> Result<TlanFrames, MetadataError> {
-    // The cheap look (top of this file): every form of the name, counted
-    // in each tag's body. One old-named frame in an ID3v2.4 tag is enough
-    // on its own to need a look, since it refuses the save by itself; so is
-    // one language name anywhere in a file with more than one tag, since a
-    // single language frame there refuses the save too (M2 at the top of
-    // this file).
-    let named_total: usize = tags.iter().map(|tag| language_names_in(tag)).sum();
-    let old_name = tags.iter().any(|tag| may_hold_old_name_in_v2_4(tag));
-    let several_tags = tags.len() > 1;
+/// The merged result for every ID3v2 tag at `places` in `reader`'s file;
+/// see [`read_tlan_frames`]. Language frames are read into memory within
+/// `budget`; nothing else of a tag is kept (see the top of this file).
+fn tlan_frames_in_file<R: Read + Seek>(
+    reader: &mut BufReader<R>,
+    places: &TagPlaces,
+    budget: &mut Budget,
+) -> Result<TlanFrames, MetadataError> {
+    // The cheap look (top of this file), at every tag: every form of the
+    // name, counted in each tag's body. One old-named frame in an ID3v2.4
+    // tag is enough on its own to need a look, since it refuses the save
+    // by itself; so is one language name anywhere in a file with more than
+    // one tag, since a single language frame there refuses the save too
+    // (M2 at the top of this file).
+    let (mut tag_count, mut named_total, mut old_name) = (0usize, 0usize, false);
+    each_tag(reader, places, |reader, tag| {
+        let look = look_in(reader, tag)?;
+        tag_count += 1;
+        named_total = named_total.saturating_add(look.names);
+        old_name |= look.old_name;
+        Ok(())
+    })?;
+    let several_tags = tag_count > 1;
     if named_total < 2 && !old_name && !(several_tags && named_total > 0) {
         return Ok(TlanFrames::AtMostOne);
     }
 
+    // The tags again, now reading the language frames of each one the
+    // look found a name in (looked at again, rather than remembered, so
+    // that nothing grows with the number of tags).
     let mut frames = Vec::new();
     let mut tags_holding_frames = 0;
-    for tag in tags
-        .iter()
-        .filter(|tag| language_names_in(tag) > 0 || may_hold_old_name_in_v2_4(tag))
-    {
-        let found = tlan_frames_in_tag(tag).map_err(|problem| {
-            MetadataError::WriteError(format!(
-                "this file's ID3v2 tag may hold its languages in more than one language frame \
-                 (named TLAN, or TLA in older tags), which lofty - the library this crate saves \
-                 files with - does not read whole, so saving would lose languages. They are \
-                 normally merged into one frame first, but {problem}, so they cannot be read \
-                 here. Nothing was written. (For most such files, saving once with mutagen, \
-                 which reads every language frame and saves them as one, lets this library \
-                 write to them.)"
-            ))
-        })?;
+    each_tag(reader, places, |reader, tag| {
+        let look = look_in(reader, tag)?;
+        if look.names == 0 && !look.old_name {
+            return Ok(());
+        }
+        let found = match tlan_frames_in_tag(reader, tag, budget) {
+            Ok(found) => found,
+            Err(Cannot::Io(e)) => return Err(e.into()),
+            Err(Cannot::Read(problem)) => {
+                return Err(MetadataError::WriteError(format!(
+                    "this file's ID3v2 tag may hold its languages in more than one language frame \
+                     (named TLAN, or TLA in older tags), which lofty - the library this crate saves \
+                     files with - does not read whole, so saving would lose languages. They are \
+                     normally merged into one frame first, but {problem}, so they cannot be read \
+                     here. Nothing was written. (For most such files, saving once with mutagen, \
+                     which reads every language frame and saves them as one, lets this library \
+                     write to them.)"
+                )))
+            }
+        };
         if !found.is_empty() {
             tags_holding_frames += 1;
         }
         frames.extend(found);
-    }
+        Ok(())
+    })?;
     if several_tags && tags_holding_frames > 0 {
         // See the top of this file: lofty reads and rewrites only one of
         // the tags, so a language in another is not seen, not changed and
         // not merged - wherever it is.
-        let tag_count = tags.len();
         return Err(MetadataError::WriteError(format!(
             "this file has {tag_count} separate ID3v2 tags - an MP3 file with tags one after \
              another, or a WAV or AIFF file with more than one ID3 chunk - and language frames \
@@ -475,35 +663,44 @@ fn first_of_each<T: Eq + Hash + Clone>(values: impl IntoIterator<Item = T>) -> V
     kept
 }
 
-/// The values of every language frame in one ID3v2 `tag` (from its header
-/// on), one list per frame, in order — or, as plain words for the refusal
-/// message, why they cannot be read.
-fn tlan_frames_in_tag(tag: &[u8]) -> Result<Vec<Vec<String>>, String> {
-    let major = tag[3];
-    let tag_flags = tag[5];
-    let body = &tag[10..];
+/// The values of every language frame in one ID3v2 `tag`, one list per
+/// frame, in order — or why they cannot be read (as plain words, for the
+/// refusal message). The frames are walked from header to header; only a
+/// language frame's contents are read into memory, within `budget`, and
+/// every other frame is stepped over unread.
+fn tlan_frames_in_tag<R: Read + Seek>(
+    reader: &mut BufReader<R>,
+    tag: &TagAt,
+    budget: &mut Budget,
+) -> Result<Vec<Vec<String>>, Cannot> {
+    let major = tag.major();
+    let tag_flags = tag.header[5];
     if tag_flags & 0x80 != 0 {
-        return Err(
+        return Err(Cannot::Read(
             "the file's ID3v2 tag is \"unsynchronised\" (an old encoding this library \
                     does not undo)"
                 .to_string(),
-        );
+        ));
     }
     if major >= 3 && tag_flags & 0x40 != 0 {
-        return Err(
+        return Err(Cannot::Read(
             "the file's ID3v2 tag has an \"extended header\", which this library does not read"
                 .to_string(),
-        );
+        ));
     }
 
     // ID3v2.2: three-letter name, three-byte size, no flags. ID3v2.3 and
     // 2.4: four-byte name, four-byte size, two flag bytes.
     let (name_len, header_len) = if major == 2 { (3, 6) } else { (4, 10) };
+    let body_len = tag.body_end - tag.body_start;
 
     let mut frames = Vec::new();
-    let mut pos = 0usize;
-    while pos + header_len <= body.len() {
-        let header = &body[pos..pos + header_len];
+    let mut pos = 0u64;
+    reader.seek(SeekFrom::Start(tag.body_start))?;
+    while pos + header_len as u64 <= body_len {
+        let mut bytes = [0u8; 10];
+        reader.read_exact(&mut bytes[..header_len])?;
+        let header = &bytes[..header_len];
         if header[0] == 0 {
             // Padding: no more frames (as lofty reads it).
             break;
@@ -513,38 +710,42 @@ fn tlan_frames_in_tag(tag: &[u8]) -> Result<Vec<Vec<String>>, String> {
             FrameName::Language => true,
             FrameName::Other => false,
             FrameName::Invalid => {
-                return Err(format!(
+                return Err(Cannot::Read(format!(
                     "a frame {pos} bytes into the tag has no valid name, so the frames after it \
                      cannot be found"
-                ))
+                )))
             }
             FrameName::OldLanguageNameInV2_4 => {
-                return Err(format!(
+                return Err(Cannot::Read(format!(
                     "a frame {pos} bytes into the tag is named TLA followed by a zero byte - \
                      the old ID3v2.2 name for the language frame - inside an ID3v2.4 tag, which \
                      other programs (mutagen among them) read as a language but lofty does not: \
                      saving would turn it into an ordinary text frame named TLA"
-                ))
+                )))
             }
         };
-        let size = match major {
+        let size = u64::from(match major {
             2 => u32::from_be_bytes([0, header[3], header[4], header[5]]),
             3 => u32::from_be_bytes([header[4], header[5], header[6], header[7]]),
             _ => synchsafe([header[4], header[5], header[6], header[7]]),
-        };
-        let start = pos + header_len;
-        let end = start
-            .checked_add(size as usize)
-            .filter(|end| *end <= body.len())
-            .ok_or_else(|| {
-                format!(
-                    "the frame {} {pos} bytes into the tag runs past the end of the tag",
-                    String::from_utf8_lossy(name)
-                )
-            })?;
+        });
+        let end = pos + header_len as u64 + size;
+        if end > body_len {
+            return Err(Cannot::Read(format!(
+                "the frame {} {pos} bytes into the tag runs past the end of the tag",
+                String::from_utf8_lossy(name)
+            )));
+        }
         if is_language {
-            let content = frame_content(&body[start..end], major, header)?;
+            budget.take(size)?;
+            let mut content = vec![0u8; usize::try_from(size).unwrap_or(usize::MAX)];
+            reader.read_exact(&mut content)?;
+            let content = frame_content(&content, major, header)?;
             frames.push(frame_values(content, major)?);
+        } else {
+            // Stepped over, unread: within the reader's buffer when it can
+            // be, so walking many small frames reads the tag only once.
+            reader.seek_relative(i64::try_from(size).unwrap_or(i64::MAX))?;
         }
         pos = end;
     }
@@ -651,6 +852,50 @@ fn utf16(bytes: &[u8], big_endian: bool) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    /// `tags` back to back in one in-memory file, and each one's place in
+    /// it: its body ends where its bytes do (as a tag cut short in a file
+    /// does, whatever its header says).
+    fn listed(tags: &[Vec<u8>]) -> (Vec<u8>, Vec<TagAt>) {
+        let mut bytes = Vec::new();
+        let mut places = Vec::new();
+        for tag in tags {
+            let start = bytes.len() as u64;
+            places.push(TagAt {
+                header: tag[..10].try_into().expect("a header"),
+                body_start: start + 10,
+                body_end: start + tag.len() as u64,
+            });
+            bytes.extend_from_slice(tag);
+        }
+        (bytes, places)
+    }
+
+    /// The merged result for `tags`, read at exactly their own places.
+    fn tlan_frames_in_tags(tags: &[Vec<u8>]) -> Result<TlanFrames, MetadataError> {
+        let (bytes, places) = listed(tags);
+        tlan_frames_in_file(
+            &mut BufReader::new(Cursor::new(bytes)),
+            &TagPlaces::Listed(places),
+            &mut Budget::new(LANGUAGE_BYTES_BUDGET),
+        )
+    }
+
+    /// The language frames of the one `tag`, or why they cannot be read.
+    fn frames_of(tag: Vec<u8>) -> Result<Vec<Vec<String>>, String> {
+        let (bytes, places) = listed(&[tag]);
+        let mut budget = Budget::new(LANGUAGE_BYTES_BUDGET);
+        match tlan_frames_in_tag(
+            &mut BufReader::new(Cursor::new(bytes)),
+            &places[0],
+            &mut budget,
+        ) {
+            Ok(frames) => Ok(frames),
+            Err(Cannot::Read(why)) => Err(why),
+            Err(Cannot::Io(e)) => panic!("an in-memory file could not be read: {e}"),
+        }
+    }
 
     // Every test builds its tag byte by byte, so what is being read is
     // visible in the test itself and no binary file needs keeping in git.
@@ -1115,7 +1360,7 @@ mod tests {
 
     /// The work `first_of_each` does on the crafted tag's values.
     fn merge_work(count: usize) -> u64 {
-        let frames = tlan_frames_in_tag(&crafted_tag(count)).expect("read");
+        let frames = frames_of(crafted_tag(count)).expect("read");
         let values: Vec<Counted> = frames.into_iter().flatten().map(Counted).collect();
         assert_eq!(values.len(), count + 1);
         WORK.with(|work| work.set(0));
@@ -1411,6 +1656,250 @@ mod tests {
                 "{file_type:?}: {message}"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // How much is read and held (Codex's catch-up review of revisions
+    // 8-10, finding 10)
+    // ------------------------------------------------------------------
+
+    /// A file that is mostly zeros, made up as it is read, so a test can
+    /// hold a "file" of hundreds of megabytes without making one: `parts`
+    /// are the bytes that are not zero, each at its place. It counts every
+    /// byte read, and the largest single read asked of it - a reader that
+    /// pulled a whole chunk or tag into memory would ask for a large one.
+    struct Sparse {
+        len: u64,
+        parts: Vec<(u64, Vec<u8>)>,
+        pos: u64,
+        read_total: u64,
+        largest_read: usize,
+    }
+
+    impl Sparse {
+        fn new(len: u64, parts: Vec<(u64, Vec<u8>)>) -> Self {
+            Sparse {
+                len,
+                parts,
+                pos: 0,
+                read_total: 0,
+                largest_read: 0,
+            }
+        }
+    }
+
+    impl Read for Sparse {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let left = self.len.saturating_sub(self.pos);
+            let n = usize::try_from(left).map_or(buf.len(), |left| left.min(buf.len()));
+            let out = &mut buf[..n];
+            out.fill(0);
+            for (at, bytes) in &self.parts {
+                let start = self.pos.max(*at);
+                let end = (self.pos + n as u64).min(at + bytes.len() as u64);
+                if start < end {
+                    out[(start - self.pos) as usize..(end - self.pos) as usize]
+                        .copy_from_slice(&bytes[(start - at) as usize..(end - at) as usize]);
+                }
+            }
+            self.pos += n as u64;
+            self.read_total += n as u64;
+            self.largest_read = self.largest_read.max(n);
+            Ok(n)
+        }
+    }
+
+    impl Seek for Sparse {
+        fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+            let moved = match to {
+                SeekFrom::Start(n) => Some(n),
+                SeekFrom::End(by) => self.len.checked_add_signed(by),
+                SeekFrom::Current(by) => self.pos.checked_add_signed(by),
+            };
+            self.pos = moved.ok_or_else(|| std::io::Error::other("before the start"))?;
+            Ok(self.pos)
+        }
+    }
+
+    /// The merged result for the file `sparse`, its tags found at
+    /// `places`, with `budget`.
+    fn read_sparse(
+        sparse: &mut Sparse,
+        places: TagPlaces,
+        budget: &mut Budget,
+    ) -> Result<TlanFrames, MetadataError> {
+        tlan_frames_in_file(&mut BufReader::new(sparse), &places, budget)
+    }
+
+    /// The start of a WAV (`big_endian` false) or AIFF file whose first
+    /// chunk is an `ID3 ` chunk of `chunk_size` bytes: the 20 bytes before
+    /// the tag.
+    fn chunk_header(big_endian: bool, chunk_size: u32) -> Vec<u8> {
+        let size = |n: u32| {
+            if big_endian {
+                n.to_be_bytes()
+            } else {
+                n.to_le_bytes()
+            }
+        };
+        let mut out: Vec<u8> = if big_endian {
+            b"FORM".to_vec()
+        } else {
+            b"RIFF".to_vec()
+        };
+        out.extend_from_slice(&size(chunk_size.saturating_add(12)));
+        out.extend_from_slice(if big_endian { b"AIFF" } else { b"WAVE" });
+        out.extend_from_slice(b"ID3 ");
+        out.extend_from_slice(&size(chunk_size));
+        out
+    }
+
+    #[test]
+    fn an_id3_chunk_of_padding_is_never_read_whole() {
+        // Codex's catch-up review of revisions 8-10, finding 10: a WAV or
+        // AIFF file whose ID3 chunk holds a small tag and then hundreds of
+        // megabytes of padding. The whole chunk was read into memory (a
+        // 400 MiB one took the program to 410 MiB - measured); now only
+        // the tag is read, and only its language frames are held.
+        let chunk = 256 * 1024 * 1024;
+        for (big_endian, places) in [
+            (false, TagPlaces::InChunks { big_endian: false }),
+            (true, TagPlaces::InChunks { big_endian: true }),
+        ] {
+            let mut file = Sparse::new(
+                20 + u64::from(chunk),
+                vec![(0, chunk_header(big_endian, chunk)), (20, split_tag(4))],
+            );
+            let mut budget = Budget::new(LANGUAGE_BYTES_BUDGET);
+            let found = read_sparse(&mut file, places, &mut budget).expect("read");
+            assert_eq!(found, several(&["eng", "fra"]));
+            assert!(
+                file.read_total <= 256 * 1024,
+                "{} bytes read of a 256 MiB chunk",
+                file.read_total
+            );
+            assert!(file.largest_read <= SCAN_BLOCK, "{}", file.largest_read);
+            assert_eq!(budget.taken, 8, "only the two frames' contents are held");
+        }
+    }
+
+    #[test]
+    fn a_tag_of_padding_is_looked_at_a_block_at_a_time() {
+        // The tag itself says it is 32 MiB long - two language frames,
+        // then padding to the end. It is read (to look for the names), but
+        // a block at a time, never held whole.
+        let mut tag = split_tag(4);
+        let size = 32 * 1024 * 1024;
+        tag[6..10].copy_from_slice(&to_synchsafe(size));
+        let mut file = Sparse::new(
+            20 + 10 + u64::from(size),
+            vec![(0, chunk_header(false, 10 + size)), (20, tag)],
+        );
+        let mut budget = Budget::new(LANGUAGE_BYTES_BUDGET);
+        let found = read_sparse(
+            &mut file,
+            TagPlaces::InChunks { big_endian: false },
+            &mut budget,
+        );
+        assert_eq!(found.expect("read"), several(&["eng", "fra"]));
+        assert!(file.largest_read <= SCAN_BLOCK, "{}", file.largest_read);
+        assert_eq!(budget.taken, 8);
+    }
+
+    #[test]
+    fn many_large_tags_one_after_another_are_never_held() {
+        // An MP3 with six 8 MiB tags, one after another - each mostly
+        // padding - all read into memory and kept together until finding
+        // 10. Now each is looked at a block at a time. With a language
+        // frame in the first, the file is refused (two or more tags, M2);
+        // with none, nothing needs merging. Either way nothing of the tags
+        // is held but that one frame.
+        let size: u32 = 8 * 1024 * 1024;
+        for language in [true, false] {
+            let mut parts = Vec::new();
+            let mut at = 0u64;
+            for n in 0..6 {
+                let frames = if language && n == 0 {
+                    vec![text_frame(4, b"TLAN", 0, b"eng")]
+                } else {
+                    vec![text_frame(4, b"TIT2", 0, b"Title")]
+                };
+                let mut tag = tag(4, 0, &frames, 0);
+                tag[6..10].copy_from_slice(&to_synchsafe(size));
+                parts.push((at, tag));
+                at += 10 + u64::from(size);
+            }
+            parts.push((at, vec![0xFF, 0xFB, 0x90, 0x00]));
+            let mut file = Sparse::new(at + 4, parts);
+            let mut budget = Budget::new(LANGUAGE_BYTES_BUDGET);
+            let found = read_sparse(&mut file, TagPlaces::AtStart, &mut budget);
+            if language {
+                let message = found.expect_err("refused").to_string();
+                assert!(message.contains("has 6 separate ID3v2 tags"), "{message}");
+                assert_eq!(budget.taken, 4, "the one frame's contents");
+            } else {
+                assert_eq!(found.expect("read"), TlanFrames::AtMostOne);
+                assert_eq!(budget.taken, 0);
+            }
+            assert!(file.largest_read <= SCAN_BLOCK, "{}", file.largest_read);
+        }
+    }
+
+    #[test]
+    fn a_name_across_the_join_of_two_blocks_is_counted_once() {
+        // The cheap look reads a tag a block at a time, keeping the last
+        // three bytes of each block with the next: a name across the join
+        // is found, and a three-letter one ending just before it is not
+        // counted a second time.
+        for (major, name) in [(4u8, &b"TLAN"[..]), (3, b"TLA\0"), (2, b"TLA")] {
+            for at in SCAN_BLOCK - 4..=SCAN_BLOCK {
+                let mut body = vec![0u8; 2 * SCAN_BLOCK];
+                body[at..at + name.len()].copy_from_slice(name);
+                let mut tag = b"ID3".to_vec();
+                tag.extend_from_slice(&[major, 0, 0]);
+                tag.extend_from_slice(&to_synchsafe(u32::try_from(body.len()).expect("fits")));
+                tag.extend(body);
+                let (bytes, places) = listed(&[tag]);
+                let look =
+                    look_in(&mut BufReader::new(Cursor::new(bytes)), &places[0]).expect("read");
+                assert_eq!(look.names, 1, "ID3v2.{major}, at byte {at}");
+            }
+        }
+    }
+
+    #[test]
+    fn language_frames_past_the_budget_are_refused_in_plain_words() {
+        // The budget is for the whole file: two frames of 600 KiB each fit
+        // one at a time but not together.
+        let half = vec![b'x'; 600 * 1024];
+        let big = tag(
+            4,
+            0,
+            &[
+                text_frame(4, b"TLAN", 0, &half),
+                text_frame(4, b"TLAN", 0, &half),
+            ],
+            0,
+        );
+        let message = refusal(&[big]);
+        assert!(
+            message.contains("hold more than 1048576 bytes of text in all"),
+            "{message}"
+        );
+        assert!(message.contains("Nothing was written"), "{message}");
+        // Exactly at the budget is read; one byte past it is not (the two
+        // frames below hold four bytes each: an encoding byte and `eng` /
+        // `fra`).
+        let (bytes, places) = listed(&[split_tag(4)]);
+        let read_with = |limit| {
+            tlan_frames_in_file(
+                &mut BufReader::new(Cursor::new(bytes.clone())),
+                &TagPlaces::Listed(places.clone()),
+                &mut Budget::new(limit),
+            )
+        };
+        assert_eq!(read_with(8).expect("read"), several(&["eng", "fra"]));
+        assert!(read_with(7).is_err());
     }
 
     #[test]
