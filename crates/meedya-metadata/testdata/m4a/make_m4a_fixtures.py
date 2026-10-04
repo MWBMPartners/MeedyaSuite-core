@@ -9,7 +9,10 @@
 # OTHER programs wrote - their exact types, sizes and names - so the atoms
 # have to be written by another program, not by the library under test.
 # Each file starts as a 0.2-second silent AAC file made by ffmpeg; mutagen
-# (the Python tagging library) then writes the atoms. A few shapes mutagen
+# (the Python tagging library) then writes the atoms. The files at the end
+# of this script, for the check of the WHOLE saved file (audio, chunk
+# offsets, chapters), are half a second of a tone instead, and one of them
+# is fragmented and tagged by ffmpeg itself. A few shapes mutagen
 # will not write (two atoms of the same name, a data type or locale it
 # does not use) are made by editing the `ilst` atom's bytes directly, with
 # the sizes of the atoms around it corrected; every file was then read back
@@ -17,9 +20,10 @@
 #
 # Made with ffmpeg 9.0.1 and mutagen 1.48.1. Run from this folder:
 #     python3 make_m4a_fixtures.py
-# ffmpeg's output depends on its version, so re-running with another
-# version gives different bytes; the tests only need the atoms described
-# below, not these exact bytes.
+# With those versions a re-run gives every file byte for byte (checked
+# when the tone files were added). ffmpeg's output depends on its version,
+# so re-running with another version gives different bytes; the tests only
+# need the atoms described below, not these exact bytes.
 
 import os
 import struct
@@ -241,3 +245,69 @@ def encoder_locale(children):
 
 
 edit_ilst("encoder-with-locale.m4a", encoder_locale)
+
+
+# ------------------------------------------------------------------
+# Files with real audio, for the check of the WHOLE saved file (the
+# stand-in review of revision 9: a save can change what lies OUTSIDE the
+# tags - the audio of a fragmented file, the handler beside a missing tag
+# list). Half a second of a 440 Hz tone rather than silence, so a
+# misplaced sample offset decodes as noise or an error, not as more
+# silence.
+# ------------------------------------------------------------------
+
+def tone(name, extra=(), seconds="0.5", metadata=None):
+    """`name`: a tone made by ffmpeg, with `extra` output options."""
+    cmd = ["ffmpeg", "-v", "error", "-f", "lavfi",
+           "-i", f"sine=frequency=440:sample_rate=44100:duration={seconds}"]
+    if metadata:
+        cmd += ["-i", metadata, "-map", "0", "-map_metadata", "1", "-map_chapters", "1"]
+    cmd += ["-c:a", "aac", "-b:a", "64k", *extra, "-y", name]
+    subprocess.run(cmd, check=True)
+
+
+# A plain file as mutagen tags one: text, a track number, one cover
+# image, an ISRC. `moov` after `mdat` (ffmpeg's default), so growing
+# tags move no audio.
+tone("plain-tone.m4a")
+m = MP4("plain-tone.m4a")
+m["\xa9nam"] = ["Song"]
+m["\xa9ART"] = ["Artist"]
+m["\xa9alb"] = ["Album"]
+m["trkn"] = [(3, 12)]
+m["covr"] = [MP4Cover(JPEG, imageformat=MP4Cover.FORMAT_JPEG)]
+m["----:com.apple.iTunes:ISRC"] = [MP4FreeForm(b"GBAAA1900001", AtomDataType.UTF8)]
+m.save()
+
+# Chapters as ffmpeg writes them in an M4A file: a QuickTime chapter
+# track (a second, text track the audio track points to) and a Nero
+# `chpl` atom in `udta`. Two layouts: `moov` after `mdat`, and `moov`
+# first ("faststart"), where tags that grow past their padding move the
+# audio and every chunk offset must move with it.
+with open("chapters.txt", "w") as f:
+    f.write(";FFMETADATA1\n"
+            "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=250\ntitle=One\n"
+            "[CHAPTER]\nTIMEBASE=1/1000\nSTART=250\nEND=500\ntitle=Two\n")
+for name, extra in (("chapters.m4a", ()), ("chapters-faststart.m4a", ("-movflags", "+faststart"))):
+    tone(name, extra, metadata="chapters.txt")
+    m = MP4(name)
+    m["\xa9nam"] = ["Song"]
+    m["\xa9ART"] = ["Artist"]
+    m.save()
+os.remove("chapters.txt")
+
+# Fragmented, as streaming tools write it: an empty `moov` holding `mvex`,
+# then several `moof` + `mdat` pairs. Tags written by ffmpeg.
+tone("fragmented.m4a",
+     ("-metadata", "title=Song", "-metadata", "artist=Artist",
+      "-movflags", "frag_keyframe+empty_moov", "-frag_duration", "200000"),
+     seconds="0.6")
+
+# Every tag removed by mutagen (`clear()` then save): an empty `ilst`
+# beside the handler, and padding. (A tag removal by lofty itself leaves
+# the handler with NO `ilst` at all - the tests make that shape with
+# lofty, from `plain-tone.m4a`.)
+subprocess.run(["cp", "plain-tone.m4a", "mutagen-cleared.m4a"], check=True)
+m = MP4("mutagen-cleared.m4a")
+m.clear()
+m.save()

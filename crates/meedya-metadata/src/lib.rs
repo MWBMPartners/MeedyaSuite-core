@@ -32,8 +32,12 @@ mod error;
 mod id3v2_language_frames;
 pub mod identifier_types;
 pub mod json_path;
-// Private: checks an M4A save atom by atom, on a temporary copy, before it
-// replaces the file (issue #102; see that file's top comment for why).
+// Private: checks an M4A save across the whole file — the audio, the chunk
+// offsets, everything outside the tags — before the copy replaces it, and
+// refuses fragmented files (issue #102; see that file's top comment).
+mod mp4_file_check;
+// Private: checks an M4A save's tags atom by atom, on a temporary copy,
+// before it replaces the file (issue #102; see that file's top comment).
 mod mp4_save_check;
 pub mod playback_bounds;
 pub mod registry;

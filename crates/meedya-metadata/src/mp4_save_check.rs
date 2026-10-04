@@ -45,10 +45,15 @@
 //   the first `meta` of every `udta` and writes into the first), in file
 //   order. `free` and `skip` atoms inside `ilst` are padding, holding no
 //   metadata, and lofty drops them on reading — they are left out.
-// - It does NOT compare anything outside `ilst`: the audio, chapters, other
-//   `udta` atoms, and the sample offsets lofty corrects when the tags grow
-//   or shrink are left to lofty. (Chapters were checked on the stand-in
-//   reviewer's real file and survive a save.)
+// - It compares nothing outside `ilst` itself: everything else in the
+//   saved file — the audio, the chunk offsets, the chapters, the handler
+//   beside the tag list, every other atom — is checked by
+//   `mp4_file_check`, on the same copy, before the copy may replace the
+//   original. (This file used to say the rest was "left to lofty", which
+//   corrects the sample offsets when the tags grow or shrink. It does not
+//   correct every one: the stand-in review of revision 9 found a
+//   fragmented file whose audio a title-only save broke, and a handler
+//   written over, both while this comparison passed.)
 // - Atoms are compared by name; the ORDER of differently named atoms is
 //   not compared, because lofty's save moves an atom it rewrites to the end
 //   and no reader depends on that order. The order of atoms of the SAME
@@ -252,9 +257,11 @@ pub(crate) fn first_moov(
     Ok(None)
 }
 
-/// Where one atom ("box") sits in the file: its name, where its contents
-/// start (just after its header), and where it ends.
+/// Where one atom ("box") sits in the file: where it starts, its name,
+/// where its contents start (just after its header), and where it ends.
+#[derive(Clone, Debug)]
 pub(crate) struct BoxAt {
+    pub(crate) start: u64,
     pub(crate) name: [u8; 4],
     pub(crate) body_start: u64,
     pub(crate) end: u64,
@@ -313,6 +320,7 @@ fn boxes_in_file_from(
                 )
             })?;
         out.push(BoxAt {
+            start: pos,
             name,
             body_start: pos + header_len,
             end: atom_end,

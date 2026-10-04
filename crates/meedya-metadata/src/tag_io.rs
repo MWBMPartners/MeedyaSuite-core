@@ -97,6 +97,7 @@ use crate::common_tags::CommonTag;
 use crate::error::MetadataError;
 use crate::id3v2_language_frames::{read_tlan_frames, TlanFrames};
 use crate::json_path;
+use crate::mp4_file_check;
 use crate::mp4_save_check::{self, Expected, RawAtom, RawKey, RawValue};
 use crate::save_by_copy::{Original, TempCopy};
 use crate::tag_registry::{TagRegistry, TagScope};
@@ -795,6 +796,10 @@ fn edit_and_save<T>(
             // copy is made from this handle, and the checks read it
             // (`save_by_copy`).
             let mut source = Original::open(&real)?;
+            // A file the save is known to damage — a fragmented one, or a
+            // `meta` with no tag list, whose handler lofty would write over
+            // — is refused before anything is written (`mp4_file_check`).
+            mp4_file_check::refuse_what_a_save_would_damage(source.file())?;
             // What the file holds now, read from its bytes before anything
             // changes: what the saved copy is compared with.
             let original = mp4_save_check::read_ilst_atoms_from(source.file())?;
@@ -1071,10 +1076,13 @@ fn atoms_asked_for(
 /// Saves `ilst` as the tags of the M4A file `source` (the real file, links
 /// already followed, opened by [`Original::open`]): on a temporary copy
 /// first — made, saved into and read back through its own handle
-/// (`save_by_copy`) — which replaces the file only when every atom in it is
-/// as `expected`, or else byte for byte as in `original` (see
-/// `mp4_save_check`). Otherwise the copy is deleted, the file is not
-/// touched, and the error names every atom that would have changed.
+/// (`save_by_copy`) — which replaces the file only when every tag atom in
+/// it is as `expected`, or else byte for byte as in `original` (see
+/// `mp4_save_check`), AND nothing outside the tags changed beyond what a
+/// tag save may change — the audio, the chunk offsets, everything else in
+/// `moov` and at the top of the file (see `mp4_file_check`). Otherwise the
+/// copy is deleted, the file is not touched, and the error names
+/// everything that would have changed.
 fn save_mp4_checked(
     mut source: Original,
     ilst: &Ilst,
@@ -1084,7 +1092,11 @@ fn save_mp4_checked(
     let mut copy = TempCopy::of(&mut source)?;
     ilst.save_to(copy.file(), WriteOptions::default())?;
     let saved = mp4_save_check::read_ilst_atoms_from(copy.file())?;
-    let problems = mp4_save_check::differences(original, &saved, expected);
+    let mut problems = mp4_save_check::differences(original, &saved, expected);
+    problems.extend(mp4_file_check::differences_outside_the_tags(
+        source.file(),
+        copy.file(),
+    )?);
     if !problems.is_empty() {
         const LISTED: usize = 8;
         let mut list = problems[..problems.len().min(LISTED)].join("; ");
@@ -1093,10 +1105,11 @@ fn save_mp4_checked(
         }
         return Err(MetadataError::WriteError(format!(
             "this M4A file could not be saved exactly as asked: {list}. Nothing was written: the \
-             save was made on a temporary copy, compared atom by atom with the original, and \
-             thrown away, so the file is exactly as it was. (Issue #102: the route this library \
-             saves M4A files through changes some atoms it was not asked to change; until it \
-             keeps them, such a save is refused.)"
+             save was made on a temporary copy, compared with the original (its tags atom by \
+             atom, and the rest of the file byte for byte), and thrown away, so the file is \
+             exactly as it was. (Issue #102: the route this library saves M4A files through \
+             changes some things it was not asked to change; until it keeps them, such a save is \
+             refused.)"
         )));
     }
     copy.replace(source)
@@ -3406,6 +3419,251 @@ mod tests {
             .expect("link")
             .file_type()
             .is_symlink());
+        assert_eq!(
+            read_tags(&path).expect("read")[&CommonTag::Title],
+            ["Changed"]
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // The WHOLE saved file, not just its tags (the stand-in review of
+    // revision 9, H1 and M1): real files with real audio - half a second
+    // of a tone - made by ffmpeg and tagged by mutagen
+    // (`make_m4a_fixtures.py`). What is checked here is read with a small
+    // reader of the tests' own, not with the check under test. Every result
+    // was also cross-checked with a full ffmpeg decode (the same decoded
+    // audio before and after), ffprobe's chapters, mutagen, and Apple's
+    // AVFoundation when this was written.
+    // ------------------------------------------------------------------
+
+    /// Where each atom named `name` sits between `start` and `end` of
+    /// `bytes`: (start, end, contents start). Plain 32-bit sizes only - all
+    /// these files use.
+    fn atoms_named(
+        bytes: &[u8],
+        start: usize,
+        end: usize,
+        name: &[u8],
+    ) -> Vec<(usize, usize, usize)> {
+        let mut out = Vec::new();
+        let mut pos = start;
+        while pos + 8 <= end {
+            let size = u32::from_be_bytes(bytes[pos..pos + 4].try_into().expect("4")) as usize;
+            assert!(size >= 8 && pos + size <= end, "a readable test file");
+            if &bytes[pos + 4..pos + 8] == name {
+                out.push((pos, pos + size, pos + 8));
+            }
+            pos += size;
+        }
+        out
+    }
+
+    /// The only atom named `name` between `start` and `end`.
+    fn only(bytes: &[u8], start: usize, end: usize, name: &[u8]) -> (usize, usize, usize) {
+        let found = atoms_named(bytes, start, end, name);
+        assert_eq!(found.len(), 1, "one {}", String::from_utf8_lossy(name));
+        found[0]
+    }
+
+    /// What the tests compare in a saved file: where the sample data
+    /// starts, the sample data itself, every chunk offset of every track,
+    /// the `udta`'s `chpl` (Nero chapters) if there is one, and the
+    /// `meta`'s parts other than the tag list and padding.
+    #[derive(Debug, PartialEq)]
+    struct Layout {
+        data_start: usize,
+        data: Vec<u8>,
+        offsets: Vec<Vec<u32>>,
+        chpl: Option<Vec<u8>>,
+        meta_parts: Vec<Vec<u8>>,
+    }
+
+    fn layout(path: &Path) -> Layout {
+        let bytes = std::fs::read(path).expect("read");
+        let mdat = only(&bytes, 0, bytes.len(), b"mdat");
+        let moov = only(&bytes, 0, bytes.len(), b"moov");
+        let mut offsets = Vec::new();
+        for trak in atoms_named(&bytes, moov.2, moov.1, b"trak") {
+            let mdia = only(&bytes, trak.2, trak.1, b"mdia");
+            let minf = only(&bytes, mdia.2, mdia.1, b"minf");
+            let stbl = only(&bytes, minf.2, minf.1, b"stbl");
+            let stco = only(&bytes, stbl.2, stbl.1, b"stco");
+            let count = u32::from_be_bytes(bytes[stco.2 + 4..stco.2 + 8].try_into().expect("4"));
+            offsets.push(
+                (0..count as usize)
+                    .map(|i| {
+                        let at = stco.2 + 8 + 4 * i;
+                        u32::from_be_bytes(bytes[at..at + 4].try_into().expect("4"))
+                    })
+                    .collect(),
+            );
+        }
+        let udta = only(&bytes, moov.2, moov.1, b"udta");
+        let chpl = atoms_named(&bytes, udta.2, udta.1, b"chpl")
+            .first()
+            .map(|chpl| bytes[chpl.0..chpl.1].to_vec());
+        let meta = only(&bytes, udta.2, udta.1, b"meta");
+        let mut meta_parts = Vec::new();
+        let mut pos = meta.2 + 4; // after version and flags
+        while pos + 8 <= meta.1 {
+            let size = u32::from_be_bytes(bytes[pos..pos + 4].try_into().expect("4")) as usize;
+            let name = &bytes[pos + 4..pos + 8];
+            if !matches!(name, b"ilst" | b"free" | b"skip") {
+                meta_parts.push(bytes[pos..pos + size].to_vec());
+            }
+            pos += size;
+        }
+        Layout {
+            data_start: mdat.2,
+            data: bytes[mdat.2..mdat.1].to_vec(),
+            offsets,
+            chpl,
+            meta_parts,
+        }
+    }
+
+    #[test]
+    fn a_fragmented_file_is_refused_before_anything_is_written() {
+        // A title-only write, and a long comment: both broke the audio on
+        // the reviewer's file (the pieces moved, where each says its audio
+        // starts did not). Refused now, the file byte for byte as it was.
+        let long_comment =
+            |path: &Path| write_tags(path, &[(CommonTag::Comment, "z".repeat(3000))]);
+        let message = refused_on_real_file("fragmented.m4a", title_only, &["fragmented", "`moof`"]);
+        assert!(message.contains("breaks the audio"), "{message}");
+        refused_on_real_file("fragmented.m4a", long_comment, &["fragmented"]);
+    }
+
+    #[test]
+    fn real_files_with_audio_and_chapters_keep_them_through_a_save() {
+        // The plain file and the two chapter files (a QuickTime chapter
+        // track and a Nero `chpl`; `moov` after `mdat`, then first), each
+        // given a new title and then a long comment - which, with `moov`
+        // first, grows the tags past their padding and moves the audio.
+        // Accepted, the audio byte for byte the same, every chunk offset
+        // moved exactly as far as the audio, the chapters and the handler
+        // untouched.
+        let mut audio_moved = false;
+        for name in ["plain-tone.m4a", "chapters.m4a", "chapters-faststart.m4a"] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = real_m4a(dir.path(), name);
+            for (tag, value) in [
+                (CommonTag::Title, "Changed".to_string()),
+                (CommonTag::Comment, "y".repeat(5000)),
+            ] {
+                let before = layout(&path);
+                write_tags(&path, &[(tag, value.clone())])
+                    .unwrap_or_else(|e| panic!("{name}: {e}"));
+                let after = layout(&path);
+                assert_eq!(after.data, before.data, "{name}: the audio");
+                let moved = after.data_start as i64 - before.data_start as i64;
+                audio_moved |= moved != 0;
+                let expected: Vec<Vec<u32>> = before
+                    .offsets
+                    .iter()
+                    .map(|table| {
+                        table
+                            .iter()
+                            .map(|offset| (i64::from(*offset) + moved) as u32)
+                            .collect()
+                    })
+                    .collect();
+                assert_eq!(after.offsets, expected, "{name}: the chunk offsets");
+                assert_eq!(after.chpl, before.chpl, "{name}: the Nero chapters");
+                assert_eq!(after.meta_parts, before.meta_parts, "{name}: the handler");
+                assert_eq!(read_tags(&path).expect("read")[&tag], [value], "{name}");
+                assert_only_the_file_is_there(dir.path(), name);
+            }
+        }
+        assert!(
+            audio_moved,
+            "the long comment moved the audio of the faststart file"
+        );
+        let chapters =
+            layout(&Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/m4a/chapters.m4a"));
+        assert!(
+            chapters.chpl.is_some() && chapters.offsets.len() == 2,
+            "the chapter file has both kinds of chapters"
+        );
+    }
+
+    /// A copy of `plain-tone.m4a`, in `dir`, whose tags were removed by
+    /// lofty itself (an empty `Ilst` saved): its `meta` keeps its handler
+    /// and has no tag list - the stand-in review of revision 9's
+    /// "lofty-cleared" file, made the same way.
+    fn tags_removed_by_lofty(dir: &Path) -> std::path::PathBuf {
+        let path = real_m4a(dir, "plain-tone.m4a");
+        Ilst::default()
+            .save_to_path(&path, WriteOptions::default())
+            .expect("remove every tag");
+        let bytes = std::fs::read(&path).expect("read");
+        let moov = only(&bytes, 0, bytes.len(), b"moov");
+        let udta = only(&bytes, moov.2, moov.1, b"udta");
+        let meta = only(&bytes, udta.2, udta.1, b"meta");
+        assert_eq!(atoms_named(&bytes, meta.2 + 4, meta.1, b"hdlr").len(), 1);
+        assert!(atoms_named(&bytes, meta.2 + 4, meta.1, b"ilst").is_empty());
+        path
+    }
+
+    #[test]
+    fn a_meta_with_a_handler_and_no_tag_list_is_refused_before_saving() {
+        // lofty's save would write the new tag list over the handler, and
+        // ffprobe and AVFoundation then read no tags at all (M1).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = tags_removed_by_lofty(dir.path());
+        let before = std::fs::read(&path).expect("read");
+        let message = match title_only(&path) {
+            Err(MetadataError::WriteError(message)) => message,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(
+            message.contains("metadata box has no tag list"),
+            "{message}"
+        );
+        assert!(message.contains("[hdlr, free]"), "{message}");
+        assert!(message.contains("Nothing was written"), "{message}");
+        assert_eq!(std::fs::read(&path).expect("read"), before);
+        assert_only_the_file_is_there(dir.path(), "plain-tone.m4a");
+    }
+
+    #[test]
+    fn the_whole_file_comparison_alone_finds_the_handler_written_over() {
+        // Without the check before saving, would the comparison of the
+        // whole file still refuse? lofty's own save of a title, into a
+        // copy of the file above, compared with the original: yes - check
+        // (c) names the handler that went missing.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = tags_removed_by_lofty(dir.path());
+        let saved = dir.path().join("saved.m4a");
+        std::fs::copy(&path, &saved).expect("copy");
+        let mut ilst = Ilst::default();
+        ilst.set_title("Changed".to_string());
+        ilst.save_to_path(&saved, WriteOptions::default())
+            .expect("lofty's own save");
+        let found = mp4_file_check::differences_outside_the_tags(
+            &mut std::fs::File::open(&path).expect("open"),
+            &mut std::fs::File::open(&saved).expect("open"),
+        )
+        .expect("readable");
+        assert_eq!(
+            found,
+            ["the parts of moov → udta → meta would change: now [hdlr]; after saving, []"]
+        );
+    }
+
+    #[test]
+    fn a_file_whose_tags_mutagen_cleared_is_saved_with_its_handler() {
+        // mutagen's `clear()` and save leaves an EMPTY tag list beside the
+        // handler: that is saved, the handler untouched (ffprobe and
+        // AVFoundation read the new title - checked when this was written).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "mutagen-cleared.m4a");
+        let before = layout(&path);
+        assert!(raw_atoms(&path).is_empty(), "no tags to begin with");
+        title_only(&path).expect("saved");
+        let after = layout(&path);
+        assert_eq!(after.meta_parts, before.meta_parts, "the handler");
+        assert_eq!(after.data, before.data);
         assert_eq!(
             read_tags(&path).expect("read")[&CommonTag::Title],
             ["Changed"]
