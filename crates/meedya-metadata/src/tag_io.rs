@@ -4120,6 +4120,93 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------------------
+    // Damaged and crafted files made from `plain-tone.m4a` (Codex's
+    // catch-up review of revisions 8-10)
+    // ------------------------------------------------------------------
+
+    /// `plain-tone.m4a`'s bytes, and where the atoms on the way to its tags
+    /// sit: (start, end, contents start) of each.
+    struct Tone {
+        bytes: Vec<u8>,
+        moov: (usize, usize, usize),
+        udta: (usize, usize, usize),
+    }
+
+    fn tone() -> Tone {
+        let bytes = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/m4a/plain-tone.m4a"),
+        )
+        .expect("read");
+        let moov = only(&bytes, 0, bytes.len(), b"moov");
+        let udta = only(&bytes, moov.2, moov.1, b"udta");
+        // The audio comes first in this file, so putting bytes into `moov`
+        // moves nothing a chunk offset points at.
+        let mdat = only(&bytes, 0, bytes.len(), b"mdat");
+        assert!(mdat.1 <= moov.0, "mdat before moov");
+        Tone { bytes, moov, udta }
+    }
+
+    /// `bytes` with `extra` put at `at`, and each atom that starts at one
+    /// of `containers` (plain 32-bit sizes) grown by its length.
+    fn grown(bytes: &[u8], at: usize, containers: &[usize], extra: &[u8]) -> Vec<u8> {
+        let mut out = bytes.to_vec();
+        for start in containers {
+            let size = u32::from_be_bytes(out[*start..start + 4].try_into().expect("4"));
+            let size = size + u32::try_from(extra.len()).expect("fits");
+            out[*start..start + 4].copy_from_slice(&size.to_be_bytes());
+        }
+        out.splice(at..at, extra.iter().copied());
+        out
+    }
+
+    /// `write` on the file `bytes` (saved as `f.m4a` in a folder of its
+    /// own) must be refused with a plain message, leave the file byte for
+    /// byte as it was, and leave nothing else in the folder. Returns the
+    /// refusal.
+    fn refused_variant(
+        bytes: &[u8],
+        write: impl FnOnce(&Path) -> Result<(), MetadataError>,
+    ) -> String {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("f.m4a");
+        std::fs::write(&path, bytes).expect("write");
+        let message = match write(&path) {
+            Err(MetadataError::WriteError(message)) => message,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(message.contains("Nothing was written"), "{message}");
+        assert_eq!(std::fs::read(&path).expect("read"), bytes, "untouched");
+        assert_only_the_file_is_there(dir.path(), "f.m4a");
+        message
+    }
+
+    #[test]
+    fn a_meta_too_short_for_its_version_refuses_the_write_and_leaves_the_file() {
+        // Codex's catch-up review of revisions 8-10, finding 2, through the
+        // public write: a `meta` of 0 to 3 bytes put into the real file's
+        // `udta` - before its own `meta`, and after it with another atom
+        // following. Before the fix, the second form stopped the program
+        // in the whole-file comparison ("attempt to subtract with
+        // overflow"; this test is a debug build, which checks). Now both
+        // are refused before anything is saved, the file as it was.
+        for body in 0..4 {
+            let short = atom(b"meta", &vec![0; body]);
+            let tone = tone();
+            let containers = [tone.moov.0, tone.udta.0];
+            let first = grown(&tone.bytes, tone.udta.2, &containers, &short);
+            let after = [short, atom(b"chpl", b"nero-chapters")].concat();
+            let second = grown(&tone.bytes, tone.udta.1, &containers, &after);
+            for (which, bytes) in [("first", first), ("second", second)] {
+                let message = refused_variant(&bytes, title_only);
+                assert!(
+                    message.contains("fewer than the four bytes of version and flags"),
+                    "{which} meta of {body} bytes: {message}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn mp4_language_atom_written_by_another_tool_is_read_whole_and_kept() {
         // The usual form, as another tool writes it: ONE atom, several

@@ -138,7 +138,7 @@ pub(crate) fn refuse_what_a_save_would_damage(
     let Some(meta) = udta_children.iter().find(|atom| &atom.name == b"meta") else {
         return Ok(());
     };
-    let body_start = meta.body_start + meta_version_len(&mut reader, meta)?;
+    let body_start = meta.body_start + meta_version_len(&mut reader, meta).map_err(unreadable)?;
     let parts = boxes_in_file(&mut reader, body_start, meta.end).map_err(unreadable)?;
     let has_a_part = parts.iter().any(|part| !is_padding(&part.name));
     let has_ilst = parts.iter().any(|part| &part.name == b"ilst");
@@ -171,9 +171,13 @@ pub(crate) fn differences_outside_the_tags(
     original: &mut (impl Read + Seek),
     saved: &mut (impl Read + Seek),
 ) -> Result<Vec<String>, MetadataError> {
+    let len_a = original.seek(SeekFrom::End(0))?;
+    let len_b = saved.seek(SeekFrom::End(0))?;
     let mut walk = Walk {
         a: BufReader::with_capacity(BLOCK, original),
         b: BufReader::with_capacity(BLOCK, saved),
+        len_a,
+        len_b,
         mdats: Vec::new(),
         problems: Vec::new(),
     };
@@ -253,6 +257,9 @@ struct MovedData {
 struct Walk<A: Read + Seek, B: Read + Seek> {
     a: BufReader<A>,
     b: BufReader<B>,
+    /// How long each file is: no stretch past its end is ever read.
+    len_a: u64,
+    len_b: u64,
     mdats: Vec<MovedData>,
     problems: Vec<String>,
 }
@@ -287,7 +294,23 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
 
     /// Whether the stretch `a` of the original and `b` of the copy hold the
     /// same bytes, read in blocks.
+    ///
+    /// A stretch that ends before it starts, or runs past the end of its
+    /// file, refuses the save as "cannot be checked" BEFORE its ends are
+    /// subtracted: the subtraction would otherwise stop the program (in a
+    /// build that checks for overflow) or wrap round to an enormous length
+    /// (in one that does not). Nothing well formed makes such a stretch;
+    /// a `meta` too short for its version did (Codex's catch-up review of
+    /// revisions 8-10, finding 2), and this keeps any other way of making
+    /// one from doing the same.
     fn same_bytes(&mut self, a: (u64, u64), b: (u64, u64)) -> Result<bool, Stop> {
+        if a.0 > a.1 || b.0 > b.1 || a.1 > self.len_a || b.1 > self.len_b {
+            return Err(Stop::Unreadable(format!(
+                "a part of the file to be compared does not lie inside it (bytes {} to {} of the \
+                 original, {} to {} of the saved copy)",
+                a.0, a.1, b.0, b.1
+            )));
+        }
         if a.1 - a.0 != b.1 - b.0 {
             return Ok(false);
         }
@@ -583,10 +606,11 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
             self.problems
                 .push(format!("the header of {path} would change form"));
         }
-        let version_a =
-            meta_version_len(&mut self.a, x).map_err(|e| Stop::Unreadable(e.to_string()))?;
-        let version_b =
-            meta_version_len(&mut self.b, y).map_err(|e| Stop::Unreadable(e.to_string()))?;
+        // A `meta` too short for its version and flags is refused here,
+        // before anything below reads past its end (finding 2 of Codex's
+        // catch-up review of revisions 8-10; see `meta_version_len`).
+        let version_a = meta_version_len(&mut self.a, x)?;
+        let version_b = meta_version_len(&mut self.b, y)?;
         if version_a != version_b
             || !self.same_bytes(
                 (x.body_start, x.body_start + version_a),
@@ -957,6 +981,81 @@ mod tests {
         ]
         .concat();
         assert_eq!(outside(&original, &extra).len(), 1);
+    }
+
+    #[test]
+    fn a_meta_too_short_for_its_version_is_refused_never_a_panic() {
+        // Codex's catch-up review of revisions 8-10, finding 2: a `meta`
+        // holding 0 to 3 bytes was taken to have its four bytes of version
+        // and flags all the same, so the comparison read past its end and
+        // subtracted the start of what follows from its end, which comes
+        // before it. These tests run as a debug build does, checking every
+        // subtraction for overflow: before the fix, each case below stopped
+        // with "attempt to subtract with overflow". Now each is refused as
+        // a file that cannot be checked - as the first metadata box in the
+        // `udta`, and as a second one after a normal box - by every reader
+        // that meets it.
+        let ftyp = atom(b"ftyp", b"M4A \0\0\0\0");
+        for body in 0..4 {
+            let short = atom(b"meta", &vec![0; body]);
+            let normal = meta(&[LOFTY_HDLR.to_vec(), ilst(b"Title")]);
+            let chpl = atom(b"chpl", b"nero-chapters");
+            for (which, udta) in [
+                ("first", [short.clone(), chpl.clone()].concat()),
+                ("second", [normal, short, chpl].concat()),
+            ] {
+                let file = [ftyp.clone(), atom(b"moov", &atom(b"udta", &udta))].concat();
+                let found = differences_outside_the_tags(
+                    &mut Cursor::new(file.clone()),
+                    &mut Cursor::new(file.clone()),
+                );
+                let message = found.expect_err("refused").to_string();
+                assert!(
+                    message.contains("fewer than the four bytes of version and flags"),
+                    "{which} meta of {body} bytes: {message}"
+                );
+                assert!(message.contains("Nothing was written"), "{message}");
+                let read =
+                    crate::mp4_save_check::read_ilst_atoms_from(&mut Cursor::new(file.clone()));
+                assert!(
+                    read.is_err(),
+                    "{which} meta of {body} bytes: the tag reader"
+                );
+                // The check before saving reads the first `meta` only.
+                let before = refuse_what_a_save_would_damage(&mut Cursor::new(file));
+                assert_eq!(before.is_err(), which == "first", "{which}, {body}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_stretch_that_ends_before_it_starts_is_refused_never_subtracted() {
+        // Whatever made one, `same_bytes` refuses a stretch that is turned
+        // round or runs past the end of its file before it subtracts its
+        // ends (finding 2 again: the guard behind `meta_version_len`'s).
+        let file = file(b"Old", 0, false);
+        let len = file.len() as u64;
+        let mut walk = Walk {
+            a: BufReader::new(Cursor::new(file.clone())),
+            b: BufReader::new(Cursor::new(file)),
+            len_a: len,
+            len_b: len,
+            mdats: Vec::new(),
+            problems: Vec::new(),
+        };
+        for (a, b) in [
+            ((10, 6), (10, 14)),
+            ((10, 14), (10, 6)),
+            ((len - 2, len + 2), (0, 4)),
+            ((0, 4), (len, len + 4)),
+        ] {
+            match walk.same_bytes(a, b) {
+                Err(Stop::Unreadable(why)) => assert!(why.contains("does not lie inside it")),
+                Err(Stop::Io(e)) => panic!("{a:?} {b:?}: read anyway ({e})"),
+                Ok(same) => panic!("{a:?} {b:?}: compared ({same})"),
+            }
+        }
+        assert!(walk.same_bytes((0, 8), (0, 8)).unwrap_or(false));
     }
 
     #[test]

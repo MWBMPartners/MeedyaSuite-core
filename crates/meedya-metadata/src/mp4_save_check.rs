@@ -216,7 +216,8 @@ fn read_ilst_atoms_within(
         let udta_children =
             boxes_in_file(&mut reader, udta.body_start, udta.end).map_err(unreadable)?;
         for meta in udta_children.iter().filter(|b| &b.name == b"meta") {
-            let body_start = meta.body_start + meta_version_len(&mut reader, meta)?;
+            let body_start =
+                meta.body_start + meta_version_len(&mut reader, meta).map_err(unreadable)?;
             let meta_children =
                 boxes_in_file(&mut reader, body_start, meta.end).map_err(unreadable)?;
             for ilst in meta_children.iter().filter(|b| &b.name == b"ilst") {
@@ -338,16 +339,38 @@ fn boxes_in_file_from(
 /// ("full") form, 0 when it is written as a plain atom — decided as lofty
 /// decides it, by whether the four bytes after the first four name a child
 /// atom lofty knows (lofty 0.22.4, `mp4/read/mod.rs`, `meta_is_full`).
+///
+/// A `meta` holding fewer than four bytes — too few for its version and
+/// flags — is refused, as plain words for the "cannot be checked" message.
+/// It used to be taken as the full form all the same, so whoever read on
+/// started four bytes in, PAST the end of the box: the whole-file
+/// comparison then read into the next atom and subtracted the start of
+/// what follows the version from its end, which comes before it. With the
+/// overflow checks debug builds make, that stopped the program; without
+/// them, the subtraction wrapped round to an enormous length (Codex's
+/// catch-up review of revisions 8-10, finding 2: a normal `meta`, then a
+/// second one eight bytes long in all, then another atom).
 pub(crate) fn meta_version_len(
     reader: &mut (impl Read + Seek),
     meta: &BoxAt,
-) -> Result<u64, MetadataError> {
-    if meta.end - meta.body_start < 8 {
+) -> Result<u64, String> {
+    let body = meta.end - meta.body_start;
+    if body < 4 {
+        return Err(format!(
+            "the metadata box (meta) at byte {} holds {body} byte(s), fewer than the four bytes \
+             of version and flags it must start with",
+            meta.start
+        ));
+    }
+    if body < 8 {
         return Ok(4);
     }
-    reader.seek(SeekFrom::Start(meta.body_start))?;
+    let could_not_read = |e: std::io::Error| format!("it could not be read ({e})");
+    reader
+        .seek(SeekFrom::Start(meta.body_start))
+        .map_err(could_not_read)?;
     let mut first = [0u8; 8];
-    reader.read_exact(&mut first)?;
+    reader.read_exact(&mut first).map_err(could_not_read)?;
     Ok(match &first[4..] {
         b"hdlr" | b"ilst" | b"mhdr" | b"ctry" | b"lang" => 0,
         _ => 4,
