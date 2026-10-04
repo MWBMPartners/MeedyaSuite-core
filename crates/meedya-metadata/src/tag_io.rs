@@ -4312,7 +4312,10 @@ mod tests {
 
     /// Runs `f` with `look` called on the temporary copy's name at each
     /// moment a save pauses with the copy in existence (just after it is
-    /// made, and just after lofty has saved into it).
+    /// made, and just after lofty has saved into it). Unix only, like the
+    /// tests that use it (they look at permission bits Windows does not
+    /// have).
+    #[cfg(unix)]
     fn while_the_copy_exists<T>(look: impl FnMut(&Path) + 'static, f: impl FnOnce() -> T) -> T {
         use crate::save_by_copy::WHILE_THE_COPY_EXISTS;
         WHILE_THE_COPY_EXISTS.with(|hook| *hook.borrow_mut() = Some(Box::new(look)));
