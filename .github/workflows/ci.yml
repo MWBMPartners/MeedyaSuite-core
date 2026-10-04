@@ -115,6 +115,17 @@ jobs:
             ${{ runner.os }}-cargo-doccounts-
             ${{ runner.os }}-cargo-
 
+      # The comparison in the next step is only worth running if it can
+      # fail. Until Codex's catch-up review of revisions 8-10 (finding 9) it
+      # accepted any number found anywhere in a document - `1 4` passed.
+      # This proves, in a second and without running the tests, that it
+      # fails on numbers that are not the stated totals, on a stale total
+      # and on a document that no longer states one, and passes the right
+      # totals.
+      - name: Prove the documented-count check fails where it must
+        shell: bash
+        run: bash scripts/test-check-doc-test-counts.sh
+
       # Doc-count drift is this repo's chronic failure mode: 248, 466, 533,
       # 546, 601, 653 and 664 have all appeared in the docs and none matched
       # the code. The counts are a contract signal partner apps read, so a

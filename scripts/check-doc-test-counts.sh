@@ -72,28 +72,72 @@ done
 
 status=0
 
-# Whole-number checks rather than a parse: deliberately tolerant of prose
-# rewording, but still catches a figure that has gone stale. The number must
-# stand on its own - no digit directly before or after it, and not part of a
-# larger number written with a separator ("1,796", "0.796", "796.5") - so a
-# small or stale total cannot pass by matching digits inside some other
-# number. (This used to be a plain substring check: the stand-in review of
-# revision 5 showed a stand-in suite of 6 / 10 tests passing, because "6"
-# and "10" appear inside other numbers in every one of these files.) A
-# number at the end of a sentence ("796.") still counts.
-assert_contains() {
-    local file="$1" value="$2" label="$3"
-    local pattern="(^|[^0-9.,]|[^0-9][.,])${value}(\$|[^0-9.,]|[.,]\$|[.,][^0-9])"
-    if ! grep -qE -- "$pattern" "$file"; then
-        echo "STALE: $file does not mention the measured ${label} count '${value}'"
-        status=1
-    fi
+# Only the totals each document states AS totals are compared - never any
+# number that happens to appear in it. (Until Codex's catch-up review of
+# revisions 8-10, finding 9, any whole number anywhere in a document passed:
+# `scripts/check-doc-test-counts.sh 1 4` passed, because numbered steps and
+# version numbers hold a 1 and a 4 in every one of these files, and a
+# per-crate count passed as the total.) The forms read, each a total in
+# words, are:
+#
+#   default features: "Total: N tests", "N tests passing", "(N tests;",
+#                     "sum to N", and a "cargo test --workspace  # N tests"
+#                     comment;
+#   --all-features:   "M with --all-features" (the flag in backticks or not)
+#                     on a line that states one of the default totals above,
+#                     "(sum M)", and a "cargo test --workspace --all-features
+#                     # M tests" comment.
+#
+# Every such number in a document must be the measured one, and each
+# document must state at least one total of each kind - so a total that is
+# reworded out of these forms fails loudly, rather than going unchecked.
+# A per-crate figure ("12 (17 with --all-features)" in a table row) is on a
+# line stating no total, so it is never read as one.
+# `scripts/test-check-doc-test-counts.sh` proves this fails where it must.
+DEFAULT_TOTAL='Total:\**[[:space:]]*[0-9]+ tests|[0-9]+ tests passing|\([0-9]+ tests;|sum to [0-9]+|cargo test[[:space:]]+--workspace[[:space:]]+#[[:space:]]*[0-9]+ tests'
+ALL_TOTAL='\(sum [0-9]+\)|cargo test[[:space:]]+--workspace[[:space:]]+--all-features[[:space:]]+#[[:space:]]*[0-9]+ tests'
+ALL_BESIDE_A_TOTAL='[0-9]+\**[[:space:]]+with[[:space:]]+`?--all-features'
+
+# The numbers `file` states as its `kind` total ("default" or "all"), one a
+# line; nothing when it states none.
+stated_totals() {
+    local file="$1" kind="$2"
+    {
+        if [ "$kind" = default ]; then
+            grep -oE -- "$DEFAULT_TOTAL" "$file" || true
+        else
+            grep -oE -- "$ALL_TOTAL" "$file" || true
+            { grep -E -- "$DEFAULT_TOTAL" "$file" || true; } \
+                | { grep -oE -- "$ALL_BESIDE_A_TOTAL" || true; }
+        fi
+    } | { grep -oE '[0-9]+' || true; }
 }
 
+# Compares what `file` states as its `kind` total (`label` in messages)
+# with the measured `value`.
+check_stated() {
+    local file="$1" kind="$2" value="$3" label="$4" stated n
+    stated=$(stated_totals "$file" "$kind")
+    if [ -z "$stated" ]; then
+        echo "STALE: $file states no ${label} total in a form this check reads (see the top of this script)"
+        status=1
+        return
+    fi
+    for n in $stated; do
+        if [ "$n" != "$value" ]; then
+            echo "STALE: $file states the ${label} total as '${n}'; measured '${value}'"
+            status=1
+        fi
+    done
+}
+
+# Where the documents are: the repository, unless the self-test points this
+# at changed copies of them.
+DOCS="${DOC_COUNTS_ROOT:-.}"
 for f in README.md docs/API.md .claude/CONTEXT.md .claude/CLAUDE.md; do
-    [ -f "$f" ] || continue
-    assert_contains "$f" "$ALL" "--all-features"
-    assert_contains "$f" "$DEFAULT" "default-features"
+    [ -f "$DOCS/$f" ] || continue
+    check_stated "$DOCS/$f" all "$ALL" "--all-features"
+    check_stated "$DOCS/$f" default "$DEFAULT" "default-features"
 done
 
 if [ "$status" -eq 0 ]; then
