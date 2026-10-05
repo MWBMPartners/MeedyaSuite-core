@@ -38,23 +38,43 @@
 //    the usual permissions, normally 0644: the whole of a private
 //    recording, kept 0600, could be read by every other account on the
 //    machine for as long as the save was being checked — and still could
-//    when the save was then refused, until the copy was deleted.) Windows
-//    has no such permission bits: there the copy gets whatever access
-//    rules its folder gives every new file in it, which may let others
-//    read it where the original's own rules did not, for as long as it
-//    exists — and, since a file's own rules are not copied, the saved file
-//    keeps the folder's rules afterwards too (see the losses below).
+//    when the save was then refused, until the copy was deleted.)
+//    Permission bits are not the whole of it, though: a folder can pass an
+//    access control list on to every new file made in it, and the copy got
+//    it however private its bits were (Codex's review of revision 11,
+//    finding 1: a folder whose list passed on "everyone may read" made the
+//    copy of a private recording - and then the saved file - readable by
+//    every account on the machine). So, before a byte is written into it,
+//    the copy has none (`access_rules`): on Linux whatever its folder gave
+//    it is taken off; on macOS, where this program can only read such
+//    lists, a folder that passes any entry on is refused before a copy is
+//    made, and a copy that got one anyway is refused; on any other Unix
+//    system, which this program cannot read lists on, every save is
+//    refused. Windows has no such permission bits: there the copy gets
+//    whatever access rules its folder gives every new file in it, which may
+//    let others read it where the original's own rules did not, for as
+//    long as it exists — and, since a file's own rules are not copied, the
+//    saved file keeps the folder's rules afterwards too (see the losses
+//    below). A file with the set-user-ID or set-group-ID permission is
+//    refused here too (a media file should never carry them).
 // 3. **lofty saves into that same handle**, and the checks read the copy
 //    back through it (see `tag_io::save_mp4_checked`).
-// 4. **Before the rename**, the copy is given the original's permissions
-//    (only now, once it has passed every check and is about to take the
-//    original's place — never wider than the original's at any moment),
-//    flushed to the disk (`sync_all`), and both names are checked to still
-//    name the files the two handles hold: device and inode number on
-//    Unix, volume serial number and file index on Windows. A name that
-//    now names something else — the copy swapped for another file, or the
-//    original replaced by someone else's file while the save was being
-//    checked — refuses the save.
+// 4. **Before the rename**, the copy is given the original's group (its
+//    owner stays whoever saved it), then the original's own access control
+//    list (on Linux; on macOS an original that has one is refused, before
+//    the copy is made and again here), then the original's permissions -
+//    in that order, and only now, once it has passed every check and is
+//    about to take the original's place, so it never lets in more than the
+//    original at any moment. The group: when the copy cannot be given it,
+//    the save is refused if the original lets its group in at all
+//    (Codex's review of revision 11, finding 1: a file kept 0640 in a group
+//    of its own came back in its folder's group, readable by everyone in
+//    that one). The copy is then flushed to the disk (`sync_all`), and
+//    both names are checked to still name the files the two handles hold:
+//    device and inode number on Unix, volume serial number and file index
+//    on Windows. A name that now names something else — the copy swapped
+//    for another file, or the original replaced by someone else's file
+//    while the save was being checked — refuses the save.
 // 5. **The rename**, which puts the copy in the original's place in one
 //    step: at every moment the name holds either the whole old file or
 //    the whole new one.
@@ -74,13 +94,17 @@
 // - Keep everything an in-place write keeps. The saved file is a NEW file,
 //   so compared with writing into the old one it loses:
 //   - other names for the same file: a hard link keeps the OLD tags;
-//   - the owner and group, when the program saving is not the file's owner
-//     (the new file belongs to whoever saved it);
-//   - access control lists, and extended attributes — on Linux, and on
-//     macOS too (Finder tags and comments among them): the copy is written
-//     through its own handle, and the standard library has no way to copy
-//     those onto a handle (`std::fs::copy`, which did copy them on macOS,
-//     is the step L3 removed);
+//   - the owner, when the program saving is not the file's owner (the new
+//     file belongs to whoever saved it). The group is kept (step 4) - or
+//     the save refused - since revision 12; until then it was lost too;
+//   - access control lists, on Windows (the saved file has its folder's
+//     rules) - on Linux the file's own list is carried over, and on macOS
+//     a file with one is refused (`access_rules`) since revision 12;
+//   - extended attributes — on Linux, and on macOS too (Finder tags and
+//     comments among them): the copy is written through its own handle,
+//     and the standard library has no way to copy those onto a handle
+//     (`std::fs::copy`, which did copy them on macOS, is the step L3
+//     removed);
 //   - the creation ("birth") time, where the system keeps one: the new
 //     file's is the time of the save;
 //   - on Windows, any named alternate data stream: NTFS can keep further
@@ -92,7 +116,8 @@
 //     8-10, finding 6; worked out from the calls used, not tried on
 //     Windows);
 //   - and it needs the folder to be writable, not just the file.
-//   The permission bits (read, write, run) ARE copied.
+//   The permission bits (read, write, run) ARE copied; the set-user-ID and
+//   set-group-ID ones refuse the save instead.
 // - Promise the copy is always deleted. On every refusal and error it is
 //   deleted, explicitly, before the error is returned (`TempCopy::discard`)
 //   — by its name, and only while that name still names it: a file put at
@@ -125,6 +150,7 @@ use std::io::{self, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::access_rules;
 use crate::error::MetadataError;
 
 // ============================================================
@@ -249,6 +275,53 @@ impl Original {
     pub(crate) fn file(&mut self) -> &mut File {
         &mut self.file
     }
+
+    /// Whether the file's name still names the file its handle holds.
+    fn still_named(&self) -> bool {
+        identity_of_name(&self.path).ok() == Some(self.identity)
+    }
+
+    /// Refuses, before any copy is made, what a save by copy could not keep
+    /// (step 2 at the top of this file): the set-user-ID or set-group-ID
+    /// permission, and access rules beyond the permission bits that
+    /// `access_rules` cannot keep private or carry over (in `folder`, which
+    /// the copy would be made in, or on the file itself).
+    fn refuse_what_a_copy_cannot_keep(&self, folder: &Path) -> Result<(), MetadataError> {
+        refuse_program_permissions(&self.file.metadata()?)?;
+        access_rules::check_before_copying(&self.file, &self.path, &|| self.still_named(), folder)
+            .map_err(nothing_was_written)
+    }
+}
+
+/// `why` - a plain sentence from `access_rules` - as the refusal it is.
+fn nothing_was_written(why: String) -> MetadataError {
+    MetadataError::WriteError(format!("{why}. Nothing was written."))
+}
+
+/// Refuses a file with the set-user-ID or set-group-ID permission (Codex's
+/// review of revision 11, finding 1). They are permissions for programs -
+/// "run as this file's owner, or group" - which a media file should never
+/// carry; a copy given them would hand them to a new file owned by whoever
+/// saved it, and a copy without them would drop them without a word. So
+/// neither is done: the save is refused.
+#[cfg(unix)]
+fn refuse_program_permissions(metadata: &std::fs::Metadata) -> Result<(), MetadataError> {
+    use std::os::unix::fs::PermissionsExt;
+    if metadata.permissions().mode() & 0o6000 == 0 {
+        return Ok(());
+    }
+    Err(MetadataError::WriteError(
+        "this file has the set-user-ID or set-group-ID permission - a permission for programs, \
+         which a media file should never carry - and a save by copy could neither keep it safely \
+         nor drop it without a word, so the save is refused. Nothing was written."
+            .to_string(),
+    ))
+}
+
+/// No such permissions outside Unix.
+#[cfg(not(unix))]
+fn refuse_program_permissions(_metadata: &std::fs::Metadata) -> Result<(), MetadataError> {
+    Ok(())
 }
 
 // ============================================================
@@ -296,6 +369,7 @@ impl TempCopy {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
+        original.refuse_what_a_copy_cannot_keep(&folder)?;
         Self::of_named(original, &folder, temporary_names(&folder))
     }
 
@@ -349,6 +423,15 @@ impl TempCopy {
                 identity,
                 done: false,
             };
+            // Private from the moment it exists: owner-only permission bits
+            // (above) and, before a byte is written into it, none of the
+            // access rules its folder may have given it (`access_rules`;
+            // Codex's review of revision 11, finding 1).
+            let made_private =
+                access_rules::make_private(&copy.file, &copy.path, &|| copy.still_named());
+            if let Err(why) = made_private {
+                return Err(copy.discard(nothing_was_written(why)));
+            }
             return match copy.fill_from(original) {
                 Ok(()) => Ok(copy),
                 Err(e) => Err(copy.discard(e.into())),
@@ -373,6 +456,44 @@ impl TempCopy {
     /// The copy's open file, for saving into and reading back.
     pub(crate) fn file(&mut self) -> &mut File {
         &mut self.file
+    }
+
+    /// Whether the copy's name still names the file its handle holds.
+    fn still_named(&self) -> bool {
+        identity_of_name(&self.path).ok() == Some(self.identity)
+    }
+
+    /// Gives the copy the original's group, keeping its owner (step 4 at
+    /// the top of this file) - BEFORE the original's permission bits, so
+    /// that the group they let in is always the original's. When the copy
+    /// cannot be given it (the program saving is not in that group, say),
+    /// the save is refused if the original lets its group in at all;
+    /// otherwise the copy keeps the group it was made with, which its bits
+    /// then let in to nothing. (Until Codex's review of revision 11, finding
+    /// 1, the group was not copied: a file kept 0640 in a group of its own
+    /// came back in its folder's group - readable by everyone in that one.)
+    #[cfg(unix)]
+    fn give_group_of(&self, original: &std::fs::Metadata) -> Result<(), MetadataError> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let (wanted, now) = (original.gid(), self.file.metadata()?.gid());
+        if wanted == now {
+            return Ok(());
+        }
+        match std::os::unix::fs::fchown(&self.file, None, Some(wanted)) {
+            Ok(()) => Ok(()),
+            Err(_) if original.permissions().mode() & 0o070 == 0 => Ok(()),
+            Err(e) => Err(MetadataError::WriteError(format!(
+                "the saved copy could not be given this file's group (group {wanted}: {e}), and the \
+                 file lets its group read or write it - the copy would have let its own folder's \
+                 group (group {now}) in instead. Nothing was written."
+            ))),
+        }
+    }
+
+    /// No groups outside Unix.
+    #[cfg(not(unix))]
+    fn give_group_of(&self, _original: &std::fs::Metadata) -> Result<(), MetadataError> {
+        Ok(())
     }
 
     /// The copy's name (for tests).
@@ -412,8 +533,22 @@ impl TempCopy {
 
     /// The steps of [`TempCopy::replace`], stopping at the first that fails.
     fn put_in_place(&mut self, original: Original) -> Result<(), MetadataError> {
-        self.file
-            .set_permissions(original.file.metadata()?.permissions())?;
+        // The original's group, then its own access rules, then its
+        // permission bits - in that order, so the copy never lets in more
+        // than the original does at any moment (see `give_group_of`).
+        let metadata = original.file.metadata()?;
+        refuse_program_permissions(&metadata)?;
+        self.give_group_of(&metadata)?;
+        access_rules::carry_over(
+            &original.file,
+            &original.path,
+            &|| original.still_named(),
+            &self.file,
+        )
+        .map_err(nothing_was_written)?;
+        self.file.set_permissions(metadata.permissions())?;
+        #[cfg(test)]
+        self.let_tests_look();
         self.file.sync_all()?;
         let swapped = |what: &str, path: &Path, why: String| {
             MetadataError::WriteError(format!(
@@ -613,6 +748,104 @@ pub(crate) fn permissions_are_ignored_here(dir: &Path) -> bool {
     read_only(&folder, 0o755);
     std::fs::remove_dir_all(&folder).expect("remove the probe folder");
     file_ignored || folder_ignored
+}
+
+/// Tests only: runs the test at `test_path` (`module_path!()` and the
+/// test's name) again, in a child process whose file-creation mask is set
+/// to 022 - the usual one, which takes away only the group's and others'
+/// write permission - and returns `false`, after checking the child passed;
+/// in that child it returns `true`, and the test goes on to do its checks.
+///
+/// Why (Codex's review of revision 11, finding 5): a test of the
+/// permissions a new file gets proves nothing under a mask that takes more
+/// away. Under 077 a copy made without its own owner-only permissions came
+/// out owner-only all the same, so the test passed with the fix removed.
+/// The child also proves its mask really is 022 (a new file comes out
+/// 0644), and the parent that the child really ran the one test - so
+/// neither can pass by doing nothing.
+#[cfg(all(test, unix))]
+pub(crate) fn rerun_with_the_usual_mask(test_path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    const CHILD: &str = "MEEDYA_TEST_USUAL_MASK_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let probe = dir.path().join("mask-probe");
+        File::create(&probe).expect("probe file");
+        let mode = std::fs::metadata(&probe)
+            .expect("stat")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o644,
+            "the child's file-creation mask is not 022"
+        );
+        return true;
+    }
+    // libtest names a test by its path inside the crate.
+    let name = test_path
+        .split_once("::")
+        .map_or(test_path, |(_, inside)| inside);
+    let out = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg("umask 022 && exec \"$0\" --exact \"$1\" --nocapture --test-threads=1")
+        .arg(std::env::current_exe().expect("this test program"))
+        .arg(name)
+        .env(CHILD, "1")
+        .output()
+        .expect("run the test again");
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "{name}, run again with a mask of 022, failed:\n{said}"
+    );
+    assert!(
+        said.contains("test result: ok. 1 passed"),
+        "{name} did not run in the child:\n{said}"
+    );
+    false
+}
+
+// Tests only: helpers for the tests of who may read a copy (Codex's reviews of
+// revisions 8-10, finding 1, and of revision 11, findings 1 and 5).
+
+/// The permission bits of `path`, the program ones included.
+#[cfg(all(test, unix))]
+pub(crate) fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).expect("stat").permissions().mode() & 0o7777
+}
+
+/// The group `path` belongs to.
+#[cfg(all(test, unix))]
+pub(crate) fn gid_of(path: &Path) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).expect("stat").gid()
+}
+
+/// The groups this program's user is in (`id -G`).
+#[cfg(all(test, unix))]
+pub(crate) fn my_groups() -> Vec<u32> {
+    let out = std::process::Command::new("id")
+        .arg("-G")
+        .output()
+        .expect("run id -G");
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .map(|gid| gid.parse().expect("a group number"))
+        .collect()
+}
+
+/// Makes `folder` pass a reading entry on to every new file made in it:
+/// "everyone may read" on macOS, "user 65534 may read" (a default list)
+/// on Linux. `Err` says why it could not be done, for a test to print.
+#[cfg(all(test, unix))]
+pub(crate) fn pass_reading_on(folder: &Path) -> Result<(), String> {
+    access_rules::add_entry(folder, "everyone allow read,file_inherit", "d:u:65534:r")
 }
 
 impl Drop for TempCopy {
@@ -925,9 +1158,21 @@ mod tests {
         // by others while the save was checked. Now owner-only from the
         // start, whatever the original's - and the original's permissions
         // only once it replaces the original.
+        //
+        // Codex's review of revision 11, finding 5: this test could pass
+        // with that fix removed - under a creation mask of 077 a copy made
+        // without its own owner-only permissions is owner-only anyway - and
+        // it looked at the permission bits only, not at an access control
+        // list. So it now runs in a child process with the usual mask (022)
+        // set explicitly, and checks the list too - including in a folder
+        // that passes a reading entry on to every new file (finding 1).
+        if !rerun_with_the_usual_mask(concat!(
+            module_path!(),
+            "::the_copy_is_private_from_the_moment_it_exists"
+        )) {
+            return;
+        }
         use std::os::unix::fs::PermissionsExt;
-        let mode =
-            |path: &Path| std::fs::metadata(path).expect("stat").permissions().mode() & 0o777;
         for original_mode in [0o600, 0o644, 0o666] {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("f.m4a");
@@ -937,12 +1182,51 @@ mod tests {
             let mut original = Original::open(&path).expect("open");
             let copy = TempCopy::of(&mut original).expect("copy");
             assert_eq!(
-                mode(copy.path()),
+                mode_of(copy.path()),
                 0o600,
                 "the copy of a {original_mode:o} file"
             );
+            assert_eq!(access_rules::entries_on(copy.path()), 0, "no access list");
             copy.replace(original).expect("replace");
-            assert_eq!(mode(&path), original_mode, "after replacing");
+            assert_eq!(mode_of(&path), original_mode, "after replacing");
+        }
+        // A folder that passes a reading entry on to every new file. The
+        // copy is made there directly, past the check of the folder before
+        // copying, so that the copy's own check is what is tested: on macOS
+        // a copy that got the entry is refused, before a byte is written
+        // into it; on Linux the entry is taken off first.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_path, mut original) = original_in(dir.path(), b"a private recording");
+        let passing = dir.path().join("passing");
+        std::fs::create_dir(&passing).expect("folder");
+        if let Err(why) = pass_reading_on(&passing) {
+            eprintln!("skipped the folder that passes rules on: {why}");
+            return;
+        }
+        let made = TempCopy::of_named(&mut original, &passing, [passing.join("copy.tmp")]);
+        if cfg!(target_os = "macos") {
+            match made {
+                Err(error) => assert!(
+                    error
+                        .to_string()
+                        .contains("was given access rules by its folder"),
+                    "{error}"
+                ),
+                Ok(copy) => panic!(
+                    "a copy with its folder's access list: {}",
+                    access_rules::rules_of(copy.path())
+                ),
+            }
+            assert_eq!(names_in(&passing), Vec::<String>::new(), "nothing left");
+        } else {
+            let copy = made.expect("a copy, its folder's list taken off");
+            assert_eq!(mode_of(copy.path()), 0o600);
+            assert_eq!(
+                access_rules::entries_on(copy.path()),
+                0,
+                "{}",
+                access_rules::rules_of(copy.path())
+            );
         }
     }
 
@@ -1015,5 +1299,192 @@ mod tests {
         let copy = TempCopy::of(&mut original).expect("copy");
         std::fs::remove_file(copy.path()).expect("someone deletes it");
         assert_eq!(refusal(copy), "refused.");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_that_passes_access_rules_on_never_gets_a_copy_others_may_read() {
+        // Codex's review of revision 11, finding 1 (reproduced before the
+        // fix, on macOS: a private recording - 0600, no list of its own - in
+        // a folder whose list passes "everyone may read" on to new files was
+        // saved, and the copy, then the saved file, carried that entry).
+        // macOS: refused before any copy is made. Linux: the copy's entry is
+        // taken off, and the saved file has the original's list - none.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, mut original) = original_in(dir.path(), b"a private recording");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("mode");
+        if let Err(why) = pass_reading_on(dir.path()) {
+            eprintln!("skipped: {why}");
+            return;
+        }
+        let made = TempCopy::of(&mut original);
+        if cfg!(target_os = "macos") {
+            let message = match made {
+                Err(error) => error.to_string(),
+                Ok(copy) => panic!("a copy was made: {}", copy.path().display()),
+            };
+            assert!(
+                message.contains("passes access rules on to every new file made in it"),
+                "{message}"
+            );
+            assert!(message.contains("Nothing was written"), "{message}");
+            assert_eq!(names_in(dir.path()), ["f.m4a"], "no copy was ever made");
+        } else {
+            let copy = made.expect("a copy");
+            assert_eq!(access_rules::entries_on(copy.path()), 0);
+            copy.replace(original).expect("replace");
+        }
+        assert_eq!(std::fs::read(&path).expect("read"), b"a private recording");
+        assert_eq!(mode_of(&path), 0o600);
+        assert_eq!(
+            access_rules::entries_on(&path),
+            0,
+            "the file has its own list - none - not its folder's: {}",
+            access_rules::rules_of(&path)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_s_own_access_rules_are_kept_or_the_save_is_refused() {
+        // Codex's review of revision 11, finding 1: a file's own list - here
+        // one entry, on macOS "user nobody may NOT read" (losing it would let
+        // that account in), on Linux "user 65534 may read" - was not carried
+        // over. Linux: the saved file has exactly the original's list.
+        // macOS: refused, since lists are not written there; untouched.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, mut original) = original_in(dir.path(), b"original");
+        if let Err(why) = access_rules::add_entry(&path, "user:nobody deny read", "u:65534:r") {
+            eprintln!("skipped: {why}");
+            return;
+        }
+        let (list, mode) = (access_rules::rules_of(&path), mode_of(&path));
+        assert_eq!(access_rules::entries_on(&path), 1, "{list}");
+        let made = TempCopy::of(&mut original);
+        if cfg!(target_os = "macos") {
+            let message = match made {
+                Err(error) => error.to_string(),
+                Ok(copy) => panic!("a copy was made: {}", copy.path().display()),
+            };
+            assert!(message.contains("has access rules of its own"), "{message}");
+            assert_eq!(names_in(dir.path()), ["f.m4a"]);
+            assert_eq!(std::fs::read(&path).expect("read"), b"original");
+        } else {
+            made.expect("a copy").replace(original).expect("replace");
+        }
+        assert_eq!(access_rules::rules_of(&path), list, "the same list");
+        assert_eq!(mode_of(&path), mode);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_group_the_copy_cannot_be_given_refuses_the_save_when_the_file_lets_its_group_in() {
+        // Codex's review of revision 11, finding 1. The copy belongs to the
+        // group its folder gives it; giving it the file's group can fail
+        // (the program's user is not in that group). Then a file kept 0640
+        // would have let the folder's group in instead: refused. A file
+        // that lets its group in to nothing (0600) is saved, keeping the
+        // copy's group, which it lets in to nothing.
+        //
+        // Set up on macOS only, where a new file takes its folder's group:
+        // a folder in /private/tmp, which belongs to a group this user is
+        // not in, gives the file that group; the folder is then moved to
+        // one of the user's own groups, which the copy gets. (On Linux a
+        // new file takes the program's own group, so such a file cannot be
+        // made without the superuser.)
+        use std::os::unix::fs::PermissionsExt;
+        if !cfg!(target_os = "macos") {
+            eprintln!(
+                "skipped: a file in a group its owner is not in can be made without the superuser \
+                 only where new files take their folder's group (macOS)"
+            );
+            return;
+        }
+        let shared = Path::new("/private/tmp");
+        let foreign = gid_of(shared);
+        let mine = my_groups();
+        if mine.contains(&foreign) {
+            eprintln!("skipped: this user is in /private/tmp's group, so it cannot be refused");
+            return;
+        }
+        for (mode, refused) in [(0o640, true), (0o600, false)] {
+            let dir = tempfile::Builder::new()
+                .prefix("meedya-group-test")
+                .tempdir_in(shared)
+                .expect("tempdir");
+            let path = dir.path().join("f.m4a");
+            std::fs::write(&path, b"original").expect("write");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("mode");
+            assert_eq!(gid_of(&path), foreign, "the file takes the folder's group");
+            std::os::unix::fs::chown(dir.path(), None, Some(mine[0])).expect("own group");
+            let mut original = Original::open(&path).expect("open");
+            let copy = TempCopy::of(&mut original).expect("copy");
+            assert_eq!(
+                gid_of(copy.path()),
+                mine[0],
+                "the copy takes the user's group"
+            );
+            let result = copy.replace(original);
+            if refused {
+                let message = result.expect_err("refused").to_string();
+                assert!(
+                    message.contains("could not be given this file's group"),
+                    "{message}"
+                );
+                assert_eq!(gid_of(&path), foreign);
+                assert_eq!(std::fs::read(&path).expect("read"), b"original");
+                assert_eq!(names_in(dir.path()), ["f.m4a"], "the copy is deleted");
+            } else {
+                result.expect("saved");
+                assert_eq!(
+                    gid_of(&path),
+                    mine[0],
+                    "the copy's group, let in to nothing"
+                );
+                assert_eq!(mode_of(&path), 0o600);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_with_a_permission_for_programs_is_refused() {
+        // Codex's review of revision 11, finding 1: the set-user-ID and
+        // set-group-ID permissions (a program runs as the file's owner, or
+        // group) were copied onto a new file owned by whoever saved it. A
+        // media file should never carry them: refused - before a copy is
+        // made, and at the rename if one was added while the save was
+        // checked.
+        use std::os::unix::fs::PermissionsExt;
+        for bit in [0o4000, 0o2000] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("f.m4a");
+            std::fs::write(&path, b"original").expect("write");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644 | bit))
+                .expect("mode");
+            if mode_of(&path) & bit == 0 {
+                eprintln!("skipped {bit:o}: this system took the permission off again");
+                continue;
+            }
+            let mut original = Original::open(&path).expect("open");
+            let message = match TempCopy::of(&mut original) {
+                Err(error) => error.to_string(),
+                Ok(copy) => panic!("a copy was made: {}", copy.path().display()),
+            };
+            assert!(
+                message.contains("set-user-ID or set-group-ID permission"),
+                "{message}"
+            );
+            assert_eq!(names_in(dir.path()), ["f.m4a"]);
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, mut original) = original_in(dir.path(), b"original");
+        let copy = TempCopy::of(&mut original).expect("copy");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o4644)).expect("mode");
+        let message = copy.replace(original).expect_err("refused").to_string();
+        assert!(message.contains("set-user-ID"), "{message}");
+        assert_eq!(std::fs::read(&path).expect("read"), b"original");
+        assert_eq!(names_in(dir.path()), ["f.m4a"], "the copy is deleted");
     }
 }

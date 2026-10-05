@@ -4331,15 +4331,28 @@ mod tests {
         // save is checked on was made with the usual permissions (0644),
         // so a private recording (0600) could be read by every other
         // account while the save was checked - also when it was then
-        // refused. Looked at WHILE the copy exists: owner-only both times,
-        // for a save that is accepted and one that is refused after lofty
-        // has saved into the copy; afterwards the file keeps exactly its
-        // own permissions.
+        // refused. Looked at WHILE the copy exists: owner-only, for a save
+        // that is accepted and one that is refused after lofty has saved
+        // into the copy; afterwards the file keeps exactly its own
+        // permissions.
+        //
+        // Codex's review of revision 11, finding 5: run under the usual
+        // creation mask (022), set explicitly in a child process - under 077
+        // this passed with the fix removed - and the copy's access list is
+        // checked as well as its bits, at each look: after it is made,
+        // after lofty saved into it and, for an accepted save, just before
+        // the rename, once it has the file's group, list and bits.
+        if !crate::save_by_copy::rerun_with_the_usual_mask(concat!(
+            module_path!(),
+            "::the_copy_of_a_private_file_is_never_readable_by_anyone_else"
+        )) {
+            return;
+        }
+        use crate::access_rules::entries_on;
+        use crate::save_by_copy::mode_of;
         use std::cell::RefCell;
         use std::os::unix::fs::PermissionsExt;
         use std::rc::Rc;
-        let mode =
-            |path: &Path| std::fs::metadata(path).expect("stat").permissions().mode() & 0o777;
         for (name, accepted) in [("plain-tone.m4a", true), ("flags-and-freeform.m4a", false)] {
             for original_mode in [0o600, 0o644] {
                 let dir = tempfile::tempdir().expect("tempdir");
@@ -4349,20 +4362,135 @@ mod tests {
                 let seen = Rc::new(RefCell::new(Vec::new()));
                 let looked = Rc::clone(&seen);
                 let result = while_the_copy_exists(
-                    move |copy| looked.borrow_mut().push(mode(copy)),
+                    move |copy| looked.borrow_mut().push((mode_of(copy), entries_on(copy))),
                     || title_only(&path),
                 );
                 assert_eq!(result.is_ok(), accepted, "{name}: {result:?}");
+                let mut expected = vec![(0o600, 0), (0o600, 0)];
+                if accepted {
+                    expected.push((original_mode, 0));
+                }
                 assert_eq!(
                     *seen.borrow(),
-                    [0o600, 0o600],
-                    "{name}, {original_mode:o}: the copy, after it was made and after lofty saved \
-                     into it"
+                    expected,
+                    "{name}, {original_mode:o}: the copy's bits and access list, at each look"
                 );
-                assert_eq!(mode(&path), original_mode, "{name}");
+                assert_eq!(mode_of(&path), original_mode, "{name}");
+                assert_eq!(entries_on(&path), 0, "{name}");
                 assert_only_the_file_is_there(dir.path(), name);
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_saved_file_keeps_its_group_and_no_one_else_gets_in_meanwhile() {
+        // Codex's review of revision 11, finding 1 (reproduced before the
+        // fix on macOS: a file in group 61, kept 0640, came back in its
+        // folder's group, 20 - readable by everyone in that one). The file
+        // is put in another group its owner is in (from `id -G`); the copy
+        // starts in the group a new file gets here, owner-only, so nobody in
+        // that group can read it; just before the rename it has the file's
+        // group and bits; the saved file keeps both.
+        use crate::access_rules::entries_on;
+        use crate::save_by_copy::{gid_of, mode_of, my_groups};
+        use std::cell::RefCell;
+        use std::os::unix::fs::PermissionsExt;
+        use std::rc::Rc;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "plain-tone.m4a");
+        let made_with = gid_of(&path);
+        // ("everyone", 12, on macOS is a group every account is in, which
+        // shows nothing about a group of the file's own.)
+        let Some(other) = my_groups()
+            .into_iter()
+            .find(|gid| *gid != made_with && !(cfg!(target_os = "macos") && *gid == 12))
+        else {
+            eprintln!("skipped: this user is in no group but the one new files get here");
+            return;
+        };
+        std::os::unix::fs::chown(&path, None, Some(other)).expect("another group");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).expect("mode");
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let looked = Rc::clone(&seen);
+        let result = while_the_copy_exists(
+            move |copy| {
+                looked
+                    .borrow_mut()
+                    .push((mode_of(copy), gid_of(copy), entries_on(copy)))
+            },
+            || title_only(&path),
+        );
+        result.expect("saved");
+        assert_eq!(
+            *seen.borrow(),
+            [
+                (0o600, made_with, 0),
+                (0o600, made_with, 0),
+                (0o640, other, 0)
+            ],
+            "while the copy is in the new-file group it lets that group in to nothing"
+        );
+        assert_eq!(gid_of(&path), other, "the file's own group");
+        assert_eq!(mode_of(&path), 0o640);
+        assert_only_the_file_is_there(dir.path(), "plain-tone.m4a");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_that_passes_access_rules_on_never_exposes_the_recording() {
+        // Codex's review of revision 11, finding 1, through write_tags on a
+        // real file: a private recording (0600, no list of its own) in a
+        // folder that passes a reading entry on to every new file. macOS:
+        // refused before any copy is made - the test seam never sees one -
+        // and the file is as it was. Linux: saved; the copy never has a
+        // list at any look, and the saved file has the original's (none).
+        use crate::access_rules::entries_on;
+        use crate::save_by_copy::{mode_of, pass_reading_on};
+        use std::cell::RefCell;
+        use std::os::unix::fs::PermissionsExt;
+        use std::rc::Rc;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = real_m4a(dir.path(), "plain-tone.m4a");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("mode");
+        let before = std::fs::read(&path).expect("read");
+        if let Err(why) = pass_reading_on(dir.path()) {
+            eprintln!("skipped: {why}");
+            return;
+        }
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let looked = Rc::clone(&seen);
+        let result = while_the_copy_exists(
+            move |copy| looked.borrow_mut().push((mode_of(copy), entries_on(copy))),
+            || title_only(&path),
+        );
+        if cfg!(target_os = "macos") {
+            let message = match result {
+                Err(MetadataError::WriteError(message)) => message,
+                other => panic!("expected a refusal, got {other:?}"),
+            };
+            assert!(
+                message.contains("passes access rules on to every new file"),
+                "{message}"
+            );
+            assert!(
+                seen.borrow().is_empty(),
+                "no copy was made: {:?}",
+                seen.borrow()
+            );
+            assert_eq!(std::fs::read(&path).expect("read"), before);
+        } else {
+            result.expect("saved");
+            assert_eq!(*seen.borrow(), [(0o600, 0), (0o600, 0), (0o600, 0)]);
+        }
+        assert_eq!(mode_of(&path), 0o600);
+        assert_eq!(
+            entries_on(&path),
+            0,
+            "{}",
+            crate::access_rules::rules_of(&path)
+        );
+        assert_only_the_file_is_there(dir.path(), "plain-tone.m4a");
     }
 
     #[cfg(unix)]

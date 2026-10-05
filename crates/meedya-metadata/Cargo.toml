@@ -31,5 +31,22 @@ meedya-lang = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 winapi-util = "0.1"
 
+# macOS only: reading a file's or folder's access control list (ACL), so an
+# M4A save can refuse what it cannot keep private or carry over
+# (`access_rules`; Codex's review of revision 11, finding 1). macOS keeps
+# these lists out of reach of the extended-attribute calls, and the
+# standard library has no way to read them; this is a small, safe wrapper
+# (MIT) over the system's own `acl_*` calls that keeps `unsafe` out of this
+# workspace. It is used to READ only, by name: nothing here writes a list.
+[target.'cfg(target_os = "macos")'.dependencies]
+exacl = "0.12"
+
+# Linux and Android only: there a file's access control list is an extended
+# attribute (`system.posix_acl_access`), which this safe wrapper over the
+# system calls reads, writes and removes through the file's open handle
+# (`access_rules`). Already in the lockfile through `tempfile`.
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }

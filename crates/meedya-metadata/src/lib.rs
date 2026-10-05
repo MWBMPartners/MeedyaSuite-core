@@ -24,6 +24,10 @@
 //   honored by MeedyaSuite tools only.
 // - identifier_types — cross-repo identifier-type registry (identifier_types.toml, #65).
 
+// Private: a file's access rules beyond its permission bits (access control
+// lists), for the temporary copy an M4A save is made on (see that file's
+// top comment).
+mod access_rules;
 pub mod codec_tags;
 pub mod common_tags;
 mod error;
