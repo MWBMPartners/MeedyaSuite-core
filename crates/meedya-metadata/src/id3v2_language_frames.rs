@@ -94,19 +94,43 @@
 //   the values already kept sits beside the ordered list (`first_of_each`),
 //   so a crafted frame holding 100,000 values costs 100,000 steps, not the
 //   five billion comparisons searching the list for each value took until
-//   Codex's review of revisions 5–7.
+//   Codex's review of revisions 5–7. (Such a frame is now refused by the
+//   memory budget below before it is merged - 100,000 values cost over six
+//   megabytes of it - but the merge stays in step with whatever is let
+//   through.)
 // - **What it holds in memory is bounded** (Codex's catch-up review of
 //   revisions 8-10, finding 10). The tags are found by their headers alone,
 //   and a tag's or a chunk's size is cut to what the file - or its chunk -
 //   really holds before anything is read; the cheap look reads a tag a
 //   block at a time and keeps only its counts; and only the language
-//   frames' contents are read into memory, at most 1 MiB of them for a
+//   frames' contents are read into memory, within a budget of 1 MiB for a
 //   whole file (`LANGUAGE_BYTES_BUDGET`) - past that the save is refused,
 //   in plain words. Until then every tag, and every ID3 chunk WHOLE, was
 //   read into memory and kept while the next was read: a WAV file whose ID3
 //   chunk held a small tag in 400 MiB of padding, and an MP3 with four
 //   100 MiB tags one after another, each took the program to 410 MiB of
 //   memory (measured).
+//   The budget is charged more than the text (Codex's review of revision
+//   11, finding 2): each language frame costs a fixed 64 bytes on top of
+//   its own bytes, and each value found in one another 64 - what keeping a
+//   frame's list and a value's string really costs - and no more than 256
+//   language frames are read in one tag, or 1,024 in a file. A frame with
+//   nothing in it is passed over, as lofty passes over it, with nothing
+//   kept for it. Until then only the text was charged: a tag of one million
+//   empty `TLAN` frames was charged nothing, kept an empty list for each,
+//   and took the program from 2 MB to 52 MB (measured), and one frame of
+//   half a million one-letter values, inside the 1 MiB, took it to 26 MB.
+//   So "at most 1 MiB held", which this comment used to say, was never
+//   true. What is true: the budget bounds what is read and kept, and what
+//   the program holds while reading stays within a few times the budget -
+//   decoding a frame's text can briefly double it, and the lists grow in
+//   steps. Measured on those two files, both now refused, with
+//   `/usr/bin/time -l`: no more than 2 MB above the program's own use.
+// - **The budget applies only when there is something to merge.** The
+//   cheap look decides first; a file with at most one language frame (and
+//   one tag, and no old `TLA` name in an ID3v2.4 tag) needs nothing here,
+//   so its frame is never read - however large it is. lofty has already
+//   read it, within lofty's own limit (next point).
 // - **What it cannot bound: lofty's own reading, which comes first.**
 //   `tag_io` reads the file through lofty and only then asks here, so by
 //   the time a file is refused here, lofty has already read it. lofty reads
@@ -154,18 +178,19 @@ pub(crate) enum TlanFrames {
 
 /// Reads every language frame of the ID3v2 tag(s) lofty reads from the file
 /// at `path`, of type `file_type` — the tags at the start of an MP3 or AAC
-/// file, and every `ID3 ` chunk of a WAV or AIFF file — holding at most
-/// 1 MiB of them in memory (see the top of this file). Other file types
-/// give [`TlanFrames::AtMostOne`]: lofty does not write an ID3v2 tag into
-/// them.
+/// file, and every `ID3 ` chunk of a WAV or AIFF file — within a memory
+/// budget of 1 MiB for the whole file (see the top of this file for what
+/// it counts, and when it applies). Other file types give
+/// [`TlanFrames::AtMostOne`]: lofty does not write an ID3v2 tag into them.
 ///
 /// Fails with [`MetadataError::WriteError`] when the file seems to hold two
-/// or more language frames but one of them cannot be read (see the top of this
-/// file for which cases - holding more than 1 MiB of them among them), or when the file has more than one ID3v2 tag (an
-/// MP3 file's tags one after another, or several ID3 chunks of a WAV or AIFF
-/// file) and any of them holds a language frame; the message says what, in
-/// plain words. A file that cannot be read at all gives
-/// [`MetadataError::IoError`].
+/// or more language frames but one of them cannot be read (see the top of
+/// this file for which cases - more than the budget, or more than 256
+/// language frames in one tag or 1,024 in the file, among them), or when
+/// the file has more than one ID3v2 tag (an MP3 file's tags one after
+/// another, or several ID3 chunks of a WAV or AIFF file) and any of them
+/// holds a language frame; the message says what, in plain words. A file
+/// that cannot be read at all gives [`MetadataError::IoError`].
 pub(crate) fn read_tlan_frames(
     path: &Path,
     file_type: FileType,
@@ -188,25 +213,50 @@ pub(crate) fn read_tlan_frames(
 // How much is held in memory
 // ============================================================
 
-/// The most bytes of language frames this module holds in memory for one
-/// file, over all of its tags together: 1 MiB. A list of languages is a
-/// few bytes; a file asking for more is refused with a plain message (see
-/// the top of this file).
+/// The memory budget for one file's language frames, over all of its tags
+/// together: 1 MiB. A list of languages is a few bytes; a file asking for
+/// more is refused with a plain message (see the top of this file for what
+/// is charged to it, and what that does and does not bound).
 const LANGUAGE_BYTES_BUDGET: u64 = 1024 * 1024;
+
+/// What each language frame costs from the budget on top of its own bytes,
+/// even an empty one: about what keeping it costs (an entry in the list of
+/// frames, with room for that list to grow). Without it a frame with
+/// nothing in it was free, and a tag of a million of them took the program
+/// to 52 MB (Codex's review of revision 11, finding 2).
+const FRAME_COST: u64 = 64;
+
+/// What each value found in a language frame costs from the budget, on top
+/// of the frame's bytes: about what keeping it costs (its string, and its
+/// entry in the frame's list). Without it, one frame of half a million
+/// one-letter values, inside the 1 MiB, took the program to 26 MB.
+const VALUE_COST: u64 = 64;
+
+/// The most language frames read in one tag, and in one file - empty ones
+/// included. A file lists a handful of languages at most; one asking for
+/// more is refused in plain words rather than read.
+const MAX_FRAMES_PER_TAG: u64 = 256;
+const MAX_FRAMES_PER_FILE: u64 = 1024;
 
 /// How many bytes of a tag the cheap look reads at a time.
 const SCAN_BLOCK: usize = 64 * 1024;
 
-/// The bytes of language frames still allowed into memory for one file,
-/// and how many have been taken (for the tests).
+/// What one file's language frames have taken so far: bytes from the
+/// budget (`taken`), and how many frames (`frames`) - both for the tests
+/// too.
 struct Budget {
     limit: u64,
     taken: u64,
+    frames: u64,
 }
 
 impl Budget {
     fn new(limit: u64) -> Self {
-        Budget { limit, taken: 0 }
+        Budget {
+            limit,
+            taken: 0,
+            frames: 0,
+        }
     }
 
     /// Takes `len` more bytes from the budget, or says - in plain words,
@@ -214,13 +264,35 @@ impl Budget {
     fn take(&mut self, len: u64) -> Result<(), Cannot> {
         if len > self.limit - self.taken {
             return Err(Cannot::Read(format!(
-                "its language frames hold more than {} bytes of text in all - far more than any \
-                 list of languages needs - and this library does not read that much into memory",
+                "its language frames need more memory to read than any list of languages does - \
+                 over {} bytes, counting each frame's text and a fixed {FRAME_COST} bytes for \
+                 every frame and for every value in one - and this library does not read that \
+                 much into memory",
                 self.limit
             )));
         }
         self.taken += len;
         Ok(())
+    }
+
+    /// Takes one more language frame of `size` bytes - an empty one too -
+    /// from the file's count and its budget ([`FRAME_COST`] and the bytes),
+    /// or says why not.
+    fn take_frame(&mut self, size: u64) -> Result<(), Cannot> {
+        self.frames += 1;
+        if self.frames > MAX_FRAMES_PER_FILE {
+            return Err(Cannot::Read(format!(
+                "its tags hold more than {MAX_FRAMES_PER_FILE} language frames in all - far more \
+                 than any list of languages needs - and this library does not read that many"
+            )));
+        }
+        self.take(FRAME_COST.saturating_add(size))
+    }
+
+    /// Takes `count` values found in one language frame from the budget
+    /// ([`VALUE_COST`] each), or says why not.
+    fn take_values(&mut self, count: u64) -> Result<(), Cannot> {
+        self.take(count.saturating_mul(VALUE_COST))
     }
 }
 
@@ -695,6 +767,7 @@ fn tlan_frames_in_tag<R: Read + Seek>(
     let body_len = tag.body_end - tag.body_start;
 
     let mut frames = Vec::new();
+    let mut language_frames_in_tag = 0u64;
     let mut pos = 0u64;
     reader.seek(SeekFrom::Start(tag.body_start))?;
     while pos + header_len as u64 <= body_len {
@@ -737,11 +810,32 @@ fn tlan_frames_in_tag<R: Read + Seek>(
             )));
         }
         if is_language {
-            budget.take(size)?;
+            // Counted and charged before anything is kept - an empty frame
+            // too, so a tag of countless empty frames is refused, never
+            // walked to its end (see the top of this file).
+            language_frames_in_tag += 1;
+            if language_frames_in_tag > MAX_FRAMES_PER_TAG {
+                return Err(Cannot::Read(format!(
+                    "one of its tags holds more than {MAX_FRAMES_PER_TAG} language frames - far \
+                     more than any list of languages needs - and this library does not read that \
+                     many"
+                )));
+            }
+            budget.take_frame(size)?;
+            if size == 0 {
+                // An empty frame is passed over, as lofty passes over it
+                // (lofty 0.22.4, `id3/v2/frame/read.rs`: "Encountered a
+                // zero length frame, skipping"), and nothing is kept for
+                // it: it is not a language frame to lofty, so it changes
+                // nothing about what needs merging. (Until Codex's review
+                // of revision 11, finding 2, each one kept an empty list.)
+                pos = end;
+                continue;
+            }
             let mut content = vec![0u8; usize::try_from(size).unwrap_or(usize::MAX)];
             reader.read_exact(&mut content)?;
             let content = frame_content(&content, major, header)?;
-            frames.push(frame_values(content, major)?);
+            frames.push(frame_values(content, major, budget)?);
         } else {
             // Stepped over, unread: within the reader's buffer when it can
             // be, so walking many small frames reads the tag only once.
@@ -783,8 +877,10 @@ fn frame_content<'a>(content: &'a [u8], major: u8, header: &[u8]) -> Result<&'a 
 
 /// The values of one language frame's `content` (its text-encoding byte
 /// and text), decoded exactly as lofty decodes them: trailing null
-/// characters taken off, then split at each null character.
-fn frame_values(content: &[u8], major: u8) -> Result<Vec<String>, String> {
+/// characters taken off, then split at each null character. The values are
+/// counted, and charged to `budget` ([`VALUE_COST`] each), before any is
+/// kept.
+fn frame_values(content: &[u8], major: u8, budget: &mut Budget) -> Result<Vec<String>, Cannot> {
     let Some((&encoding, text)) = content.split_first() else {
         return Ok(Vec::new());
     };
@@ -802,7 +898,8 @@ fn frame_values(content: &[u8], major: u8) -> Result<Vec<String>, String> {
                     _ => {
                         return Err(
                             "one of those frames is UTF-16 text without a byte-order mark"
-                                .to_string(),
+                                .to_string()
+                                .into(),
                         )
                     }
                 };
@@ -817,14 +914,16 @@ fn frame_values(content: &[u8], major: u8) -> Result<Vec<String>, String> {
             return Err(format!(
                 "one of those frames uses text encoding {other}, which ID3v2.{major} does not \
                  define"
-            ))
+            )
+            .into())
         }
     };
-    Ok(decoded
-        .trim_end_matches('\0')
-        .split('\0')
-        .map(str::to_string)
-        .collect())
+    let text = decoded.trim_end_matches('\0');
+    // Counting the values keeps none of them (`split` only points into the
+    // text), so a frame of countless tiny values is refused here, before
+    // a string is made for each.
+    budget.take_values(text.split('\0').count() as u64)?;
+    Ok(text.split('\0').map(str::to_string).collect())
 }
 
 /// UTF-16 `bytes` in the given byte order. A byte-order mark in the middle
@@ -874,18 +973,32 @@ mod tests {
 
     /// The merged result for `tags`, read at exactly their own places.
     fn tlan_frames_in_tags(tags: &[Vec<u8>]) -> Result<TlanFrames, MetadataError> {
+        tlan_frames_in_tags_within(tags, LANGUAGE_BYTES_BUDGET)
+    }
+
+    /// [`tlan_frames_in_tags`], with a budget of `limit` bytes.
+    fn tlan_frames_in_tags_within(
+        tags: &[Vec<u8>],
+        limit: u64,
+    ) -> Result<TlanFrames, MetadataError> {
         let (bytes, places) = listed(tags);
         tlan_frames_in_file(
             &mut BufReader::new(Cursor::new(bytes)),
             &TagPlaces::Listed(places),
-            &mut Budget::new(LANGUAGE_BYTES_BUDGET),
+            &mut Budget::new(limit),
         )
     }
 
-    /// The language frames of the one `tag`, or why they cannot be read.
-    fn frames_of(tag: Vec<u8>) -> Result<Vec<Vec<String>>, String> {
+    /// A budget with room for the review's crafted tag below (100,001
+    /// values, about seven megabytes of charges), which the real budget
+    /// refuses: the tests of the reading and the merge themselves use it.
+    const ROOMY_BUDGET: u64 = 16 * 1024 * 1024;
+
+    /// The language frames of the one `tag`, or why they cannot be read,
+    /// with a budget of `limit` bytes.
+    fn frames_of_within(tag: Vec<u8>, limit: u64) -> Result<Vec<Vec<String>>, String> {
         let (bytes, places) = listed(&[tag]);
-        let mut budget = Budget::new(LANGUAGE_BYTES_BUDGET);
+        let mut budget = Budget::new(limit);
         match tlan_frames_in_tag(
             &mut BufReader::new(Cursor::new(bytes)),
             &places[0],
@@ -1358,9 +1471,10 @@ mod tests {
         )
     }
 
-    /// The work `first_of_each` does on the crafted tag's values.
+    /// The work `first_of_each` does on the crafted tag's values (read
+    /// with room for them: the real budget refuses the tag).
     fn merge_work(count: usize) -> u64 {
-        let frames = frames_of(crafted_tag(count)).expect("read");
+        let frames = frames_of_within(crafted_tag(count), ROOMY_BUDGET).expect("read");
         let values: Vec<Counted> = frames.into_iter().flatten().map(Counted).collect();
         assert_eq!(values.len(), count + 1);
         WORK.with(|work| work.set(0));
@@ -1391,8 +1505,16 @@ mod tests {
 
     #[test]
     fn the_crafted_tag_is_read_whole_and_in_order() {
+        // Since Codex's review of revision 11 the real budget refuses it -
+        // 100,001 values at 64 bytes each are over six megabytes - so it is
+        // read here with room for them, to show the reading itself.
+        let message = refusal(&[crafted_tag(100_000)]);
+        assert!(
+            message.contains("need more memory to read than any list of languages does"),
+            "{message}"
+        );
         let TlanFrames::Several(values) =
-            tlan_frames_in_tags(&[crafted_tag(100_000)]).expect("read")
+            tlan_frames_in_tags_within(&[crafted_tag(100_000)], ROOMY_BUDGET).expect("read")
         else {
             panic!("two frames");
         };
@@ -1521,6 +1643,10 @@ mod tests {
             other => panic!("expected a refusal, got {other:?}"),
         }
     }
+
+    /// What reading `split_tag`'s two frames takes from the budget: four
+    /// bytes each (an encoding byte and `eng` / `fra`), and one value each.
+    const TWO_SMALL_FRAMES: u64 = 2 * (FRAME_COST + 4) + 2 * VALUE_COST;
 
     fn split_tag(major: u8) -> Vec<u8> {
         tag(
@@ -1779,7 +1905,10 @@ mod tests {
                 file.read_total
             );
             assert!(file.largest_read <= SCAN_BLOCK, "{}", file.largest_read);
-            assert_eq!(budget.taken, 8, "only the two frames' contents are held");
+            assert_eq!(
+                budget.taken, TWO_SMALL_FRAMES,
+                "only the two frames' contents (and their fixed charges) are held"
+            );
         }
     }
 
@@ -1803,7 +1932,7 @@ mod tests {
         );
         assert_eq!(found.expect("read"), several(&["eng", "fra"]));
         assert!(file.largest_read <= SCAN_BLOCK, "{}", file.largest_read);
-        assert_eq!(budget.taken, 8);
+        assert_eq!(budget.taken, TWO_SMALL_FRAMES);
     }
 
     #[test]
@@ -1836,7 +1965,11 @@ mod tests {
             if language {
                 let message = found.expect_err("refused").to_string();
                 assert!(message.contains("has 6 separate ID3v2 tags"), "{message}");
-                assert_eq!(budget.taken, 4, "the one frame's contents");
+                assert_eq!(
+                    budget.taken,
+                    FRAME_COST + 4 + VALUE_COST,
+                    "the one frame's contents, and its fixed charges"
+                );
             } else {
                 assert_eq!(found.expect("read"), TlanFrames::AtMostOne);
                 assert_eq!(budget.taken, 0);
@@ -1883,13 +2016,15 @@ mod tests {
         );
         let message = refusal(&[big]);
         assert!(
-            message.contains("hold more than 1048576 bytes of text in all"),
+            message.contains(
+                "need more memory to read than any list of languages does - over 1048576 bytes"
+            ),
             "{message}"
         );
         assert!(message.contains("Nothing was written"), "{message}");
         // Exactly at the budget is read; one byte past it is not (the two
-        // frames below hold four bytes each: an encoding byte and `eng` /
-        // `fra`).
+        // frames below hold four bytes each - an encoding byte and `eng` /
+        // `fra` - and one value each: `TWO_SMALL_FRAMES`).
         let (bytes, places) = listed(&[split_tag(4)]);
         let read_with = |limit| {
             tlan_frames_in_file(
@@ -1898,8 +2033,11 @@ mod tests {
                 &mut Budget::new(limit),
             )
         };
-        assert_eq!(read_with(8).expect("read"), several(&["eng", "fra"]));
-        assert!(read_with(7).is_err());
+        assert_eq!(
+            read_with(TWO_SMALL_FRAMES).expect("read"),
+            several(&["eng", "fra"])
+        );
+        assert!(read_with(TWO_SMALL_FRAMES - 1).is_err());
     }
 
     #[test]
@@ -1910,5 +2048,169 @@ mod tests {
             TlanFrames::AtMostOne
         );
         assert_eq!(read(Vec::new(), FileType::Mpeg), TlanFrames::AtMostOne);
+    }
+
+    // What the budget is charged, and the caps on frames (Codex's review of
+    // revision 11, finding 2). Each test fails if its charge or cap is
+    // taken out: shown by planting each fault.
+
+    /// An MP3 file at `path` whose one ID3v2.3 tag holds `count` empty
+    /// `TLAN` frames - ten bytes of header each, nothing in them - written
+    /// frame by frame, so the test itself never holds the file.
+    fn write_empty_language_frames(path: &Path, count: u32) {
+        use std::io::Write;
+        let mut out = std::io::BufWriter::new(File::create(path).expect("create"));
+        out.write_all(b"ID3\x03\x00\x00").expect("write");
+        out.write_all(&to_synchsafe(count * 10)).expect("write");
+        for _ in 0..count {
+            out.write_all(b"TLAN\0\0\0\0\0\0").expect("write");
+        }
+        out.flush().expect("flush");
+    }
+
+    #[test]
+    fn a_million_empty_language_frames_are_refused_not_kept() {
+        // Each used to keep an empty list and be charged nothing: reading a
+        // file of a million took the program from 2 MB to 52 MB, and the
+        // file was let through. Now each is charged and none is kept, and
+        // the tag is refused at the 257th - read here from a real file of
+        // ten megabytes. (Its peak memory, this test run on its own under
+        // `/usr/bin/time -l`, is recorded with revision 12.)
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("empty-frames.mp3");
+        write_empty_language_frames(&path, 1_000_000);
+        let mut budget = Budget::new(LANGUAGE_BYTES_BUDGET);
+        let found = tlan_frames_in_file(
+            &mut BufReader::new(File::open(&path).expect("open")),
+            &TagPlaces::AtStart,
+            &mut budget,
+        );
+        let message = found.expect_err("refused").to_string();
+        assert!(
+            message.contains("holds more than 256 language frames"),
+            "{message}"
+        );
+        assert!(message.contains("Nothing was written"), "{message}");
+        assert_eq!(budget.frames, MAX_FRAMES_PER_TAG, "no frame past the cap");
+        assert_eq!(budget.taken, MAX_FRAMES_PER_TAG * FRAME_COST);
+        // And through the reader every save uses.
+        let message = match read_tlan_frames(&path, FileType::Mpeg) {
+            Err(MetadataError::WriteError(message)) => message,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(
+            message.contains("holds more than 256 language frames"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_empty_language_frame_is_passed_over_and_nothing_kept_for_it() {
+        // lofty passes over a frame with nothing in it - it is not a
+        // language frame to lofty - so one real frame and two empty ones
+        // need no merging, and two real ones with an empty one between
+        // them merge as two. Each empty one is still charged.
+        let empty = frame(4, b"TLAN", 0, &[]);
+        let one_real = tag(
+            4,
+            0,
+            &[
+                text_frame(4, b"TLAN", 0, b"eng"),
+                empty.clone(),
+                empty.clone(),
+            ],
+            0,
+        );
+        let (bytes, places) = listed(&[one_real]);
+        let mut budget = Budget::new(LANGUAGE_BYTES_BUDGET);
+        let found = tlan_frames_in_file(
+            &mut BufReader::new(Cursor::new(bytes)),
+            &TagPlaces::Listed(places),
+            &mut budget,
+        );
+        assert_eq!(found.expect("read"), TlanFrames::AtMostOne);
+        assert_eq!(budget.frames, 3, "the empty ones are counted");
+        assert_eq!(
+            budget.taken,
+            3 * FRAME_COST + 4 + VALUE_COST,
+            "every frame is charged; only the real one has text and a value"
+        );
+        let two_real = tag(
+            4,
+            0,
+            &[
+                text_frame(4, b"TLAN", 0, b"eng"),
+                empty,
+                text_frame(4, b"TLAN", 0, b"fra"),
+            ],
+            0,
+        );
+        assert_eq!(
+            tlan_frames_in_tags(&[two_real]).expect("read"),
+            several(&["eng", "fra"])
+        );
+    }
+
+    #[test]
+    fn countless_tiny_values_are_refused_before_they_are_kept() {
+        // One frame of half a million one-letter values, inside the 1 MiB
+        // of text, and a second frame: it used to be read whole - a string
+        // for every value, 26 MB at the peak. Now the values are counted,
+        // and charged, before one is kept.
+        let mut text = Vec::with_capacity(1_000_000);
+        for _ in 0..500_000 {
+            text.extend_from_slice(b"a\0");
+        }
+        let big = tag(
+            3,
+            0,
+            &[
+                text_frame(3, b"TLAN", 0, &text),
+                text_frame(3, b"TLAN", 0, b"eng"),
+            ],
+            0,
+        );
+        let message = refusal(&[big]);
+        assert!(
+            message.contains("need more memory to read than any list of languages does"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn more_language_frames_than_a_tag_or_a_file_may_hold_are_refused() {
+        // 256 small language frames in one tag are read; 257 are not.
+        let frames = |count: usize| -> Vec<Vec<u8>> {
+            (0..count)
+                .map(|_| text_frame(4, b"TLAN", 0, b"e"))
+                .collect()
+        };
+        let at_cap = usize::try_from(MAX_FRAMES_PER_TAG).expect("fits");
+        assert_eq!(
+            tlan_frames_in_tags(&[tag(4, 0, &frames(at_cap), 0)]).expect("read"),
+            several(&["e"])
+        );
+        let message = refusal(&[tag(4, 0, &frames(at_cap + 1), 0)]);
+        assert!(
+            message.contains("one of its tags holds more than 256 language frames"),
+            "{message}"
+        );
+        // Five tags of 250 each: within each tag's cap, past the file's
+        // (1,024) - refused at that point, before the file's other tags
+        // are read.
+        let tags: Vec<Vec<u8>> = (0..5).map(|_| tag(4, 0, &frames(250), 0)).collect();
+        let (bytes, places) = listed(&tags);
+        let mut budget = Budget::new(LANGUAGE_BYTES_BUDGET);
+        let found = tlan_frames_in_file(
+            &mut BufReader::new(Cursor::new(bytes)),
+            &TagPlaces::Listed(places),
+            &mut budget,
+        );
+        let message = found.expect_err("refused").to_string();
+        assert!(
+            message.contains("its tags hold more than 1024 language frames in all"),
+            "{message}"
+        );
+        assert_eq!(budget.frames, MAX_FRAMES_PER_FILE + 1);
     }
 }

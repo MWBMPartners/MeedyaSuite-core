@@ -4733,6 +4733,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn empty_language_frames_are_passed_over_as_lofty_passes_over_them() {
+        // Codex's review of revision 11, finding 2: a language frame with
+        // nothing in it is passed over when the frames are merged, because
+        // lofty passes over it. Checked on a real MP3 whose ID3v2.3 tag
+        // holds `eng`, an empty `TLAN`, `fra` and another empty one: lofty
+        // alone reads `fra`; reading gives both, and a title-only write
+        // keeps both, in one frame.
+        let frame = |text: &[u8]| {
+            let mut out = b"TLAN".to_vec();
+            let size = if text.is_empty() { 0 } else { text.len() + 1 };
+            out.extend_from_slice(&u32::try_from(size).expect("fits").to_be_bytes());
+            out.extend_from_slice(&[0, 0]);
+            if !text.is_empty() {
+                out.push(0); // Latin-1
+                out.extend_from_slice(text);
+            }
+            out
+        };
+        let mut body: Vec<u8> = [&b"eng"[..], b"", b"fra", b""]
+            .iter()
+            .flat_map(|text| frame(text))
+            .collect();
+        body.extend_from_slice(&[0u8; 16]);
+        let mut bytes = b"ID3".to_vec();
+        bytes.extend_from_slice(&[3, 0, 0, 0, 0, 0, u8::try_from(body.len()).expect("fits")]);
+        bytes.extend(body);
+        bytes.extend(minimal_untagged_mp3());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("empty-frames.mp3");
+        std::fs::write(&path, bytes).expect("write fixture");
+        assert_eq!(languages_of(&path, TagType::Id3v2), ["fra"], "lofty alone");
+        assert_eq!(
+            read_tags(&path).expect("read")[&CommonTag::Language],
+            ["eng", "fra"]
+        );
+        write_tags(&path, &[(CommonTag::Title, "Changed Title".into())]).expect("title write");
+        let after = read_tags(&path).expect("read");
+        assert_eq!(after[&CommonTag::Title], ["Changed Title"]);
+        assert_eq!(after[&CommonTag::Language], ["eng", "fra"]);
+        assert_eq!(
+            occurrences(&std::fs::read(&path).expect("read"), b"TLAN"),
+            1
+        );
+    }
+
     /// An MP3 whose ID3v2 tag (version `major`, 3 or 4) holds one Latin-1
     /// language frame per value in `values`, each named `TLA` followed by a
     /// zero byte — ID3v2.2's name in a four-byte frame header, which lofty
