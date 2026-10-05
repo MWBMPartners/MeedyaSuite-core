@@ -4604,8 +4604,8 @@ mod tests {
                 };
                 assert!(
                     message.contains(
-                        "was moved, or given another name, while the save was being checked, \
-                         so it was not deleted"
+                        "so it was not deleted: it was moved, or given another name, while the \
+                         save was being checked"
                     ),
                     "{name}, {put_another_file_there}: {message}"
                 );

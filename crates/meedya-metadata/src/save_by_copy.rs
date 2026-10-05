@@ -144,6 +144,15 @@
 //   unwinds — tries once more to delete it, silently, as a last resort.)
 // - Be cheap for a large file: every save copies the whole file, and lofty
 //   reads the whole file into memory to save it.
+// - Save on a disk that does not keep a file's number steady. On macOS a
+//   FAT or exFAT disk (a USB stick, a memory card) gives an empty file a
+//   stand-in number and changes it once data is written into it (measured:
+//   18446744073709551609, then 4), so step 4 sees the copy - numbered when
+//   it was made, empty - as replaced, and refuses every M4A save there; and
+//   since its name no longer seems to name it, the copy is not deleted but
+//   left beside the file, and the error says so. (Found in revision 12;
+//   since revision 10 this happened on such disks with no word about the
+//   copy. Not fixed yet.)
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom};
@@ -563,7 +572,10 @@ impl TempCopy {
                 return Err(swapped(
                     "the temporary copy",
                     &self.path,
-                    "was replaced by another file".to_string(),
+                    "was replaced by another file (or, on a disk that does not keep a file's \
+                     number steady - a FAT or exFAT drive on macOS - its number changed as it was \
+                     written, which refuses every M4A save on such a disk for now)"
+                        .to_string(),
                 ))
             }
             Err(e) => {
@@ -697,9 +709,11 @@ fn with_copy_not_deleted(
             path.display()
         ),
         NotDeleted::Moved => format!(
-            "was moved, or given another name, while the save was being checked, so it was not \
-             deleted: it may still hold the whole file's contents somewhere this program cannot \
-             see (it was made as {}, beside the file; anything now at that name was left alone)",
+            "could no longer be shown to be the file this save made, so it was not deleted: it was \
+             moved, or given another name, while the save was being checked - or, on a disk that \
+             does not keep a file's number steady (a FAT or exFAT drive on macOS), its number \
+             changed as it was written. It may still hold the whole file's contents: it was made \
+             as {}, beside the file (look there first); anything now at that name was left alone",
             path.display()
         ),
     };
