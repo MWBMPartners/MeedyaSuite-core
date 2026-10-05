@@ -45,11 +45,11 @@ Apps consume this via direct Cargo git dependency (Rust apps) or C FFI / WASM bi
 | [meedya-db](../crates/meedya-db/) | MeedyaDB API client + `Track`/`Album`/`Artist` models + `DbExporter` trait. | **Implemented** | 4 |
 | [meedya-core](../crates/meedya-core/) | Facade re-exporting all implemented crates behind feature flags. | **Implemented** | — |
 
-**Total: 931 tests with default features, 1078 with `--all-features`** (the CI configuration) on `feature/bcp47-language-policy`. All passing, 0 failing.
+**Total: 945 tests with default features, 1092 with `--all-features`** (the CI configuration) on `feature/bcp47-language-policy`. All passing, 0 failing.
 
-> **Measured, not carried forward.** From `cargo test --workspace [--all-features] --locked` run on 2026-10-05, after the fixes for Codex's catch-up review of revisions 8–10 of policy MWBM-MEDIA-LANG (revision 11: `meedya-metadata` +18 tests, 255 measured on its own with and without `--all-features`; no other crate changed). Before that: 913 / 1060 (after the stand-in review of revision 9, 2026-10-04); 877 / 1024 (after the stand-in review of revision 8, 2026-09-28). Earlier measurements on 2026-09-28: 853 / 1000 (after Codex's review of revisions 5–7), 837 / 984 (after the stand-in review of revision 6), 812 / 959 (after the stand-in review of revision 5), 796 / 943 (after Codex's review r7), 780 / 927 (after policy revision 4), 736 / 883 (after bringing `meedya-lyrics` and `meedya-metadata` into line with the policy), 716 / 863 (after adding `meedya-lang`); before `meedya-lang`, 644 / 791. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
+> **Measured, not carried forward.** From `cargo test --workspace [--all-features] --locked` run on 2026-10-05, after the fixes for Codex's review of revision 11 of policy MWBM-MEDIA-LANG (revision 12: `meedya-metadata` +14 tests, 269 measured on its own with and without `--all-features`; no other crate changed). Before that: 931 / 1078 (after Codex's catch-up review of revisions 8–10, 2026-10-05); 913 / 1060 (after the stand-in review of revision 9, 2026-10-04); 877 / 1024 (after the stand-in review of revision 8, 2026-09-28). Earlier measurements on 2026-09-28: 853 / 1000 (after Codex's review of revisions 5–7), 837 / 984 (after the stand-in review of revision 6), 812 / 959 (after the stand-in review of revision 5), 796 / 943 (after Codex's review r7), 780 / 927 (after policy revision 4), 736 / 883 (after bringing `meedya-lyrics` and `meedya-metadata` into line with the policy), 716 / 863 (after adding `meedya-lang`); before `meedya-lang`, 644 / 791. Earlier revisions accumulated a narrative of incremental deltas (466 → 511 → 533 → 546 → 664) that had drifted from reality. Doc-count drift is this repo's chronic failure mode: **only ever write a number you just measured.** CI guarding is tracked in issue #71.
 
-Per-crate, `--all-features`: `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 17 · `meedya-lang` 120 · `meedya-library-import` 30 · `meedya-lyrics` 157 · `meedya-metadata` 255 · `meedya-providers` 201 · `meedya-tags-extended` 180 (sum 1078). `meedya-providers` measures 59 with default features (provider impls are feature-gated), `meedya-fingerprint` 12; with default features the per-crate figures sum to 931.
+Per-crate, `--all-features`: `meedya-audio-analysis` 67 · `meedya-codecs` 47 · `meedya-core` 0 · `meedya-db` 4 · `meedya-fingerprint` 17 · `meedya-lang` 120 · `meedya-library-import` 30 · `meedya-lyrics` 157 · `meedya-metadata` 269 · `meedya-providers` 201 · `meedya-tags-extended` 180 (sum 1092). `meedya-providers` measures 59 with default features (provider impls are feature-gated), `meedya-fingerprint` 12; with default features the per-crate figures sum to 945.
 
 > **Public API specification for partner apps**: see [`docs/API.md`](../docs/API.md). Keep that file in sync with public API changes — see the standing task in [CLAUDE.md](CLAUDE.md#standing-tasks).
 
@@ -165,8 +165,8 @@ Facade with feature flags (`metadata` / `codecs` / `fingerprint` / `lyrics` / `p
 
 ```bash
 cargo build --workspace          # all 11 crates
-cargo test  --workspace          # 931 tests
-cargo test  --workspace --all-features   # 1078 tests (the CI configuration)
+cargo test  --workspace          # 945 tests
+cargo test  --workspace --all-features   # 1092 tests (the CI configuration)
 cargo test  -p meedya-metadata   # single crate
 cargo doc   --workspace --no-deps --open  # exhaustive auto-generated reference
 ```

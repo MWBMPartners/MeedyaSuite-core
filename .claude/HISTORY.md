@@ -839,11 +839,57 @@ and every fix proved by a planted fault. The five protected paths were not touch
   100 MiB MP3 tags, took the program to 410 MiB (measured with `/usr/bin/time`). Now tags are
   found by headers, looked at a block at a time, and only language frames are read, within a
   1 MiB budget for the file — the same files under 8 MiB. lofty's own first read, and its save,
-  are written down as beyond this guard.
+  are written down as beyond this guard. (Corrected in revision 12: only the text was charged, so
+  "at most 1 MiB held" was not true — a million empty frames took 52 MB.)
 - **Windows named streams** (finding 6): a save by copy drops a file's NTFS named streams; now
-  in the list of what a save by copy loses. An issue is drafted (not posted) for detecting them
-  and refusing; not tried on Windows.
+  in the list of what a save by copy loses. Detecting them and refusing is #105 (filed); not
+  tried on Windows.
 - **Docs**: the exceptions to "unchanged" stated (top-level `free`/`skip` may change; atoms of
   different names may be reordered); counts, `docs/API.md`, the notes and the handoff updated.
 
 931 / 1078 tests (`meedya-metadata` 237 → 255). Not yet reviewed.
+
+## 2026-10-05 — Language policy, revision 12: Codex's review of revision 11
+
+On `feature/bcp47-language-policy` (issue #99). Codex reviewed revision 11 (`cd3ca07..0e43b14`):
+not clean — 2 high, 1 medium, 3 low. Its sandbox could not run anything, so each finding was
+reproduced here first, with a test or a probe, and each fix proved by a planted fault. The five
+protected paths were not touched.
+
+- **The copy lets no access control list in, and keeps the file's own — or refuses** (finding 1).
+  Reproduced on macOS: a private recording in a folder whose list passes "everyone may read" on
+  to new files was saved, and the copy — then the saved file — carried that entry; a file kept
+  0640 in a group of its own came back in its folder's group. New private module `access_rules`:
+  on Linux the copy's inherited list is taken off before a byte is written and the file's own put
+  on before the rename, through the open handles (`rustix`, already in the lockfile); on macOS
+  lists can only be read here, by name (new macOS-only dependency `exacl`, a safe wrapper — the
+  workspace keeps `unsafe` out), so a folder that passes entries on, a file with a list of its
+  own, or a copy that got one is refused; on any other Unix system every M4A save is refused. The
+  copy is given the file's group before its list and bits (refused if it cannot be and the file
+  lets its group in), and a set-user-ID or set-group-ID file is refused. Tried and rejected:
+  writing lists by name on macOS; going through `/dev/fd/N` (a write reaches the open file, a
+  read shows nothing); calling `acl_*` directly. exacl's `uuid` is held at 1.20.0 for Rust 1.82.
+- **Empty and many-valued ID3 language frames are charged** (finding 2). Only the text was
+  charged: a million empty `TLAN` frames took the program from 2 MB to 52 MB and were let
+  through; one frame of half a million one-letter values, 26 MB. Now 64 bytes for every language
+  frame and every value, at most 256 language frames in a tag and 1,024 in a file, and an empty
+  frame passed over as lofty passes over it: both files refused, at 2.3 MB and 4.3 MB.
+- **A copy moved away mid-save is reported** (finding 3). A name that was gone, or named another
+  file, counted as the copy deleted; now only a count of names of 0 does (Unix), and otherwise
+  the error says what became of it.
+- **The count checker fails when a document is missing** (finding 4): `DOC_COUNTS_ROOT=/dev/null`
+  passed. Its self-test also had a variable clash — it tested one missing document four times.
+- **The privacy tests cannot pass with the fix removed** (finding 5): they run in a child process
+  under an explicit 022 mask and check the copy's list as well as its bits.
+- **The walk test counts the real work** (finding 6): every atom-name comparison through a
+  counted `AtomName` type, every byte through a counting reader; the old search put back (354 s,
+  and green before) and the old buffering now fail within a second. Its ratio check on name
+  comparisons was dropped afterwards: the hash maps' random seed moves that count a little.
+- **Found, not fixed:** on macOS an M4A file on a FAT or exFAT disk cannot be saved — such a disk
+  changes a file's number once data is written into it, so revision 10's identity check refuses
+  every save there and leaves the copy (silently, until this revision). The messages and docs now
+  say so; an issue is drafted for the lead.
+- Linux was run, not only compiled: the crate's tests, and the Linux planted faults, in a
+  throwaway container as an ordinary account.
+
+945 / 1092 tests (`meedya-metadata` 255 → 269). Not yet reviewed.

@@ -233,9 +233,31 @@ These refusals are deliberate. Do not "fix" them by letting the save go ahead.
   jump). Every error path deletes the copy (`TempCopy::discard`) and names it when it cannot.
   Two test-only aids: `WHILE_THE_COPY_EXISTS` (look at the copy mid-save) and
   `permissions_are_ignored_here` (a permission test may only skip when this is shown).
-- **ID3 language frames, revision 11: at most 1 MiB held.** Tags are found by their headers,
-  looked at a block at a time (a 3-byte carry, so a name across a block join counts once), and
-  only language frames' contents are read, within a 1 MiB budget for the whole file. lofty's own
+- **M4A, revision 12 (Codex's review of revision 11).** New private module `access_rules`: the
+  copy lets no access control list in. Linux/Android: its folder's list is taken off before a
+  byte is written and the file's own put on before the rename, through the handles (`rustix`).
+  macOS: lists are only READ, by name, each read bracketed by the identity check (`exacl`,
+  macOS-only — the workspace keeps `unsafe` out; writing by name, `/dev/fd/N` and raw `acl_*`
+  were rejected); a folder that passes entries on to new files, a file with a list of its own,
+  or a copy that got one, is refused. Any other Unix system: every M4A save is refused. The
+  copy gets the file's group, then its list, then its bits (that order; refused if the group
+  cannot be given and the file lets its group in); set-user-ID/set-group-ID files are refused.
+  A copy counts as deleted only when its count of names is 0 (Unix); a moved copy is reported.
+  **Known limit:** on macOS a FAT/exFAT disk changes a file's number once data is written, so
+  the identity check (revision 10) refuses every M4A save there and leaves the copy — now said
+  in the error; the likely fix (compare with the handle's CURRENT number) awaits the lead.
+  Test aids: `rerun_with_the_usual_mask` (a child process under umask 022), `AtomName` +
+  `NAME_WORK` (counted name comparisons), a counting reader. CI runs on Linux only, so every
+  test must exist on macOS and Linux alike (branch inside, print a reason) or the documented
+  counts differ.
+- **ID3 language frames, revisions 11–12: a 1 MiB budget, charged for more than text.** Tags are
+  found by their headers, looked at a block at a time (a 3-byte carry, so a name across a block
+  join counts once), and only language frames' contents are read, within a 1 MiB budget for the
+  whole file — charged each frame's bytes AND a fixed 64 bytes for every language frame (empty
+  ones too) and every value; at most 256 language frames in a tag, 1,024 in a file. Until revision
+  12 only text was charged ("at most 1 MiB held" was false: a million empty frames, 52 MB). An
+  empty frame is passed over, as lofty passes over it. The budget applies only when there is
+  something to merge — one large `TLAN` is never read here. lofty's own
   read comes FIRST (it holds each frame whole, up to its 16 MiB allocation limit) and its save
   of an MP3/WAV/AIFF reads the whole file — this guard cannot bound either.
 - **The documented-test-count check reads labelled totals only** (revision 11): "Total: N

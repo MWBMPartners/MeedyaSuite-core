@@ -40,7 +40,11 @@
   is written — and since revision 11 also a `meta` too short for its version, bytes left over
   at the end of a tag list, and containers nested where no M4A file has them (lofty's own save
   overflows its stack on deep nesting, so that refusal must come before the save). Reading
-  ID3 language frames holds at most 1 MiB (revision 11). That refuses most iTunes / Apple Music files (and any whose disc number mutagen
+  ID3 language frames is held to a 1 MiB budget that also charges a fixed amount for every
+  frame and value, with at most 256 language frames in a tag (revisions 11–12). Since revision 12
+  the copy lets no access control list in and keeps the file's own (Linux) or refuses (macOS;
+  any other Unix system refuses every M4A save), keeps the file's group or refuses, and refuses
+  set-user-ID files; on macOS an M4A file on a FAT or exFAT disk cannot be saved yet. That refuses most iTunes / Apple Music files (and any whose disc number mutagen
   wrote) today; it is the interim guard, not a bug. The two public language steps
   must be taken in order —
   `recover_languages_after_reading` right after reading, `gather_languages_before_saving` right
