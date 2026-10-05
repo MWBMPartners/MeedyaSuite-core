@@ -74,8 +74,11 @@ be run for it from the MeedyaDL session.
    wording points and older faults become GitHub issues, not new rounds.
 3. **Still open:** #102 (M4A saves change atoms they were not asked to — the real fix), #103
    (`write_registry_tags` on M4A), #104 (the PHP policy code and a very long language value),
-   #105 (Windows named streams), #106 (the copy checker's line-ending advice); and the FAT /
-   exFAT finding above, once filed.
+   #105 (Windows named streams), #106 (the copy checker's line-ending advice), #107 (an M4A
+   file on a FAT or exFAT disk on macOS can never be saved), #108 (two doc links to private items
+   fail `cargo doc` with warnings as errors; older than this work).
+4. **Waiting on the maintainer: #109**, whether to keep the macOS-only `exacl` crate. Without it,
+   every M4A save on macOS has to be refused.
 
 
 ### 0.1 In one paragraph
