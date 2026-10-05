@@ -88,7 +88,9 @@ use std::collections::HashMap;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 
 use crate::error::MetadataError;
-use crate::mp4_save_check::{boxes_in_file, first_moov, meta_version_len, unreadable, BoxAt};
+use crate::mp4_save_check::{
+    boxes_in_file, first_moov, meta_version_len, unreadable, AtomName, BoxAt,
+};
 
 /// The handler atom lofty writes into a `meta` box it makes itself (lofty
 /// 0.22.4, `mp4/ilst/write.rs`, `create_meta`): 33 bytes — size, `hdlr`,
@@ -132,7 +134,7 @@ pub(crate) fn refuse_what_a_save_would_damage(
     };
     if let Some(atom) = top
         .iter()
-        .find(|atom| matches!(&atom.name, b"moof" | b"mfra" | b"sidx"))
+        .find(|atom| matches!(&*atom.name, b"moof" | b"mfra" | b"sidx"))
     {
         return Err(fragmented(&atom.name));
     }
@@ -371,12 +373,12 @@ fn whose(container: Option<&Place<'_>>) -> String {
 /// them - each adding one to `steps` per atom, so the work grows in step
 /// with the number of atoms (see [`Place`] for what it replaced).
 fn numbers(atoms: &[BoxAt], steps: &mut u64) -> Vec<Option<usize>> {
-    let mut how_many: HashMap<[u8; 4], usize> = HashMap::new();
+    let mut how_many: HashMap<AtomName, usize> = HashMap::new();
     for atom in atoms {
         *steps += 1;
         *how_many.entry(atom.name).or_default() += 1;
     }
-    let mut so_far: HashMap<[u8; 4], usize> = HashMap::new();
+    let mut so_far: HashMap<AtomName, usize> = HashMap::new();
     atoms
         .iter()
         .map(|atom| {
@@ -559,7 +561,7 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
         // A fragmented file: never passed (see the top of this file).
         if let Some(piece) = top_a
             .iter()
-            .find(|atom| matches!(&atom.name, b"moof" | b"mfra" | b"sidx"))
+            .find(|atom| matches!(&*atom.name, b"moof" | b"mfra" | b"sidx"))
         {
             self.problems.push(format!(
                 "the file is fragmented (it has a `{}` atom), and where each piece says its \
@@ -597,10 +599,10 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
             self.steps += 1;
             let place = Place {
                 parent: None,
-                name: x.name,
+                name: *x.name,
                 number,
             };
-            match &x.name {
+            match &*x.name {
                 b"mdat" => {}
                 b"moov" if first_moov => {
                     first_moov = false;
@@ -644,7 +646,7 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
             self.made_udta(place, &made)?;
         }
         refuse_nesting(place, &in_a)?;
-        self.pairs(place, &in_a, &in_b, |walk, place, x, y| match &x.name {
+        self.pairs(place, &in_a, &in_b, |walk, place, x, y| match &*x.name {
             b"udta" => walk.udta(place, x, y),
             b"trak" => walk.down_to_offsets(Level::Trak, place, x, y),
             _ => walk.same_or_note(place, x, y),
@@ -677,7 +679,7 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
             self.steps += 1;
             let place = Place {
                 parent: Some(container),
-                name: x.name,
+                name: *x.name,
                 number,
             };
             each(self, &place, x, y)?;
@@ -724,7 +726,7 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
         let (in_a, in_b) = self.parts(Some(place), (x.body_start, x.end), (y.body_start, y.end))?;
         refuse_nesting(place, &in_a)?;
         self.pairs(place, &in_a, &in_b, |walk, place, x, y| {
-            match (level, &x.name) {
+            match (level, &*x.name) {
                 (Level::Trak, b"mdia") => walk.down_to_offsets(Level::Mdia, place, x, y),
                 (Level::Mdia, b"minf") => walk.down_to_offsets(Level::Minf, place, x, y),
                 (Level::Minf, b"stbl") => walk.down_to_offsets(Level::Stbl, place, x, y),
@@ -858,7 +860,7 @@ impl<A: Read + Seek, B: Read + Seek> Walk<A, B> {
             };
             self.made_meta(&meta, &made)?;
         }
-        self.pairs(place, &in_a, &in_b, |walk, place, x, y| match &x.name {
+        self.pairs(place, &in_a, &in_b, |walk, place, x, y| match &*x.name {
             b"meta" => walk.meta(place, x, y),
             _ => walk.same_or_note(place, x, y),
         })
@@ -987,6 +989,7 @@ fn entry_in(block: &[u8], i: usize, width: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mp4_save_check::NAME_WORK;
     use std::io::Cursor;
 
     /// One atom: size, name, contents.
@@ -1420,19 +1423,67 @@ mod tests {
         [atom(b"ftyp", b"M4A \0\0\0\0"), atom(b"moov", &moov)].concat()
     }
 
-    /// The steps the whole-file walk takes on `side_by_side(count)`
-    /// compared with itself, which must find nothing.
-    fn walk_steps(count: usize) -> u64 {
+    /// A reader that counts the bytes it hands out: what the walk really
+    /// reads from a file, however it reads it (Codex's review of revision
+    /// 11, finding 6: a buffer put back between the walk and the file, which
+    /// threw away 64 KiB at every jump, would not have changed the old
+    /// count).
+    struct CountingReader<R> {
+        inner: R,
+        read: u64,
+    }
+
+    impl<R: Read> Read for CountingReader<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.read += n as u64;
+            Ok(n)
+        }
+    }
+
+    impl<R: Seek> Seek for CountingReader<R> {
+        fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(to)
+        }
+    }
+
+    /// What the whole-file walk did on `side_by_side(count)` compared with
+    /// itself (which must find nothing), counted three ways.
+    #[derive(Debug)]
+    struct Work {
+        /// The steps the walk adds up itself.
+        steps: u64,
+        /// Atom names compared or hashed, counted by `AtomName` itself.
+        names: u64,
+        /// Bytes read from the two files, counted by the files' readers.
+        bytes: u64,
+        /// How long one of the two files is.
+        file_len: u64,
+    }
+
+    fn walk_work(count: usize) -> Work {
         let file = side_by_side(count);
+        let file_len = file.len() as u64;
+        let mut a = CountingReader {
+            inner: Cursor::new(file.clone()),
+            read: 0,
+        };
+        let mut b = CountingReader {
+            inner: Cursor::new(file),
+            read: 0,
+        };
         let mut steps = 0;
-        let found = differences_outside_the_tags_counted(
-            &mut Cursor::new(file.clone()),
-            &mut Cursor::new(file),
-            &mut steps,
-        )
-        .expect("readable");
+        NAME_WORK.with(|work| work.set(0));
+        let found =
+            differences_outside_the_tags_counted(&mut a, &mut b, &mut steps).expect("readable");
+        let names = NAME_WORK.with(std::cell::Cell::get);
         assert_eq!(found, Vec::<String>::new());
-        steps
+        Work {
+            steps,
+            names,
+            bytes: a.read + b.read,
+            file_len,
+        }
     }
 
     #[test]
@@ -1442,33 +1493,59 @@ mod tests {
         // billion name comparisons, because each atom's place was worked
         // out by searching all the atoms beside it (measured before the
         // fix, in a debug build: 12,500 of them took 7 seconds, 25,000 took
-        // 31 and 50,000 took 109). Counted, never timed: a few steps per
-        // atom, so four times the atoms take about four times the steps,
-        // not sixteen. Each count is checked as soon as it is made, so a
-        // walk that has gone back to searching fails on the smaller file
-        // without waiting for the larger. (The time is printed only for
-        // interest.)
+        // 31 and 50,000 took 109). Counted, never timed.
+        //
+        // Codex's review of revision 11, finding 6: this test used to count
+        // only the steps the walk adds up itself, so it still passed with
+        // that search put back (shown: 354 seconds, and green) and with a
+        // 64 KiB buffer put back between the walk and the files, which
+        // re-read the buffer at every jump (green too). Now it also counts
+        // the real work where it happens - every comparison or hash of two
+        // atom names, by `AtomName` itself, and every byte read, by the
+        // files' own readers - and both go red with either put back.
+        //
+        // Each size is checked as soon as it is measured, smallest first,
+        // so a walk that has gone back to searching fails in a moment, on
+        // 2,500 atoms, rather than after minutes. (The time of the largest
+        // is printed only for interest.)
         let per_atom = 12;
-        let quarter = walk_steps(25_000);
-        assert!(
-            quarter <= per_atom * 25_000,
-            "{quarter} steps for 25,000 atoms: more than {per_atom} an atom"
-        );
-        let started = std::time::Instant::now();
-        let full = walk_steps(100_000);
-        eprintln!(
-            "the whole-file walk over 100,000 atoms side by side in moov: {full} steps, {:?}",
-            started.elapsed()
-        );
-        assert!(
-            full <= per_atom * 100_000,
-            "{full} steps for 100,000 atoms: more than {per_atom} an atom"
-        );
-        let ratio = full as f64 / quarter as f64;
-        assert!(
-            (3.5..4.5).contains(&ratio),
-            "{quarter} steps for 25,000 atoms, {full} for 100,000: ratio {ratio}"
-        );
+        let mut measured = Vec::new();
+        for count in [2_500u64, 25_000, 100_000] {
+            let started = std::time::Instant::now();
+            let work = walk_work(usize::try_from(count).expect("fits"));
+            eprintln!(
+                "the whole-file walk over {count} atoms side by side in moov: {work:?}, {:?}",
+                started.elapsed()
+            );
+            assert!(
+                work.steps <= per_atom * count,
+                "{work:?} for {count} atoms: more than {per_atom} steps an atom"
+            );
+            assert!(
+                work.names <= per_atom * count,
+                "{work:?} for {count} atoms: more than {per_atom} name comparisons an atom"
+            );
+            // Each of the two files read once for its atoms' headers and
+            // once for their bytes: four times one file's length in all.
+            assert!(
+                work.bytes <= 4 * work.file_len,
+                "{work:?} for {count} atoms: the two files read more than twice each"
+            );
+            measured.push(work);
+        }
+        // Four times the atoms take about four times the work, not sixteen.
+        let (quarter, full) = (&measured[1], &measured[2]);
+        for (what, small, large) in [
+            ("steps", quarter.steps, full.steps),
+            ("name comparisons", quarter.names, full.names),
+            ("bytes read", quarter.bytes, full.bytes),
+        ] {
+            let ratio = large as f64 / small as f64;
+            assert!(
+                (3.5..4.5).contains(&ratio),
+                "{small} {what} for 25,000 atoms, {large} for 100,000: ratio {ratio}"
+            );
+        }
         // And when they DO differ, every one is named, numbered: the words
         // are made only then.
         let mut changed = side_by_side(3);

@@ -264,9 +264,69 @@ pub(crate) fn first_moov(
 #[derive(Clone, Debug)]
 pub(crate) struct BoxAt {
     pub(crate) start: u64,
-    pub(crate) name: [u8; 4],
+    pub(crate) name: AtomName,
     pub(crate) body_start: u64,
     pub(crate) end: u64,
+}
+
+/// An atom's four-letter name (`moov`, `trak`, …), as read from the file.
+///
+/// It is its own type, not four bytes, for one reason: every comparison of
+/// two names, or of a name with a fixed one, and every hash of a name, goes
+/// through the methods below - so a test can count that work exactly,
+/// however the code doing it is written. (Codex's review of revision 11,
+/// finding 6: the test of the whole-file comparison counted only steps the
+/// code added up by hand, so putting back the old search - every name
+/// beside an atom compared to find its number, `==` on four bytes - would
+/// not have changed the count.) It reads as its four bytes everywhere else
+/// (`Deref`), so the functions that take a name need no change. In a normal
+/// build the counting is not there at all.
+#[derive(Clone, Copy, Debug, Eq)]
+pub(crate) struct AtomName(pub(crate) [u8; 4]);
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: the number of atom-name comparisons and hashes made on
+    /// this thread (see [`AtomName`]). Per thread, so tests running side
+    /// by side never see each other's.
+    pub(crate) static NAME_WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+impl AtomName {
+    /// Counts one comparison or hash (tests only).
+    fn counted() {
+        #[cfg(test)]
+        NAME_WORK.with(|work| work.set(work.get() + 1));
+    }
+}
+
+impl PartialEq for AtomName {
+    fn eq(&self, other: &Self) -> bool {
+        Self::counted();
+        self.0 == other.0
+    }
+}
+
+impl PartialEq<[u8; 4]> for AtomName {
+    fn eq(&self, other: &[u8; 4]) -> bool {
+        Self::counted();
+        self.0 == *other
+    }
+}
+
+impl std::hash::Hash for AtomName {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        Self::counted();
+        self.0.hash(state);
+    }
+}
+
+impl std::ops::Deref for AtomName {
+    type Target = [u8; 4];
+
+    fn deref(&self) -> &[u8; 4] {
+        &self.0
+    }
 }
 
 /// Every atom between `start` and `end` of the file, reading only their
@@ -323,7 +383,7 @@ fn boxes_in_file_from(
             })?;
         out.push(BoxAt {
             start: pos,
-            name,
+            name: AtomName(name),
             body_start: pos + header_len,
             end: atom_end,
         });
