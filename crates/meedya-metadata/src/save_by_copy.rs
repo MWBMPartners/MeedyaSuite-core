@@ -95,15 +95,26 @@
 //   The permission bits (read, write, run) ARE copied.
 // - Promise the copy is always deleted. On every refusal and error it is
 //   deleted, explicitly, before the error is returned (`TempCopy::discard`)
-//   — and when that fails (its folder made read-only since the copy was
-//   made, say), the error says so and names it, so whoever called can
-//   delete it. (Until Codex's catch-up review of revisions 8-10, finding 7,
-//   a failed deletion was ignored without a word, and this comment said
-//   the copy was deleted on every refusal and error.) A program stopped by
+//   — by its name, and only while that name still names it: a file put at
+//   its name meanwhile is someone else's and is left alone. It counts as
+//   deleted only when nothing names it any more: on Unix its open handle
+//   says so (the file's count of names is 0); elsewhere, only when this
+//   program deleted it by its own name. When that cannot be confirmed, the
+//   error says so: deleting it failed (its folder made read-only since the
+//   copy was made, say) - and the error names it, so whoever called can
+//   delete it; or the copy was moved, or given another name, while the save
+//   was being checked - it is left wherever it went, which this program
+//   does not know, and the error says that. (Until Codex's catch-up review
+//   of revisions 8-10, finding 7, a failed deletion was ignored without a
+//   word, and this comment said the copy was deleted on every refusal and
+//   error; until Codex's review of revision 11, finding 3, a copy moved away
+//   counted as deleted, and the refusal said nothing about it.) The check
+//   of the name and the deletion are two steps on a name, so a file swapped
+//   in at that very instant would be deleted instead. A program stopped by
 //   force, or one that crashes mid-save, cannot delete it at all: it stays,
-//   hidden, beside the file. In every one of these cases the copy is named
-//   `.meedya-tag-save-<process id>-<number>.tmp` and can be deleted by
-//   hand, and the original is untouched. (Dropping a copy that was neither
+//   hidden, beside the file. Wherever it stays beside the file, the copy is
+//   named `.meedya-tag-save-<process id>-<number>.tmp` and can be deleted
+//   by hand, and the original is untouched. (Dropping a copy that was neither
 //   put in place nor discarded — a save interrupted by a crash that still
 //   unwinds — tries once more to delete it, silently, as a last resort.)
 // - Be cheap for a large file: every save copies the whole file, and lofty
@@ -328,7 +339,7 @@ impl TempCopy {
                     // checked before deleting; it was made by the call
                     // above an instant ago, so it is deleted by name.
                     drop(file);
-                    let removed = std::fs::remove_file(&candidate);
+                    let removed = std::fs::remove_file(&candidate).map_err(NotDeleted::Failed);
                     return Err(with_copy_not_deleted(e.into(), &candidate, removed));
                 }
             };
@@ -455,49 +466,110 @@ impl TempCopy {
 
     /// Deletes this copy, because the save it was made for will not go
     /// ahead, and returns `error` — the reason — for the caller to pass on.
-    /// When the copy cannot be deleted (its folder no longer writable, say),
-    /// the error instead says so as well and names the copy, so it can be
-    /// deleted by hand (see the top of this file). A copy whose name now
-    /// names some other file is not deleted — that file is left alone
-    /// (step 4) — and needs no word.
+    /// When the copy cannot be confirmed deleted, the error says so as well
+    /// ([`with_copy_not_deleted`]): when deleting it failed (its folder no
+    /// longer writable, say), naming it so it can be deleted by hand; when
+    /// it was moved or given another name while the save was being checked,
+    /// saying so - it was left wherever it went, and anything now at its
+    /// name was left alone (see the top of this file).
     pub(crate) fn discard(mut self, error: MetadataError) -> MetadataError {
         self.done = true;
         let removed = self.remove();
         with_copy_not_deleted(error, &self.path, removed)
     }
 
-    /// Deletes the copy, if its name still names it (if the name is gone,
-    /// so is the copy; if it names another file, that is left alone).
-    fn remove(&self) -> io::Result<()> {
-        match identity_of_name(&self.path) {
-            Ok(identity) if identity == self.identity => std::fs::remove_file(&self.path),
-            Ok(_) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
+    /// Deletes the copy by its name - only if the name still names it: a
+    /// file now at that name is someone else's and is left alone - and then
+    /// confirms that no name for the copy is left anywhere.
+    ///
+    /// Until Codex's review of revision 11, finding 3, a name that was gone,
+    /// or that named another file, counted as the copy being deleted. But a
+    /// copy moved away while the save was being checked is not deleted: it
+    /// still holds the whole file's contents, under a name this program does
+    /// not know - and nothing said so.
+    ///
+    /// What it cannot do: rule out the instant between the check of the
+    /// name and the deletion. A deletion works on a name, not on a handle,
+    /// so a file swapped in at that instant would be deleted instead.
+    fn remove(&self) -> Result<(), NotDeleted> {
+        let deleted_by_its_name = match identity_of_name(&self.path) {
+            Ok(identity) if identity == self.identity => {
+                std::fs::remove_file(&self.path).map_err(NotDeleted::Failed)?;
+                true
+            }
+            Ok(_) => false,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+            Err(e) => return Err(NotDeleted::Failed(e)),
+        };
+        if self.no_name_left(deleted_by_its_name)? {
+            Ok(())
+        } else {
+            Err(NotDeleted::Moved)
         }
+    }
+
+    /// Whether no name for the copy is left anywhere. On Unix its open
+    /// handle says so - the file's count of names ("links") is 0 - whoever
+    /// took the last name away (so a copy deleted by someone else counts as
+    /// deleted, and one given a second name does not).
+    #[cfg(unix)]
+    fn no_name_left(&self, _deleted_by_its_name: bool) -> Result<bool, NotDeleted> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = self.file.metadata().map_err(NotDeleted::Failed)?;
+        Ok(metadata.nlink() == 0)
+    }
+
+    /// Elsewhere only the name can say: the copy counts as deleted only
+    /// when this program deleted it by that name. (On Windows a deleted
+    /// file another handle holds open may still count its name until the
+    /// handle closes, so the count of names is not relied on there; a copy
+    /// someone else deleted is reported as not confirmed deleted - the
+    /// careful side.)
+    #[cfg(not(unix))]
+    fn no_name_left(&self, deleted_by_its_name: bool) -> Result<bool, NotDeleted> {
+        Ok(deleted_by_its_name)
     }
 }
 
-/// `error`, as it is when `removed` says the temporary copy at `path` was
-/// deleted; otherwise a [`MetadataError::WriteError`] whose message is
-/// `error`'s, followed by a sentence saying the copy could not be deleted,
-/// why, and where it is.
+/// Why a temporary copy could not be confirmed deleted.
+enum NotDeleted {
+    /// Deleting it failed.
+    Failed(io::Error),
+    /// It was moved, or given another name, while the save was being
+    /// checked, so it was left wherever it went.
+    Moved,
+}
+
+/// `error`, as it is when `removed` says the temporary copy made as `path`
+/// was deleted; otherwise a [`MetadataError::WriteError`] whose message is
+/// `error`'s, followed by a sentence saying what became of the copy.
 fn with_copy_not_deleted(
     error: MetadataError,
     path: &Path,
-    removed: io::Result<()>,
+    removed: Result<(), NotDeleted>,
 ) -> MetadataError {
-    let Err(why) = removed else {
+    let Err(not_deleted) = removed else {
         return error;
     };
     let first = match error {
         MetadataError::WriteError(message) => message,
         other => other.to_string(),
     };
+    let what = match not_deleted {
+        NotDeleted::Failed(why) => format!(
+            "could not be deleted afterwards ({why}): it is {}, beside the file, and can be \
+             deleted by hand",
+            path.display()
+        ),
+        NotDeleted::Moved => format!(
+            "was moved, or given another name, while the save was being checked, so it was not \
+             deleted: it may still hold the whole file's contents somewhere this program cannot \
+             see (it was made as {}, beside the file; anything now at that name was left alone)",
+            path.display()
+        ),
+    };
     MetadataError::WriteError(format!(
-        "{first} The temporary copy the save was made on could not be deleted afterwards ({why}): \
-         it is {}, beside the file, and can be deleted by hand. The file itself was not changed.",
-        path.display()
+        "{first} The temporary copy the save was made on {what}. The file itself was not changed."
     ))
 }
 
@@ -887,5 +959,61 @@ mod tests {
         copy.replace(original).expect("replace");
         let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o7777;
         assert_eq!(mode, 0o640);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_is_counted_as_deleted_only_when_no_name_for_it_is_left() {
+        // Codex's review of revision 11, finding 3. A copy moved away, or
+        // given a second name, while the save is checked still exists, so a
+        // refusal must say so; one deleted by someone else is gone, and
+        // needs no word. The open handle tells them apart: the file's count
+        // of names.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_path, mut original) = original_in(dir.path(), b"original");
+        let refusal =
+            |copy: TempCopy| match copy.discard(MetadataError::WriteError("refused.".into())) {
+                MetadataError::WriteError(message) => message,
+                other => panic!("changed: {other:?}"),
+            };
+        // Moved away.
+        let copy = TempCopy::of(&mut original).expect("copy");
+        let made_as = copy.path().to_path_buf();
+        let moved = dir.path().join("moved");
+        std::fs::rename(&made_as, &moved).expect("move");
+        let message = refusal(copy);
+        assert!(
+            message.starts_with("refused. The temporary copy"),
+            "{message}"
+        );
+        assert!(
+            message.contains("was moved, or given another name"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&made_as.display().to_string()),
+            "{message}"
+        );
+        assert_eq!(
+            std::fs::read(&moved).expect("read"),
+            b"original",
+            "left where it went"
+        );
+        // Given a second name: its own name is deleted, the other is not.
+        let copy = TempCopy::of(&mut original).expect("copy");
+        let made_as = copy.path().to_path_buf();
+        let second = dir.path().join("second-name");
+        std::fs::hard_link(&made_as, &second).expect("second name");
+        let message = refusal(copy);
+        assert!(
+            message.contains("was moved, or given another name"),
+            "{message}"
+        );
+        assert!(!made_as.exists(), "its own name is deleted");
+        assert!(second.exists(), "the other name is left alone");
+        // Deleted by someone else: gone, so the error is passed on as it was.
+        let copy = TempCopy::of(&mut original).expect("copy");
+        std::fs::remove_file(copy.path()).expect("someone deletes it");
+        assert_eq!(refusal(copy), "refused.");
     }
 }

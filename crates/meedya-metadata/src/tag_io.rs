@@ -1181,8 +1181,8 @@ fn atoms_asked_for(
 /// tag save may change — the audio, the chunk offsets, everything else in
 /// `moov` and at the top of the file (see `mp4_file_check`). Otherwise the
 /// copy is deleted, the file is not touched, and the error names
-/// everything that would have changed - and, if the copy could not be
-/// deleted, the copy too, so it can be deleted by hand.
+/// everything that would have changed - and, when the copy cannot be
+/// confirmed deleted, what became of it (see `save_by_copy`).
 fn save_mp4_checked(
     mut source: Original,
     ilst: &Ilst,
@@ -4428,6 +4428,82 @@ mod tests {
             );
             assert!(copy.exists(), "{name}: the copy is where the error says");
             assert_eq!(std::fs::read(&path).expect("read"), before, "{name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_moved_away_mid_save_is_reported_never_counted_as_deleted() {
+        // Codex's review of revision 11, finding 3: something moves the
+        // temporary copy away while the save is being checked (through the
+        // test seam, just after the copy is made) - and, the second time,
+        // puts another file at its name. The save is refused, since the
+        // copy's name no longer names it; the copy was not deleted - it
+        // holds the whole recording, wherever it went - yet the refusal
+        // used to say nothing about it (a name that was gone, or named
+        // another file, counted as deleted). Now the error says so; the
+        // copy is left where it went, the other file is left alone, and the
+        // file itself is unchanged - for a save that would have been
+        // accepted and one refused by the checks.
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        for name in ["plain-tone.m4a", "flags-and-freeform.m4a"] {
+            for put_another_file_there in [false, true] {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let path = real_m4a(dir.path(), name);
+                let before = std::fs::read(&path).expect("read");
+                let moved = dir.path().join("moved-away");
+                let copy = Rc::new(RefCell::new(None));
+                let named = Rc::clone(&copy);
+                let to = moved.clone();
+                let result = while_the_copy_exists(
+                    move |at| {
+                        if named.borrow().is_some() {
+                            return;
+                        }
+                        *named.borrow_mut() = Some(at.to_path_buf());
+                        std::fs::rename(at, &to).expect("move the copy away");
+                        if put_another_file_there {
+                            std::fs::write(at, b"someone else's").expect("write");
+                        }
+                    },
+                    || title_only(&path),
+                );
+                let copy = copy.borrow().clone().expect("the save made a copy");
+                let message = match result {
+                    Err(MetadataError::WriteError(message)) => message,
+                    other => panic!("{name}: expected a refusal, got {other:?}"),
+                };
+                assert!(
+                    message.contains(
+                        "was moved, or given another name, while the save was being checked, \
+                         so it was not deleted"
+                    ),
+                    "{name}, {put_another_file_there}: {message}"
+                );
+                assert!(
+                    message.contains(&copy.display().to_string()),
+                    "{name}: {message}"
+                );
+                assert!(
+                    message.contains("The file itself was not changed"),
+                    "{message}"
+                );
+                assert!(
+                    moved.exists(),
+                    "{name}: the moved copy is left where it went"
+                );
+                if put_another_file_there {
+                    assert_eq!(
+                        std::fs::read(&copy).expect("read"),
+                        b"someone else's",
+                        "{name}: the other file is left alone"
+                    );
+                } else {
+                    assert!(!copy.exists(), "{name}");
+                }
+                assert_eq!(std::fs::read(&path).expect("read"), before, "{name}");
+            }
         }
     }
 
