@@ -1509,6 +1509,13 @@ mod tests {
         // 2,500 atoms, rather than after minutes. (The time of the largest
         // is printed only for interest.)
         let per_atom = 12;
+        // Name comparisons vary a little from run to run: a hash map starts
+        // from a random seed (which stops a crafted file forcing slow
+        // lookups), and when two names happen to share a slot, each lookup
+        // makes one more comparison - 9 an atom, or up to 12. So they have a
+        // wider limit, and no ratio of their own; a limit per atom, met at
+        // every size, is itself the proof that they grow in step.
+        let names_per_atom = 16;
         let mut measured = Vec::new();
         for count in [2_500u64, 25_000, 100_000] {
             let started = std::time::Instant::now();
@@ -1522,8 +1529,8 @@ mod tests {
                 "{work:?} for {count} atoms: more than {per_atom} steps an atom"
             );
             assert!(
-                work.names <= per_atom * count,
-                "{work:?} for {count} atoms: more than {per_atom} name comparisons an atom"
+                work.names <= names_per_atom * count,
+                "{work:?} for {count} atoms: more than {names_per_atom} name comparisons an atom"
             );
             // Each of the two files read once for its atoms' headers and
             // once for their bytes: four times one file's length in all.
@@ -1533,11 +1540,11 @@ mod tests {
             );
             measured.push(work);
         }
-        // Four times the atoms take about four times the work, not sixteen.
+        // Four times the atoms take about four times the work, not sixteen
+        // (the two counts that are the same on every run).
         let (quarter, full) = (&measured[1], &measured[2]);
         for (what, small, large) in [
             ("steps", quarter.steps, full.steps),
-            ("name comparisons", quarter.names, full.names),
             ("bytes read", quarter.bytes, full.bytes),
         ] {
             let ratio = large as f64 / small as f64;
