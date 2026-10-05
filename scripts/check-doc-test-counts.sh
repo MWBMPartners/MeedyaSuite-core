@@ -135,7 +135,16 @@ check_stated() {
 # at changed copies of them.
 DOCS="${DOC_COUNTS_ROOT:-.}"
 for f in README.md docs/API.md .claude/CONTEXT.md .claude/CLAUDE.md; do
-    [ -f "$DOCS/$f" ] || continue
+    # Every one of these documents states the totals, so one that is not
+    # there is a failure, never a pass. (Until Codex's review of revision
+    # 11, finding 4, a missing document was skipped without a word:
+    # `DOC_COUNTS_ROOT=/dev/null bash scripts/check-doc-test-counts.sh 1 4`
+    # checked nothing at all and said the counts matched.)
+    if [ ! -f "$DOCS/$f" ]; then
+        echo "MISSING: $DOCS/$f is not there, so the totals it states cannot be checked"
+        status=1
+        continue
+    fi
     check_stated "$DOCS/$f" all "$ALL" "--all-features"
     check_stated "$DOCS/$f" default "$DEFAULT" "default-features"
 done

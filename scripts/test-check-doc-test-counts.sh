@@ -71,6 +71,8 @@ expect fail "the two totals the wrong way round" \
 copies=$(mktemp -d)
 trap 'rm -rf "$copies"' EXIT
 fresh_copies() {
+    # `f` is this function's own: the callers' loops have theirs.
+    local f
     rm -rf "${copies:?}"
     mkdir -p "$copies/docs" "$copies/.claude"
     for f in README.md docs/API.md .claude/CONTEXT.md .claude/CLAUDE.md; do
@@ -91,6 +93,18 @@ change() {
 fresh_copies
 expect pass "unchanged copies of the documents" \
     env DOC_COUNTS_ROOT="$copies" bash "$check" "$DEFAULT" "$ALL"
+
+# No documents at all, and each document missing in turn, with the right
+# totals: a document that is not there must fail, never be skipped (Codex's
+# review of revision 11, finding 4 - both used to pass).
+expect fail "no documents at all (DOC_COUNTS_ROOT=/dev/null)" \
+    env DOC_COUNTS_ROOT=/dev/null bash "$check" "$DEFAULT" "$ALL"
+for missing in README.md docs/API.md .claude/CONTEXT.md .claude/CLAUDE.md; do
+    fresh_copies
+    rm "$copies/$missing"
+    expect fail "one document missing: ${missing}" \
+        env DOC_COUNTS_ROOT="$copies" bash "$check" "$DEFAULT" "$ALL"
+done
 
 fresh_copies
 change .claude/CLAUDE.md "# ${ALL} tests" "# $((ALL - 1)) tests"
