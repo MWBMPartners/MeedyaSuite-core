@@ -228,3 +228,7 @@ Each issue has its own commit; see commit messages for full per-issue API detail
 ### Standing task compliance
 
 `docs/API.md` workspace overview table updated with new module lists + test counts. CLAUDE.md standing task says "in the same commit as the code change" — bundled into the end-of-batch docs commit here (matches the precedent set by the 2026-05-18 batch).
+
+## 2026-10-11 — Cross-application preservation planning
+
+Added documentation-only integration requirements and README navigation in draft PR #111, tracked by issue #110. The central specs contract and six consumer briefs cover native 608/708, timelines, stereo/HDR, metadata/Kodi provenance, typed relationships, configurable content-aware deduplication and evidence. No API, crate, dependency, bindings or implemented support changed. Independent Codex-agent semantic review was clean; external-system review and implementation remain separate. GitHub saved-file readback passed. Local execution tools failed to start, so no local Cargo/media tests ran. Consumer adoption must pin reviewed contract revisions.
