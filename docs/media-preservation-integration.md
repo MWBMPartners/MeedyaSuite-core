@@ -145,3 +145,48 @@ Define the authoritative MeedyaMeta namespace, schema/version, typed record iden
 Include source/provider/user provenance, raw-versus-interpreted values, scope/timing, conflicts, unknown extension fields, standard-field mapping references and synchronization state. Standard and custom copies must not be displayed as duplicate ratings. Preserve both on disagreement and expose the discrepancy; never resolve it by erasing source values. Explicit edits update affected representations transactionally where supported and record lineage; exporting one selected standard rating must still retain the full collection in MeedyaMeta.
 
 All Meedya applications should read/preserve known schemas and safely retain unknown versions/fields without pretending to interpret them. Validate parser resource limits and untrusted payloads. Test write/read/remux/round-trip survival, Unicode, multiple regions, unknown fields, partial mapping, source precedence and third-party tool loss of custom metadata. Third-party readers may ignore MeedyaMeta; it is an archival/inter-app representation, not a promise of external player support. Store data only where provider terms permit embedding; otherwise retain permitted identifiers/provenance and disclose excluded payloads.
+
+## Central metadata catalogue and MeedyaSuite-core ownership
+
+Status: proposed roadmap, not an implemented supported-field list. The shared specs repository owns the normative Meedya contract and versioned field registry; MeedyaSuite-core owns reusable typed models, validation, serialization/migrations, mapping contracts, preservation policy and capability/evidence APIs. App repositories reference these definitions rather than independently inventing field names. Container I/O, codec execution and provider adapters remain in appropriate feature-gated modules or applications; core does not own UI or silently introduce heavy dependencies.
+
+### Initial catalogue from preservation requirements
+
+Each group below requires a field-by-field registry before implementation. This is the minimum coverage inventory, not a closed set or claim all backends support it.
+
+| Group | Required inventory |
+| --- | --- |
+| File/work/edition metadata | Original and localized titles, sort/original/alternate titles, series/season/episode/edition/cut identities, summaries/synopsis, genres, dates/year, credits/roles, studios/networks, countries, external IDs/provider IDs, artwork/attachments, chapters and original arbitrary tags |
+| Kodi and other external metadata | Exact original Kodi XML/NFO or embedded representation, encoding/raw bytes/digest, unknown elements/attributes, normalized searchable values, IDs and scope; distinguish existing source records from generated exports |
+| Track/service identity and labels | Stable source IDs plus output IDs/remapping, order, original/effective/localized titles, handler/object/localized naming mappings, language codes/BCP 47 and evidenced native-language names, roles and unknown/conflicting language evidence |
+| Dispositions and relationships | Default/enabled, forced, original, SDH/hearing/visual accessibility and commentary roles; native flag mappings versus custom intent; video-caption associations, audio fallback edges, alternate groups, dependencies and compatibility renditions, stereo eye/view associations and source lineage |
+| Timing and presentation | Rational time bases, PTS/DTS, durations, delays/offsets, stretch/rate transforms, edits, priming/preroll, seeking state and track synchronization; source versus transformed presentation timelines |
+| Video/colour/HDR | Codec configuration/profile/level and sample-entry evidence, geometry, SAR/DAR, rotation/orientation/crop, frame rate/interlace, colour primaries/transfer/matrix/range, mastering/content-light metadata, Dolby Vision profile/configuration/RPU and HDR10+ dynamic metadata evidence |
+| Stereo/multiview and dynamic geometry | SBS/top-bottom/frame-alternate or other layouts, eye order and packing, Matroska versus MP4/MOV stereo mappings and limits; timed AFD/bar data, active-picture/crop/aspect/geometry changes and baked-in bars distinguished |
+| Audio | Codec/configuration/profile, channel count/layout/order, rate/depth, codec delay, loudness/dialogue/DRC information where present, native TrueHD/Atmos/E-AC-3 characteristics and relationships; properties do not prove lossless provenance |
+| Subtitles and captions | Format/profile, original payload/carriage, native 608 fields/CC1–CC4/T1–T4/XDS, 708 services/windows and carried 608 compatibility data, Teletext magazine/page/subpage/character sets, language/role evidence, command/display-mode timeline, colour/style/fonts/geometry/regions and resource references |
+| Bitmap and animated subtitle presentation | PGS/DVB page/window/object/palette/crop/clear/update state, positioning, alpha/layering, animation/highlighting, shared resource references and transformation/OCR confidence; native pixels and semantic text/style are distinct |
+| Broadcast/guide/ancillary metadata | DVB SI/EIT/SDT/time references, ATSC PSIP/service/guide records, XDS programme/station/clock/advisory data, descriptors/version/context and unknown/private ancillary records; retain required transport associations |
+| Classifications and provider enrichment | Multiple regions/schemes/authorities, rating codes/content advisories, scope/medium/edition/date, raw signalling and interpreted records, manual/provider/source origin, provider decision/evidence IDs/URLs, match confidence, conflicts and user overrides |
+| MeedyaMeta and extensibility | Versioned namespace/schema and typed records, unknown fields/versions, full permitted source metadata plus standard projections, raw archival references, mapping/synchronization state and provenance; binary payloads may need validated references rather than inline tags |
+| Evidence and preservation reports | Observed versus inferred fields, backend/container/profile/version capabilities, coverage, source/raw hashes, mapping/loss decisions, verification level and results, duplicate-candidate/content signatures, quality/ranking evidence and opt-in merge decisions |
+
+Native codec payloads and timed caption/broadcast data are not interchangeable with metadata tags. MeedyaMeta records their identities, descriptors and archival references where applicable; it does not replace required native carriage or imply interoperable decoding.
+
+### Registry entry requirements and shared policies
+
+Every field has a stable namespaced ID, description, typed value/cardinality/unit, file/work/track/service/event scope, localization, temporal applicability, missing/unknown/conflicting states, provenance, raw source representation, authoritative standard/version/section or custom status, native mapping by container/profile/backend and loss/round-trip tests. Preserve duplicates and order where semantically relevant. Include read/identify/preserve/edit/author/write/render/use capabilities independently; planned registry presence does not mean runtime support. Generated documentation/UI capability lists must derive from the registry plus actual adapter evidence.
+
+Return and preserve source records by default across apps. Keep normalized/derived/provider/user-effective views separately with traceable overrides, opt-in enrichment/exclusion and no silent replacement. Write supported standard representations plus complete permitted MeedyaMeta records, preserve originals/unknowns and explain unmappable data. No assumed universal flag/tag correspondence. Cross-app persistence must preserve scope, stable identity, timelines, relationships and schema versions.
+
+Separate media-content, metadata-snapshot and presentation signatures; renaming invalidates metadata caches without changing media-content identity. Rewriting payloads or timing creates derived lineage and appropriate signatures. Remap references safely during mux/merge and validate relationship targets; content-based duplicate detection remains configurable and considers role, timing, quality and relationships.
+
+### Implementation roadmap and acceptance
+
+1. Audit existing core/public APIs and shared registries; reconcile aliases and avoid conflicting schema ownership. Define an additive reviewed field catalogue and source-version references in specs.
+2. Propose core APIs and versioned serialization/MeedyaMeta envelope with migrations and language bindings. Consumer/licensing review precedes implementation; do not infer existing API support.
+3. Add tested standard/custom adapter mappings, capability reports, conflict/preservation policies and failure-safe synchronization. Unknown extensions remain safely round-trippable where context permits.
+4. Have Converter, Subtitler, Player, Manager, Library, DL and DB consume common models and capability evidence, with app-specific UI and operations. Library repository-specific handoff remains pending discovery.
+5. Use synthetic/licensed fixtures covering all inventory groups, no-op round trips, multi-source reference remapping, Unicode/localization, multiple regions/services, temporal metadata, unknown extensions, partial carriage, provider outage, migrations and explicit overrides. Publish verified runtime support separately from this roadmap.
+
+The existing source links and bounded research sections in the shared contract remain references for this catalogue; field registration must link the exact applicable source/section rather than copy an unverified backend assumption. No private media filenames belong in shared examples.
